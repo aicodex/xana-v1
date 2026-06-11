@@ -10,25 +10,24 @@ AssistantToolUseMessage (components/messages/AssistantToolUseMessage.tsx:182-228
     ● Tool(preview)
       first line of result (truncated to 120 chars with …)
 
-preview comes from the model whenever possible:
+When the turn finalizes, an append-only footer card is emitted in yuxu's
+yuxuc shape (services/gateway/adapters/cli.py:138-142):
 
-  1. ``input["description"]`` — the short human-readable label the model is
-     prompted to attach to every tool call (cc + xana Bash schema both
-     have this field);
-  2. for ``Bash``, the ``# label`` comment on the command's first line
-     (cc's commentLabel.ts), then the truncated command itself;
-  3. tool-specific main field (Read/Write/Edit: file_path; Glob/Grep: pattern;
-     memory_search: query);
-  4. fallback to a flat kv preview.
+    ――――――――――――――――――――
+    _model: deepseek-v4-flash · elapsed: 12.3s · tokens: 234 in / 567 out_
 
-Failed calls append ``— FAILED`` to the header. This trims walls of Bash /
-find output into a glanceable summary while keeping the model's prose in
-its own streaming channel.
+Footer is suppressed when the run produced no usage telemetry (the test
+events emitted directly into render() carry no harness_event), so the
+"no double-print" contract for bare AgentEvents stays intact. We don't
+attempt live in-place redraw (cc does it via Ink/React, not raw ANSI);
+oneshot mode appends once on final, an interactive REPL — when it lands
+— can layer a live redraw on top.
 """
 from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from typing import Any, AsyncGenerator, AsyncIterator, TextIO
 
 from xana.agent_adapter.contracts import (
@@ -45,6 +44,7 @@ _TOOL_GLYPH = "●"
 _PREVIEW_LIMIT = 80
 _RESULT_PREVIEW_LIMIT = 120
 _ELLIPSIS = "…"
+_FOOTER_DIVIDER = "―" * 20  # U+2015 × 20, matches yuxuc
 
 
 class CliAdapter(Adapter):
@@ -61,6 +61,7 @@ class CliAdapter(Adapter):
         self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self.turn_complete: asyncio.Event = asyncio.Event()
         self._status: str = "stopped"
+        self._turn_start_ts: float | None = None
 
     async def start(self) -> None:
         self._status = "healthy"
@@ -86,6 +87,8 @@ class CliAdapter(Adapter):
         yield msg
 
     async def render(self, event: AgentEvent) -> RenderedMessage:
+        if self._turn_start_ts is None:
+            self._turn_start_ts = time.monotonic()
         text = str(event.payload.get("text", ""))
         if event.kind == "draft":
             # Streaming chunk — write as-is, no trailing newline.
@@ -95,12 +98,14 @@ class CliAdapter(Adapter):
         elif event.kind == "tool":
             self._render_tool_event(event, text)
         elif event.kind == "final":
-            # Turn end — only emit a terminating newline so streamed deltas
-            # aren't repeated. payload["text"] is the cumulative reply, already
-            # shown via the draft stream.
+            # Turn end — terminating newline, then a yuxu-style footer card
+            # if telemetry is present. payload["text"] is the cumulative reply,
+            # already shown via the draft stream — do NOT re-emit it.
             self.out.write("\n")
+            self._render_footer_card(event)
             self.out.flush()
             self.turn_complete.set()
+            self._turn_start_ts = None
         elif event.kind == "error":
             if text:
                 self.out.write(text)
@@ -108,12 +113,47 @@ class CliAdapter(Adapter):
                     self.out.write("\n")
                 self.out.flush()
             self.turn_complete.set()
+            self._turn_start_ts = None
         return RenderedMessage(
             adapter_id=self.adapter_id,
             session_id=event.session_id,
             text=text,
             metadata={"event_kind": event.kind},
         )
+
+    def _render_footer_card(self, event: AgentEvent) -> None:
+        """Append the yuxu-style finalize card: divider + italic meta line.
+
+        Suppressed when there's no telemetry to report (e.g. unit-test events
+        constructed directly, no harness_event). This keeps the bare-final
+        path output identical to the pre-card behavior.
+        """
+        meta_pairs = self._collect_footer_meta(event)
+        if not meta_pairs:
+            return
+        meta_line = " · ".join(f"{k}: {v}" for k, v in meta_pairs)
+        self.out.write(_FOOTER_DIVIDER + "\n")
+        self.out.write(f"_{meta_line}_\n")
+
+    def _collect_footer_meta(self, event: AgentEvent) -> list[tuple[str, str]]:
+        """Pull model/tokens/elapsed off the harness UsageSnapshot when present.
+
+        elapsed is computed from the adapter's per-turn start timestamp so the
+        figure reflects wall time the user actually waited (matches yuxu's
+        format_llm_stats_footer in services/gateway/reply_helpers.py:30-48)."""
+        pairs: list[tuple[str, str]] = []
+        usage = getattr(event.harness_event, "usage", None) if event.harness_event else None
+        if usage is not None:
+            if usage.model:
+                pairs.append(("model", str(usage.model)))
+            tin = usage.exact_input_tokens
+            tout = usage.exact_output_tokens
+            if tin is not None or tout is not None:
+                pairs.append(("tokens", f"{tin or 0} in / {tout or 0} out"))
+        if self._turn_start_ts is not None and (pairs or usage is not None):
+            elapsed = max(0.0, time.monotonic() - self._turn_start_ts)
+            pairs.append(("elapsed", f"{elapsed:.1f}s"))
+        return pairs
 
     def _render_tool_event(self, event: AgentEvent, text: str) -> None:
         """Two-line compact form: `● Tool(preview)` then `  first_result_line`.
