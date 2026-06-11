@@ -56,7 +56,7 @@ class DefaultHarness(Harness):
         assert context.history_mirror is not None, "HistoryMirror required"
 
         user_msg = MemoryMessage(role="user", content=request.user_input)
-        await context.active_context_store.append_message(session_id, agent_name, user_msg)
+        snapshot = await context.active_context_store.append_message(session_id, agent_name, user_msg)
         await context.history_mirror.append(
             HistoryRow(
                 row_id=f"{run_id}:user",
@@ -80,20 +80,18 @@ class DefaultHarness(Harness):
 
         skill_blocks: list[str] = []
         if context.skill_registry is not None:
-            skills = await context.skill_registry.discover(
-                SkillActivation(kind="model", session_id=session_id, agent_name=agent_name, run_id=run_id)
+            activation = SkillActivation(
+                kind="model", session_id=session_id, agent_name=agent_name, run_id=run_id
             )
+            skills = await context.skill_registry.discover(activation)
             for skill in skills:
-                contribution = await skill.activate(
-                    SkillActivation(kind="model", session_id=session_id, agent_name=agent_name, run_id=run_id)
-                )
+                contribution = await skill.activate(activation)
                 skill_blocks.extend(contribution.prompt_blocks)
 
         system_parts = injected_head + skill_blocks + injected_tail
         system_content = "\n\n".join(p for p in system_parts if p)
 
-        snapshot = await context.active_context_store.get(session_id, agent_name)
-        history_messages = snapshot.messages if snapshot is not None else (user_msg,)
+        history_messages = snapshot.messages
         history_model_messages = tuple(
             ModelMessage(
                 role="user" if m.role == "user" else ("assistant" if m.role == "assistant" else "system"),

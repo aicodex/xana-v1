@@ -1,6 +1,7 @@
 """DefaultAgentGateway: wires Adapter <-> Agent."""
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.contracts import (
@@ -70,10 +71,4 @@ class DefaultAgentGateway(AgentGateway):
     def _attach_event_kind(rendered: RenderedMessage, event: AgentEvent) -> RenderedMessage:
         metadata = dict(rendered.metadata)
         metadata.setdefault("event_kind", event.kind)
-        return RenderedMessage(
-            adapter_id=rendered.adapter_id,
-            session_id=rendered.session_id,
-            text=rendered.text,
-            draft=rendered.draft,
-            metadata=metadata,
-        )
+        return replace(rendered, metadata=metadata)

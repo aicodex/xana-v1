@@ -42,6 +42,10 @@ from xana.tools.interfaces import ToolRegistry
 from xana.tools.registry import InMemoryToolRegistry
 
 
+_INJECTOR_TOP_K = 3  # narrower than SearchMemoryInjector default (5) — single README_ai.md root
+_INJECTOR_BUDGET_CHARS = 2000  # half of SearchMemoryInjector default to keep prompt small for fake provider
+
+
 @dataclass
 class BootResult:
     gateway: DefaultAgentGateway
@@ -70,7 +74,7 @@ async def boot(
     await tree.load()
     engine = SQLiteMemorySearchEngine(":memory:")
     await engine.rebuild_from_tree(tree)
-    injector = SearchMemoryInjector(engine, top_k=3, budget_chars=2000)
+    injector = SearchMemoryInjector(engine, top_k=_INJECTOR_TOP_K, budget_chars=_INJECTOR_BUDGET_CHARS)
     injector_registry = DefaultMemoryInjectorRegistry()
     await injector_registry.register(injector, priority=100)
 

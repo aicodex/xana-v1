@@ -6,6 +6,7 @@ from typing import AsyncGenerator, AsyncIterator
 from xana.agents.contracts import (
     AgentControlRequest,
     AgentEvent,
+    AgentEventKind,
     AgentRequest,
     AgentSpec,
 )
@@ -98,14 +99,16 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         )
 
 
+_HARNESS_TO_AGENT_KIND: dict[str, AgentEventKind] = {
+    "final": "final",
+    "error": "error",
+    "tool_finished": "tool",
+}
+
+
 class DefaultAgentEventMapper(AgentEventMapper):
     async def map(self, session_id: str, event: HarnessEvent) -> AgentEvent:
-        if event.kind == "final":
-            kind = "final"
-        elif event.kind == "error":
-            kind = "error"
-        else:
-            kind = "draft"
+        kind = _HARNESS_TO_AGENT_KIND.get(event.kind, "draft")
         return AgentEvent(
             kind=kind,
             session_id=session_id,
