@@ -39,6 +39,9 @@ async def _run(args: argparse.Namespace) -> int:
         args.interactive = True
 
     if args.interactive:
+        print(f"xanac · interactive · session={args.session}")
+        print(f"model={boot_result.model}  provider={boot_result.provider}  cwd={project_root}")
+        print("输入 /help 查看命令；Ctrl-C 取消当前 turn；Ctrl-D 退出。\n")
         return await _repl_loop(boot_result.gateway, session_id=args.session)
 
     inbound = InboundMessage(adapter_id="cli", session_id=args.session, text=text)
