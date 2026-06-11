@@ -52,9 +52,14 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/search_provider", description="搜索引擎切换"),
         )
         self._handlers: dict[str, _HandlerFn] = {
-            "/help":     DefaultCommandRouter._cmd_help,
-            "/clear":    DefaultCommandRouter._cmd_clear,
-            "/compact":  DefaultCommandRouter._cmd_compact,
+            "/help":            DefaultCommandRouter._cmd_help,
+            "/clear":           DefaultCommandRouter._cmd_clear,
+            "/compact":         DefaultCommandRouter._cmd_compact,
+            "/model":           DefaultCommandRouter._cmd_model,
+            "/effort":          DefaultCommandRouter._cmd_effort,
+            "/streaming":       DefaultCommandRouter._cmd_streaming,
+            "/thinking":        DefaultCommandRouter._cmd_thinking,
+            "/search_provider": DefaultCommandRouter._cmd_search_provider,
         }
 
     async def list_commands(self) -> tuple[CommandSpec, ...]:
@@ -100,3 +105,64 @@ class DefaultCommandRouter(CommandRouter):
         summary = args.strip() or "(用户触发的压缩 — 无具体摘要)"
         await self.active_context_store.compact(inbound.session_id, "chat", summary)
         return CommandResult(ok=True, message="[compacted] 历史已压缩")
+
+    async def _persist_with(self, session_id: str, **changes) -> "SessionConfig":
+        from xana.session_config.contracts import SessionConfig
+        if self.session_config_store is None:
+            raise RuntimeError("session_config_store 未配置")
+        current = await self.session_config_store.get(session_id)
+        new = SessionConfig(
+            session_id=current.session_id,
+            model=changes.get("model", current.model),
+            effort=changes.get("effort", current.effort),
+            streaming=changes.get("streaming", current.streaming),
+            thinking=changes.get("thinking", current.thinking),
+            search_provider=changes.get("search_provider", current.search_provider),
+            project_root=changes.get("project_root", current.project_root),
+            metadata=current.metadata,
+        )
+        await self.session_config_store.save(new)
+        return new
+
+    async def _cmd_model(self, inbound: InboundMessage, args: str) -> CommandResult:
+        target = args.strip()
+        if not target:
+            if not self.available_models:
+                return CommandResult(ok=True, message="未配置可选模型")
+            return CommandResult(ok=True, message="可选模型: " + ", ".join(self.available_models))
+        if self.available_models and target not in self.available_models:
+            return CommandResult(ok=False, message=f"未知模型 {target}; 可选: " + ", ".join(self.available_models))
+        new = await self._persist_with(inbound.session_id, model=target)
+        return CommandResult(ok=True, message=f"模型切换为 {new.model}")
+
+    async def _cmd_effort(self, inbound: InboundMessage, args: str) -> CommandResult:
+        target = args.strip().lower()
+        if target not in {"low", "medium", "high", "max"}:
+            return CommandResult(ok=False, message="effort 必须为 low/medium/high/max")
+        new = await self._persist_with(inbound.session_id, effort=target)
+        return CommandResult(ok=True, message=f"effort 切换为 {new.effort}")
+
+    async def _cmd_streaming(self, inbound: InboundMessage, args: str) -> CommandResult:
+        val = args.strip().lower()
+        if val not in {"on", "off"}:
+            return CommandResult(ok=False, message="streaming 必须为 on/off")
+        new = await self._persist_with(inbound.session_id, streaming=(val == "on"))
+        return CommandResult(ok=True, message=f"streaming={new.streaming}")
+
+    async def _cmd_thinking(self, inbound: InboundMessage, args: str) -> CommandResult:
+        val = args.strip().lower()
+        if val not in {"on", "off"}:
+            return CommandResult(ok=False, message="thinking 必须为 on/off")
+        new = await self._persist_with(inbound.session_id, thinking=(val == "on"))
+        return CommandResult(ok=True, message=f"thinking={new.thinking}")
+
+    async def _cmd_search_provider(self, inbound: InboundMessage, args: str) -> CommandResult:
+        target = args.strip()
+        if not target:
+            if not self.available_search_providers:
+                return CommandResult(ok=True, message="未配置可选搜索引擎")
+            return CommandResult(ok=True, message="可选搜索引擎: " + ", ".join(self.available_search_providers))
+        if self.available_search_providers and target not in self.available_search_providers:
+            return CommandResult(ok=False, message=f"未知搜索引擎 {target}")
+        new = await self._persist_with(inbound.session_id, search_provider=target)
+        return CommandResult(ok=True, message=f"搜索引擎切换为 {new.search_provider}")
