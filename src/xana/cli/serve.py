@@ -1,11 +1,15 @@
-"""xana serve: boot adapters from env, attach to gateway, run forever.
+"""xana serve: boot adapters from system.json channels (env vars override), attach to gateway, run forever.
 
-Reads:
+Config source: ~/.xana/config/system.json channels section.
+Env vars override system.json values:
   FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFICATION_TOKEN /
     FEISHU_ENCRYPT_KEY (optional) / FEISHU_WEBHOOK_PORT (default 8765)
   TELEGRAM_BOT_TOKEN / TELEGRAM_ALLOWED_USER_IDS (csv)
 
-Adapters whose required env is missing are skipped silently.
+A shared PairingStore (backed by pairings.json) is wired into both adapters
+so `xana pair approve` hot-reloads into the running serve without restart.
+
+Adapters whose required config is missing are skipped silently.
 """
 from __future__ import annotations
 
@@ -15,30 +19,57 @@ import os
 from pathlib import Path
 
 from xana.agent_adapter.channels._bindings import BindingStore
+from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels.feishu import FeishuAdapter, FeishuConfig
 from xana.agent_adapter.channels.telegram import TelegramAdapter, TelegramConfig
 from xana.agent_adapter.interfaces import Adapter
+from xana.config.system_model import SystemConfig
 from xana.runtime.boot import boot
 
 
-def build_adapters_from_env(*, bindings_root: Path, env: dict[str, str]) -> list[Adapter]:
+def build_adapters(
+    *, bindings_root: Path, env: dict[str, str], system: SystemConfig
+) -> list[Adapter]:
     adapters: list[Adapter] = []
-    if all(env.get(k) for k in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_VERIFICATION_TOKEN")):
+    pairing = PairingStore(path=bindings_root / "pairings.json")
+
+    fs = system.channels.feishu
+    fs_extra = fs.model_extra or {}
+    app_id = env.get("FEISHU_APP_ID") or fs.app_id
+    app_secret = env.get("FEISHU_APP_SECRET") or fs.app_secret_key
+    verification_token = env.get("FEISHU_VERIFICATION_TOKEN") or str(
+        fs_extra.get("verification_token") or ""
+    )
+    if app_id and app_secret:
+        api_base = "https://open.larksuite.com" if fs.domain == "lark" else "https://open.feishu.cn"
         cfg = FeishuConfig(
-            app_id=env["FEISHU_APP_ID"],
-            app_secret=env["FEISHU_APP_SECRET"],
-            verification_token=env["FEISHU_VERIFICATION_TOKEN"],
+            app_id=app_id,
+            app_secret=app_secret,
+            verification_token=verification_token,
             encrypt_key=env.get("FEISHU_ENCRYPT_KEY") or None,
+            api_base=api_base,
         )
         bindings = BindingStore(path=bindings_root / "feishu.bindings.json")
-        adapters.append(FeishuAdapter(config=cfg, bindings=bindings))
-    if env.get("TELEGRAM_BOT_TOKEN"):
-        allowed_csv = env.get("TELEGRAM_ALLOWED_USER_IDS", "")
-        allowed = frozenset(int(x) for x in allowed_csv.split(",") if x.strip())
-        cfg = TelegramConfig(bot_token=env["TELEGRAM_BOT_TOKEN"], allowed_user_ids=allowed)
+        adapters.append(FeishuAdapter(config=cfg, bindings=bindings, pairing=pairing))
+
+    tg = system.channels.telegram
+    bot_token = env.get("TELEGRAM_BOT_TOKEN") or tg.bot_token
+    if bot_token:
+        env_allowed = env.get("TELEGRAM_ALLOWED_USER_IDS", "")
+        allowed = (
+            frozenset(int(x) for x in env_allowed.split(",") if x.strip())
+            if env_allowed
+            else frozenset(tg.allowed_user_ids)
+        )
+        cfg = TelegramConfig(bot_token=bot_token, allowed_user_ids=allowed)
         bindings = BindingStore(path=bindings_root / "telegram.bindings.json")
-        adapters.append(TelegramAdapter(config=cfg, bindings=bindings))
+        adapters.append(TelegramAdapter(config=cfg, bindings=bindings, pairing=pairing))
     return adapters
+
+
+def build_adapters_from_env(*, bindings_root: Path, env: dict[str, str]) -> list[Adapter]:
+    """Backward-compat shim: delegates to build_adapters with an empty SystemConfig."""
+    return build_adapters(bindings_root=bindings_root, env=env, system=SystemConfig())
 
 
 async def _run_inbound_pump(adapter: Adapter, gateway) -> None:
@@ -56,8 +87,13 @@ async def _run_inbound_pump(adapter: Adapter, gateway) -> None:
 async def _run(argv: argparse.Namespace) -> int:
     project_root = (argv.project or Path.cwd()).resolve()
     boot_result = await boot(project_root=project_root)
-    bindings_root = Path.home() / ".xana" / "channels"
-    adapters = build_adapters_from_env(bindings_root=bindings_root, env=dict(os.environ))
+    from xana.cli.commands.pair import pairings_path
+    from xana.config.loader import DefaultConfigProvider
+    bindings_root = pairings_path().parent
+    cp = DefaultConfigProvider()
+    await cp.load(project_root)
+    system = cp.load_system_config()
+    adapters = build_adapters(bindings_root=bindings_root, env=dict(os.environ), system=system)
     if not adapters:
         print("[xana serve] no adapter env vars set — nothing to run.")
         return 1
