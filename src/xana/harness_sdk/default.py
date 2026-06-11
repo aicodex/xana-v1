@@ -118,6 +118,10 @@ class DefaultHarness(Harness):
         cumulative_text: list[str] = []
 
         for turn_index in range(_MAX_TURNS):
+            if context.abort.aborted:
+                yield HarnessEvent(kind="cancelled", session_id=session_id, run_id=run_id,
+                                   payload={"reason": context.abort.reason or "cancelled"})
+                return
             snapshot = await context.active_context_store.get(session_id, agent_name)
             history_msgs = snapshot.messages if snapshot is not None else ()
             assembled = _assemble_for_model(system_content, history_msgs)

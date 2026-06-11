@@ -149,6 +149,7 @@ class ChatAgent(Agent):
             provider=provider,
         )
         self.event_mapper = DefaultAgentEventMapper()
+        self._pending_cancel_sessions: set[str] = set()
 
     def spec(self) -> AgentSpec:
         return self._spec
@@ -159,6 +160,11 @@ class ChatAgent(Agent):
     async def _send(self, request: AgentRequest) -> AsyncGenerator[AgentEvent, None]:
         harness_request = await self.request_mapper.to_harness_request(self._spec, request)
         harness_context = await self.request_mapper.to_harness_context(self._spec, request)
+        if request.session_id in self._pending_cancel_sessions:
+            from dataclasses import replace as _dc_replace
+            from xana.harness_sdk.contracts import AbortSignal
+            harness_context = _dc_replace(harness_context, abort=AbortSignal(aborted=True, reason="user_cancel"))
+            self._pending_cancel_sessions.discard(request.session_id)
         async for harness_event in self.harness.invoke(harness_request, harness_context):
             yield await self.event_mapper.map(request.session_id, harness_event)
 
@@ -173,4 +179,4 @@ class ChatAgent(Agent):
         )
 
     async def cancel(self, session_id: str, run_id: str | None = None) -> None:
-        return None
+        self._pending_cancel_sessions.add(session_id)

@@ -30,6 +30,7 @@ class DefaultAgentGateway(AgentGateway):
         self.adapters: dict[str, Adapter] = {}
         self.command_router: CommandRouter | None = None
         self.bindings: dict[str, SessionBinding] = {}
+        self._cancel_flags: dict[str, bool] = {}
 
     async def register_adapter(self, adapter_id: str, adapter: Adapter) -> None:
         self.adapters[adapter_id] = adapter
@@ -77,16 +78,27 @@ class DefaultAgentGateway(AgentGateway):
                 metadata={"event_kind": "error"},
             )
             return
+        self.clear_cancel(inbound.session_id)
         async for event in agent.send(request):
             rendered = await adapter.render(event)
             yield self._attach_event_kind(rendered, event)
+            if self._cancel_flags.get(inbound.session_id):
+                break
+        self.clear_cancel(inbound.session_id)
 
     def subscribe(self, adapter_id: str, session_id: str) -> AsyncIterator[RenderedMessage]:
         raise NotImplementedError("subscribe is not used by the CLI flow in v1")
 
     async def cancel(self, session_id: str, run_id: str | None = None) -> None:
+        self._cancel_flags[session_id] = True
         for agent in self.agents.values():
             await agent.cancel(session_id, run_id)
+
+    def is_cancel_requested(self, session_id: str) -> bool:
+        return self._cancel_flags.get(session_id, False)
+
+    def clear_cancel(self, session_id: str) -> None:
+        self._cancel_flags.pop(session_id, None)
 
     @staticmethod
     def _attach_event_kind(rendered: RenderedMessage, event: AgentEvent) -> RenderedMessage:
