@@ -67,15 +67,23 @@ class EnterWorktreeTool(Tool):
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         name = invocation.input.get("name") or f"wt-{secrets.token_hex(4)}"
+        if not _NAME_RE.match(context.session_id):
+            return ToolResult(
+                ok=False,
+                content=None,
+                error=f"EnterWorktree: unsafe session_id {context.session_id!r}",
+                failure_kind="execution",
+                rendered=f"[EnterWorktree FAILED] unsafe session_id {context.session_id!r}",
+            )
         target = self.worktree_root / context.session_id / name
         target.parent.mkdir(parents=True, exist_ok=True)
 
         proc = await asyncio.create_subprocess_exec(
             "git", "-C", context.cwd, "worktree", "add", str(target),
-            stdout=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        _, stderr = await proc.communicate()
         if proc.returncode != 0:
             err_msg = stderr.decode("utf-8", errors="replace").strip() or "git worktree add failed"
             return ToolResult(
