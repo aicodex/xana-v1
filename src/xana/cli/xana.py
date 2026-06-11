@@ -1,10 +1,10 @@
 """xana — top-level CLI dispatcher.
 
 Subcommands:
-  setup    Materialize .xana/ skeleton and initialize ~/.xana/config/system.json.
+  setup    Initialize ~/.xana/config/system.json (user-level, holds api keys).
 
 xanac (chat client) remains a separate entry point — this CLI is for
-machine/project administration, not interactive chat.
+machine administration, not interactive chat.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     setup_parser = subparsers.add_parser(
-        "setup", help="initialize .xana/ in the current project + ~/.xana/ config"
+        "setup", help="initialize ~/.xana/config/system.json"
     )
     setup_cmd.add_arguments(setup_parser)
     setup_parser.set_defaults(func=setup_cmd.run)
