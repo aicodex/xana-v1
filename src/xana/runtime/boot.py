@@ -54,12 +54,16 @@ from xana.state.in_memory import InMemoryStateRepository
 from xana.state.interfaces import StateRepository
 from xana.session_config.file_store import FileSessionConfigStore
 from xana.session_config.interfaces import SessionConfigStore
+from xana.tools.builtin._todo_store import TodoStore
 from xana.tools.builtin.bash import BashTool
 from xana.tools.builtin.edit import EditTool
+from xana.tools.builtin.enter_plan_mode import EnterPlanModeTool
+from xana.tools.builtin.enter_worktree import EnterWorktreeTool
 from xana.tools.builtin.glob_tool import GlobTool
 from xana.tools.builtin.grep_tool import GrepTool
 from xana.tools.builtin.memory_search import MemorySearchTool
 from xana.tools.builtin.read import ReadTool
+from xana.tools.builtin.todo_write import TodoWriteTool
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import ToolRegistry
 from xana.tools.registry import InMemoryToolRegistry
@@ -116,6 +120,14 @@ async def boot(
     await tools.register(GrepTool())
     await tools.register(BashTool())
 
+    todo_root = Path.home() / ".xana" / "sessions"
+    worktree_root = Path.home() / ".xana" / "worktrees"
+    session_config_root = Path.home() / ".xana" / "sessions"
+    session_config_store: SessionConfigStore = FileSessionConfigStore(root=session_config_root)
+    await tools.register(TodoWriteTool(TodoStore(root=todo_root)))
+    await tools.register(EnterPlanModeTool(session_config_store=session_config_store))
+    await tools.register(EnterWorktreeTool(session_config_store=session_config_store, worktree_root=worktree_root))
+
     skills = InMemorySkillRegistry()
     await skills.register(IdentitySkill())
 
@@ -128,9 +140,6 @@ async def boot(
     await model_registry.register(provider, client)
 
     state = InMemoryStateRepository()
-
-    session_config_root = Path.home() / ".xana" / "sessions"
-    session_config_store: SessionConfigStore = FileSessionConfigStore(root=session_config_root)
 
     gateway = DefaultAgentGateway(
         agents={},
