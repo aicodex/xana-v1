@@ -64,15 +64,52 @@ class MarkdownMemoryTree(MemoryTree):
         self._edge_sources: dict[tuple[str, str], str] = {}
 
     async def load(self) -> None:
-        """Rebuild the tree view from markdown files on disk."""
+        """Rebuild the tree view from markdown files on disk.
+
+        Behavior:
+          * if the entrypoint (README_ai.md by default) is absent, return an
+            empty tree without touching the filesystem — otherwise running
+            xanac from a non-project directory (HOME, /, etc.) would `rglob`
+            the entire tree and hang on the user's whole home dir.
+          * otherwise walk the tree but skip hidden dirs (.git, .xana, .venv,
+            …) and a handful of common cache dirs so a repo with a node_modules
+            checkout or a .git pack doesn't dominate load time.
+        """
         self.nodes = {}
         self._edge_sources = {}
         entry = self.root / self.entrypoint
-        if entry.exists():
-            self._load_file(entry, depth=0, stack=())
-        for path in sorted(self.root.rglob("*.md")):
+        if not entry.exists():
+            return
+        self._load_file(entry, depth=0, stack=())
+        for path in sorted(self._iter_md_files(self.root)):
             self._load_file(path, depth=0, stack=())
         self._attach_children_from_edges()
+
+    def _iter_md_files(self, root: Path):
+        """Yield *.md files under root, skipping hidden + cache dirs.
+
+        Equivalent to ``root.rglob('*.md')`` but excludes any directory whose
+        name starts with '.' (.git, .venv, .xana, .yuxu …) or matches a known
+        cache dirname. We DO NOT prune by file size, content, or symlink —
+        only by directory name, which is enough to keep load fast on a typical
+        dev tree.
+        """
+        skip_dirnames = {"__pycache__", "node_modules", "dist", "build", ".pytest_cache"}
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            try:
+                entries = list(current.iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                name = entry.name
+                if entry.is_dir():
+                    if name.startswith(".") or name in skip_dirnames:
+                        continue
+                    stack.append(entry)
+                elif entry.is_file() and entry.suffix == ".md":
+                    yield entry
 
     async def get_node(self, path: str) -> MemoryNode | None:
         return self.nodes.get(path)
