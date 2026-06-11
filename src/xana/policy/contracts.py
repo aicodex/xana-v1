@@ -1,0 +1,74 @@
+"""Policy contracts for permission, sandbox, and approval."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Literal
+
+PermissionMode = Literal["default", "ask", "auto", "plan", "accept_edits", "deny", "bypass"]
+PermissionDecision = Literal["allow", "ask", "deny"]
+SandboxMode = Literal["none", "read_only", "workspace_write", "restricted_network", "full"]
+RuleEffect = Literal["allow", "ask", "deny"]
+
+
+@dataclass(frozen=True)
+class PermissionRule:
+    effect: RuleEffect
+    subject: str
+    pattern: str
+    source: str
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class PermissionContext:
+    mode: PermissionMode
+    session_id: str
+    agent_name: str | None = None
+    run_id: str | None = None
+    rules: tuple[PermissionRule, ...] = ()
+    additional_working_dirs: tuple[Path, ...] = ()
+    shall_avoid_prompts: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SandboxPolicySpec:
+    mode: SandboxMode
+    cwd: Path
+    writable_roots: tuple[Path, ...] = ()
+    readable_roots: tuple[Path, ...] = ()
+    allow_network: bool = False
+    allow_subprocess: bool = False
+    env: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PermissionRequest:
+    subject: str
+    action: str
+    resource: str
+    risk: Literal["low", "medium", "high"] = "medium"
+    context: PermissionContext | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PermissionResult:
+    decision: PermissionDecision
+    reason: str | None = None
+    updated_context: PermissionContext | None = None
+
+
+@dataclass(frozen=True)
+class ApprovalRequest:
+    permission: PermissionRequest
+    prompt: str
+    choices: tuple[PermissionDecision, ...] = ("allow", "deny")
+
+
+@dataclass(frozen=True)
+class ApprovalResult:
+    decision: PermissionDecision
+    reason: str | None = None
+    remember_rule: PermissionRule | None = None

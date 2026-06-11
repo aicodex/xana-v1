@@ -1,0 +1,9 @@
+[project]
+name = "xana"
+version = "0.1.0"
+description = "Input/output-first agent runtime skeleton."
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
