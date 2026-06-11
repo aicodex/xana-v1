@@ -52,15 +52,33 @@ def run_wizard(
     ask: AskFn,
     out: TextIO,
     feishu_register: FeishuRegisterFn = _default_feishu_register,
+    force: bool = False,
 ) -> int:
     data = _load_raw()
     changed = False
 
-    if not data.get("models"):
+    existing_models = data.get("models") or []
+    if not existing_models:
+        # First-time: always enter model step
         rc, did = _do_models(data, ask=ask, out=out)
         if rc != 0:
             return rc
         changed = changed or did
+    elif force:
+        # Force: enter model step without asking
+        rc, did = _do_models_reconfigure(data, ask=ask, out=out)
+        if rc != 0:
+            return rc
+        changed = changed or did
+    else:
+        # Already configured: ask user
+        names = ", ".join(m.get("name", "") for m in existing_models)
+        ans = ask(f"  模型已配置 ({names}),是否重新配置? [y/N]: ").strip().lower()
+        if ans in ("y", "yes"):
+            rc, did = _do_models_reconfigure(data, ask=ask, out=out)
+            if rc != 0:
+                return rc
+            changed = changed or did
 
     channels = data.get("channels") or {}
     has_channel = bool(
@@ -72,6 +90,20 @@ def run_wizard(
         if rc != 0:
             return rc
         changed = changed or did
+    elif force:
+        # Force: enter channel step without asking
+        rc, did = _do_channels(data, ask=ask, out=out, feishu_register=feishu_register)
+        if rc != 0:
+            return rc
+        changed = changed or did
+    else:
+        # Already configured: ask user
+        ans = ask("  渠道已配置,是否重新配置? [y/N]: ").strip().lower()
+        if ans in ("y", "yes"):
+            rc, did = _do_channels(data, ask=ask, out=out, feishu_register=feishu_register)
+            if rc != 0:
+                return rc
+            changed = changed or did
 
     if changed:
         path = _save_raw(data)
@@ -101,6 +133,41 @@ def _do_models(data: dict, *, ask: AskFn, out: TextIO) -> tuple[int, bool]:
         dm["agent"] = name
     data["default_model"] = dm
     print(f"[xana setup] v 模型 {name} ({mtype}) 已登记,默认 chat/agent。", file=out)
+    return 0, True
+
+
+def _do_models_reconfigure(data: dict, *, ask: AskFn, out: TextIO) -> tuple[int, bool]:
+    """Reconfigure path: gather a new model entry, replace if same name, else append.
+    Then ask whether to set it as default chat/agent."""
+    print("[xana setup] 配置模型(写入 system.json models[]):", file=out)
+    mtype = ask("  provider type (如 anthropic_deepseek): ").strip()
+    name = ask("  模型名称 (自定, 如 ds-main): ").strip()
+    api_key = ask("  api key: ").strip()
+    base_url = ask("  base url (可选, 回车跳过): ").strip()
+    if not mtype or not name or not api_key:
+        print("error: type / 名称 / api key 均不能为空。", file=out)
+        return 1, False
+    entry: dict = {"name": name, "type": mtype, "api_key": api_key}
+    if base_url:
+        entry["base_url"] = base_url
+    models = list(data.get("models") or [])
+    replaced = False
+    for i, m in enumerate(models):
+        if m.get("name") == name:
+            models[i] = entry
+            replaced = True
+            break
+    if not replaced:
+        models.append(entry)
+    data["models"] = models
+    set_default_ans = ask("  设为默认 chat/agent? [Y/n]: ").strip().lower()
+    if set_default_ans in ("", "y", "yes"):
+        dm = dict(data.get("default_model") or {})
+        dm["chat"] = name
+        dm["agent"] = name
+        data["default_model"] = dm
+    action = "替换" if replaced else "追加"
+    print(f"[xana setup] v 模型 {name} ({mtype}) 已{action}。", file=out)
     return 0, True
 
 
