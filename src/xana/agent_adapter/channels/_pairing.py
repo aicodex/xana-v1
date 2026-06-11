@@ -22,7 +22,7 @@ def _now() -> str:
 class PairingStore:
     def __init__(self, *, path: Path) -> None:
         self._path = path
-        self._mtime_ns: int | None = None
+        self._fingerprint: tuple[int, int] | None = None  # (mtime_ns, st_size)
         self._data: dict[str, dict[str, dict[str, Any]]] = {}
         self._reload_if_changed()
 
@@ -108,13 +108,18 @@ class PairingStore:
 
     def _reload_if_changed(self) -> None:
         try:
-            mtime_ns = self._path.stat().st_mtime_ns
+            st = self._path.stat()
         except FileNotFoundError:
+            self._data = {}
+            self._fingerprint = None
             return
-        if mtime_ns == self._mtime_ns:
+        fingerprint = (st.st_mtime_ns, st.st_size)
+        if fingerprint == self._fingerprint:
             return
+        # Record fingerprint *before* reading so a concurrent write between
+        # stat and read forces a reload on the next call (mtime/size may differ).
+        self._fingerprint = fingerprint
         self._data = json.loads(self._path.read_text(encoding="utf-8"))
-        self._mtime_ns = mtime_ns
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,4 +130,5 @@ class PairingStore:
             self._path.chmod(0o600)
         except OSError:
             pass
-        self._mtime_ns = self._path.stat().st_mtime_ns
+        st = self._path.stat()
+        self._fingerprint = (st.st_mtime_ns, st.st_size)
