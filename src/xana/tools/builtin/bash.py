@@ -1,0 +1,128 @@
+"""Bash: run a shell command, capture stdout/stderr/exit_code.
+
+v1 uses ``asyncio.create_subprocess_shell`` so the model can pass a single
+command string with pipes/redirection (matches CC ergonomics). Output
+beyond ``max_result_chars`` is truncated and the ``truncated`` flag is
+set. Optional ``timeout`` (default 120s, max 600s) kills the subprocess
+with ``failure_kind="timeout"``.
+"""
+from __future__ import annotations
+
+import asyncio
+
+from xana.component.contracts import ComponentSource, ComponentSpec
+from xana.policy.contracts import PermissionResult
+from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.interfaces import Tool
+
+
+_DEFAULT_TIMEOUT_S = 120.0
+_MAX_TIMEOUT_S = 600.0
+_MAX_OUTPUT_CHARS = 50_000
+
+
+_SPEC = ToolSpec(
+    component=ComponentSpec(
+        kind="tool",
+        name="Bash",
+        qualified_name="builtin.Bash",
+        description="Run a shell command. Returns stdout, stderr, and exit code.",
+        source=ComponentSource(source_type="builtin", scope="system"),
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "command": {"type": "string"},
+            "description": {"type": "string"},
+            "timeout_s": {"type": "number"},
+        },
+        "required": ["command"],
+    },
+    destructive=True,
+    open_world=True,
+    max_result_chars=_MAX_OUTPUT_CHARS,
+)
+
+
+class BashTool(Tool):
+    def spec(self) -> ToolSpec:
+        return _SPEC
+
+    async def validate(self, invocation: ToolInvocation) -> None:
+        if not isinstance(invocation.input.get("command"), str) or not invocation.input["command"].strip():
+            raise ValueError("Bash requires non-empty 'command'")
+
+    async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
+        return PermissionResult(decision="allow", reason="bash allowed in v1; gating delegated to caller")
+
+    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
+        return invocation
+
+    async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
+        command = invocation.input["command"]
+        requested = float(invocation.input.get("timeout_s") or _DEFAULT_TIMEOUT_S)
+        timeout = min(requested, _MAX_TIMEOUT_S)
+
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=context.cwd,
+        )
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return ToolResult(
+                ok=False, content=None,
+                error=f"timeout after {timeout}s",
+                failure_kind="timeout",
+                rendered=f"[Bash timeout] command exceeded {timeout}s",
+                exit_code=-1,
+            )
+
+        stdout = stdout_b.decode("utf-8", errors="replace")
+        stderr = stderr_b.decode("utf-8", errors="replace")
+        truncated = False
+        if len(stdout) > _MAX_OUTPUT_CHARS:
+            stdout = stdout[:_MAX_OUTPUT_CHARS] + "\n...[truncated]"
+            truncated = True
+        if len(stderr) > _MAX_OUTPUT_CHARS:
+            stderr = stderr[:_MAX_OUTPUT_CHARS] + "\n...[truncated]"
+            truncated = True
+
+        exit_code = proc.returncode if proc.returncode is not None else -1
+        rendered = _render_bash_result(stdout, stderr, exit_code, truncated)
+        return ToolResult(
+            ok=exit_code == 0,
+            content={"stdout": stdout, "stderr": stderr, "exit_code": exit_code},
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            truncated=truncated,
+            failure_kind=None if exit_code == 0 else "execution",
+            rendered=rendered,
+        )
+
+    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
+        return result
+
+    async def render_result(self, result: ToolResult) -> str:
+        return result.rendered or ""
+
+    async def cancel(self, call_id: str) -> None:
+        return None
+
+
+def _render_bash_result(stdout: str, stderr: str, exit_code: int, truncated: bool) -> str:
+    parts: list[str] = []
+    if stdout:
+        parts.append(stdout.rstrip("\n"))
+    if stderr:
+        parts.append(f"[stderr]\n{stderr.rstrip(chr(10))}")
+    if exit_code != 0:
+        parts.append(f"[exit {exit_code}]")
+    if truncated:
+        parts.append("[output truncated]")
+    return "\n".join(parts) if parts else f"[Bash ok] (no output, exit {exit_code})"

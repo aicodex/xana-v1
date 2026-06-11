@@ -37,7 +37,13 @@ from xana.skills.interfaces import SkillRegistry
 from xana.skills.registry import InMemorySkillRegistry
 from xana.state.in_memory import InMemoryStateRepository
 from xana.state.interfaces import StateRepository
+from xana.tools.builtin.bash import BashTool
+from xana.tools.builtin.edit import EditTool
+from xana.tools.builtin.glob_tool import GlobTool
+from xana.tools.builtin.grep_tool import GrepTool
 from xana.tools.builtin.memory_search import MemorySearchTool
+from xana.tools.builtin.read import ReadTool
+from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import ToolRegistry
 from xana.tools.registry import InMemoryToolRegistry
 
@@ -82,6 +88,12 @@ async def boot(
 
     tools = InMemoryToolRegistry()
     await tools.register(MemorySearchTool(engine))
+    await tools.register(ReadTool())
+    await tools.register(EditTool())
+    await tools.register(WriteTool())
+    await tools.register(GlobTool())
+    await tools.register(GrepTool())
+    await tools.register(BashTool())
 
     skills = InMemorySkillRegistry()
     await skills.register(IdentitySkill())
