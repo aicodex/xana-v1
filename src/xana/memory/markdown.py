@@ -14,6 +14,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from xana.memory.contracts import (
     InjectedBlock,
     MemoryLintResult,
@@ -553,37 +555,23 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
 
 def _parse_simple_yaml(lines: list[str]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    current_key: str | None = None
-    for raw in lines:
-        line = raw.rstrip()
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if line.startswith("  - ") and current_key:
-            out.setdefault(current_key, []).append(_parse_scalar(line[4:].strip()))
-            continue
-        if line.startswith("- ") and current_key:
-            out.setdefault(current_key, []).append(_parse_scalar(line[2:].strip()))
-            continue
-        if ":" in line:
-            key, value = line.split(":", 1)
-            key = key.strip()
-            value = value.strip()
-            current_key = key
-            if value == "":
-                out[key] = []
-            else:
-                out[key] = _parse_scalar(value)
-    return out
+    """Parse a markdown frontmatter block.
 
-
-def _parse_scalar(value: str) -> Any:
-    value = value.strip().strip('"').strip("'")
-    if value.lower() == "true":
-        return True
-    if value.lower() == "false":
-        return False
-    return value
+    PyYAML's safe_load handles arbitrary nesting, list/scalar disambiguation,
+    and quoting — the hand-rolled mini-parser this replaced flattened nested
+    keys into the top-level dict and then crashed when a list item appeared
+    under a key it had recorded as a scalar (e.g. yuxu's chat_agent AGENT.md
+    `contract:` block). For mem indexing we only need a best-effort dict;
+    parse failures or non-mapping roots degrade to an empty dict so the
+    surrounding markdown body still loads.
+    """
+    try:
+        parsed = yaml.safe_load("\n".join(lines))
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return parsed
 
 
 def _title_from_markdown(body: str) -> str | None:
