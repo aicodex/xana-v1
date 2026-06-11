@@ -148,11 +148,6 @@ class CliAdapter(Adapter):
         self.out.write(f"_{meta_line}_\n")
 
     def _collect_footer_meta(self, event: AgentEvent) -> list[tuple[str, str]]:
-        """Pull model/tokens/elapsed off the harness UsageSnapshot when present.
-
-        elapsed is computed from the adapter's per-turn start timestamp so the
-        figure reflects wall time the user actually waited (matches yuxu's
-        format_llm_stats_footer in services/gateway/reply_helpers.py:30-48)."""
         pairs: list[tuple[str, str]] = []
         usage = getattr(event.harness_event, "usage", None) if event.harness_event else None
         if usage is not None:
@@ -162,8 +157,17 @@ class CliAdapter(Adapter):
             tout = usage.exact_output_tokens
             if tin is not None or tout is not None:
                 pairs.append(("tokens", f"{tin or 0} in / {tout or 0} out"))
-        if self._turn_start_ts is not None and (pairs or usage is not None):
-            elapsed = max(0.0, time.monotonic() - self._turn_start_ts)
+        elif self.last_progress is not None:
+            tin = self.last_progress.get("tokens_in")
+            tout = self.last_progress.get("tokens_out")
+            if tin is not None or tout is not None:
+                pairs.append(("tokens", f"{tin or 0} in / {tout or 0} out"))
+        if pairs and self.last_progress is not None:
+            elapsed = float(self.last_progress.get("elapsed_s", 0.0))
+            pairs.append(("elapsed", f"{elapsed:.1f}s"))
+        elif self._turn_start_ts is not None and pairs:
+            import time as _t
+            elapsed = max(0.0, _t.monotonic() - self._turn_start_ts)
             pairs.append(("elapsed", f"{elapsed:.1f}s"))
         return pairs
 
