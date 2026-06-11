@@ -62,6 +62,7 @@ class CliAdapter(Adapter):
         self.turn_complete: asyncio.Event = asyncio.Event()
         self._status: str = "stopped"
         self._turn_start_ts: float | None = None
+        self._draft_seen_this_turn: bool = False
 
     async def start(self) -> None:
         self._status = "healthy"
@@ -89,19 +90,28 @@ class CliAdapter(Adapter):
     async def render(self, event: AgentEvent) -> RenderedMessage:
         if self._turn_start_ts is None:
             self._turn_start_ts = time.monotonic()
+            self._draft_seen_this_turn = False
         text = str(event.payload.get("text", ""))
         if event.kind == "draft":
             # Streaming chunk — write as-is, no trailing newline.
             if text:
                 self.out.write(text)
                 self.out.flush()
+            self._draft_seen_this_turn = True
         elif event.kind == "tool":
             self._render_tool_event(event, text)
         elif event.kind == "final":
             # Turn end — terminating newline, then a yuxu-style footer card
             # if telemetry is present. payload["text"] is the cumulative reply,
             # already shown via the draft stream — do NOT re-emit it.
-            self.out.write("\n")
+            # Exception: command results emit only a final event without drafts,
+            # so write the text if no drafts were seen this turn.
+            if not self._draft_seen_this_turn and text:
+                self.out.write(text)
+                if not text.endswith("\n"):
+                    self.out.write("\n")
+            else:
+                self.out.write("\n")
             self._render_footer_card(event)
             self.out.flush()
             self.turn_complete.set()

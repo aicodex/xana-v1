@@ -21,6 +21,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("text", nargs="*", help="message to send (positional)")
     parser.add_argument("--project", type=Path, default=None, help="project root (default: cwd)")
     parser.add_argument("--session", default="cli-session", help="session id")
+    parser.add_argument("--interactive", "-i", action="store_true",
+                        help="enter REPL mode (default when no positional text)")
     return parser.parse_args(argv)
 
 

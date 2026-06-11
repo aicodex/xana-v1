@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from xana.agent_adapter.commands import DefaultCommandRouter
 from xana.agent_adapter.gateway import DefaultAgentGateway
 from xana.agent_adapter.router import DefaultAgentRequestRouter
 from xana.agents.chat_agent import ChatAgent, build_chat_agent_spec
@@ -147,6 +148,15 @@ async def boot(
         agents={"chat": chat_agent},
         router=DefaultAgentRequestRouter(default_agent="chat"),
     )
+
+    command_router = DefaultCommandRouter(
+        session_config_store=session_config_store,
+        active_context_store=active_ctx,
+        gateway=gateway,
+        available_models=tuple(runtime_config.models.keys()) if hasattr(runtime_config, "models") else (model,),
+        available_search_providers=("bm25",),
+    )
+    await gateway.register_command_router(command_router)
 
     return BootResult(
         gateway=gateway,
