@@ -3,6 +3,7 @@
 Subcommands:
   setup    First-time install: system.json + sync + launchers + PATH.
   sync     Refresh ~/.xana/code/ + ~/.xana/mem/ from the xana source.
+  pair     Manage channel user pairing (list/approve/reject/revoke).
 
 xanac (chat client) is a separate entry point — this CLI is for machine
 administration, not interactive chat.
@@ -13,6 +14,7 @@ import argparse
 import sys
 from typing import TextIO
 
+from xana.cli.commands import pair as pair_cmd
 from xana.cli.commands import setup as setup_cmd
 from xana.cli.commands import sync as sync_cmd
 
@@ -38,6 +40,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serve_parser.add_argument("--project", type=__import__("pathlib").Path, default=None)
     serve_parser.set_defaults(func=_run_serve)
+
+    pair_parser = subparsers.add_parser(
+        "pair", help="manage channel user pairing (list/approve/reject/revoke)"
+    )
+    pair_cmd.add_arguments(pair_parser)
+    pair_parser.set_defaults(func=pair_cmd.run)
 
     return parser
 
