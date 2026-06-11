@@ -84,9 +84,10 @@ async def _run(argv: argparse.Namespace) -> int:
     print(f"[xana serve] running adapters: {', '.join(a.adapter_id for a in adapters)}")
     try:
         await asyncio.gather(*pumps)
-    except KeyboardInterrupt:
-        pass
     finally:
+        for pump in pumps:
+            pump.cancel()
+        await asyncio.gather(*pumps, return_exceptions=True)
         if webhook_runner is not None:
             await webhook_runner.cleanup()
         for adapter in adapters:
