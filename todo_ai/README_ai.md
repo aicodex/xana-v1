@@ -19,6 +19,7 @@ status: active
 
 ## 当前队列
 
+- [first_core_flow_v1_leftovers](first_core_flow_v1_leftovers.md) — 第一核心流 v1 已知遗留（token_estimate、provider fallback、CLI 重复输出等），并行接手前先扫
 - [doc_split_followups](doc_split_followups.md) — continue splitting design docs as implementation becomes concrete
 
 ## 文件命名
