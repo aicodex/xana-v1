@@ -3,8 +3,12 @@ name = "xana"
 version = "0.1.0"
 description = "Input/output-first agent runtime skeleton."
 requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2",
+]
 
 [project.scripts]
+xana = "xana.cli.xana:main"
 xanac = "xana.cli.xanac:main"
 
 [build-system]
@@ -13,6 +17,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"xana.config" = ["defaults/*.json"]
+"xana._templates" = ["xana_skeleton/**/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

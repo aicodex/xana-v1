@@ -1,0 +1,44 @@
+{
+  "models": [],
+  "default_model": {
+    "chat": null,
+    "agent": null
+  },
+  "limits": {},
+  "channels": {
+    "telegram": {
+      "bot_token": "",
+      "allowed_user_ids": []
+    },
+    "feishu": {
+      "app_id": "",
+      "app_secret_key": "",
+      "domain": "feishu"
+    }
+  },
+  "web_search": {
+    "brave_search_key": "",
+    "tavily_api_key": "",
+    "bing_search_key": "",
+    "searxng_url": ""
+  },
+  "mcp": {
+    "servers": []
+  },
+  "policy": {
+    "default_mode": "workspace_gated",
+    "egress_tools": ["web_browser"],
+    "secret_markers": [
+      "api_key",
+      "api-key",
+      "secret",
+      "password",
+      "passwd",
+      "token",
+      "private key",
+      "begin rsa",
+      "begin openssh"
+    ],
+    "exfil_payload_bytes": 50000
+  }
+}
