@@ -216,7 +216,12 @@ class DefaultHarness(Harness):
                     kind="tool_finished",
                     session_id=session_id,
                     run_id=run_id,
-                    payload={"text": rendered, "tool_name": tc["tool_name"], "ok": result.ok},
+                    payload={
+                        "text": rendered,
+                        "tool_name": tc["tool_name"],
+                        "input": dict(tc["input"]),
+                        "ok": result.ok,
+                    },
                 )
         else:
             yield HarnessEvent(
