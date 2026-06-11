@@ -15,10 +15,12 @@ class Throttle:
         self._last_ts: float | None = None
 
     async def wait(self) -> None:
+        # Claim the next slot before sleeping so concurrent waiters serialize
+        # instead of all reading the same stale timestamp and firing together.
         now = time.monotonic()
-        if self._last_ts is not None:
-            elapsed = now - self._last_ts
-            remaining = self.min_interval_s - elapsed
-            if remaining > 0:
-                await asyncio.sleep(remaining)
-        self._last_ts = time.monotonic()
+        if self._last_ts is None or now - self._last_ts >= self.min_interval_s:
+            self._last_ts = now
+            return
+        slot = self._last_ts + self.min_interval_s
+        self._last_ts = slot
+        await asyncio.sleep(slot - now)
