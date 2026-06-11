@@ -49,6 +49,8 @@ from xana.skills.interfaces import SkillRegistry
 from xana.skills.registry import InMemorySkillRegistry
 from xana.state.in_memory import InMemoryStateRepository
 from xana.state.interfaces import StateRepository
+from xana.session_config.file_store import FileSessionConfigStore
+from xana.session_config.interfaces import SessionConfigStore
 from xana.tools.builtin.bash import BashTool
 from xana.tools.builtin.edit import EditTool
 from xana.tools.builtin.glob_tool import GlobTool
@@ -78,6 +80,7 @@ class BootResult:
     skill_registry: SkillRegistry
     model_registry: ModelRegistry
     state_repository: StateRepository
+    session_config_store: SessionConfigStore
     provider: str
     model: str
 
@@ -122,6 +125,9 @@ async def boot(
 
     state = InMemoryStateRepository()
 
+    session_config_root = Path.home() / ".xana" / "sessions"
+    session_config_store: SessionConfigStore = FileSessionConfigStore(root=session_config_root)
+
     chat_agent = ChatAgent(
         spec=build_chat_agent_spec(),
         harness=DefaultHarness(),
@@ -154,6 +160,7 @@ async def boot(
         skill_registry=skills,
         model_registry=model_registry,
         state_repository=state,
+        session_config_store=session_config_store,
         provider=provider,
         model=model,
     )
