@@ -1,10 +1,11 @@
 """xana — top-level CLI dispatcher.
 
 Subcommands:
-  setup    Initialize ~/.xana/config/system.json (user-level, holds api keys).
+  setup    First-time install: system.json + sync + launchers + PATH.
+  sync     Refresh ~/.xana/code/ + ~/.xana/mem/ from the xana source.
 
-xanac (chat client) remains a separate entry point — this CLI is for
-machine administration, not interactive chat.
+xanac (chat client) is a separate entry point — this CLI is for machine
+administration, not interactive chat.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import sys
 from typing import TextIO
 
 from xana.cli.commands import setup as setup_cmd
+from xana.cli.commands import sync as sync_cmd
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -20,10 +22,16 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     setup_parser = subparsers.add_parser(
-        "setup", help="initialize ~/.xana/config/system.json"
+        "setup", help="initialize ~/.xana/ (config + code + mem + bin + PATH)"
     )
     setup_cmd.add_arguments(setup_parser)
     setup_parser.set_defaults(func=setup_cmd.run)
+
+    sync_parser = subparsers.add_parser(
+        "sync", help="refresh ~/.xana/code/ and ~/.xana/mem/ from the xana source"
+    )
+    sync_cmd.add_arguments(sync_parser)
+    sync_parser.set_defaults(func=sync_cmd.run)
 
     return parser
 
