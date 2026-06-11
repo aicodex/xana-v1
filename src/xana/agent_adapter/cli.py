@@ -60,12 +60,31 @@ class CliAdapter(Adapter):
 
     async def render(self, event: AgentEvent) -> RenderedMessage:
         text = str(event.payload.get("text", ""))
-        if text:
-            self.out.write(text)
-            if not text.endswith("\n"):
-                self.out.write("\n")
+        if event.kind == "draft":
+            # Streaming chunk — write as-is, no trailing newline.
+            if text:
+                self.out.write(text)
+                self.out.flush()
+        elif event.kind == "tool":
+            # Tool finished — render the block on its own line.
+            if text:
+                self.out.write(text)
+                if not text.endswith("\n"):
+                    self.out.write("\n")
+                self.out.flush()
+        elif event.kind == "final":
+            # Turn end — only emit a terminating newline so streamed deltas
+            # aren't repeated. payload["text"] is the cumulative reply, already
+            # shown via the draft stream.
+            self.out.write("\n")
             self.out.flush()
-        if event.kind in ("final", "error"):
+            self.turn_complete.set()
+        elif event.kind == "error":
+            if text:
+                self.out.write(text)
+                if not text.endswith("\n"):
+                    self.out.write("\n")
+                self.out.flush()
             self.turn_complete.set()
         return RenderedMessage(
             adapter_id=self.adapter_id,

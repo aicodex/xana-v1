@@ -66,7 +66,6 @@ async def boot(
     project_root: Path,
     model: str = "fake-model",
     provider: str = "fake",
-    scripted_reply: str = "Hello from xana.",
 ) -> BootResult:
     project_root = Path(project_root).resolve()
 
@@ -91,12 +90,7 @@ async def boot(
     await model_registry.register(
         provider,
         FakeModelClient(
-            ScriptedTurn(
-                text_deltas=(scripted_reply,),
-                tool_call=None,
-                usage_input_tokens=4,
-                usage_output_tokens=8,
-            )
+            ScriptedTurn(usage_input_tokens=4, usage_output_tokens=8),
         ),
     )
 
