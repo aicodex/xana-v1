@@ -2,6 +2,13 @@
 
 Returns a BootResult holding the AgentGateway and all the registries
 under it, so the CLI and tests can introspect.
+
+Model selection happens here: the DefaultConfigProvider reads
+~/.xana/config/system.json (or $XANA_HOME), picks the chat default model,
+and we register the matching client (AnthropicDeepSeekClient for deepseek
+entries, FakeModelClient as the fallback when no api_key is configured).
+ChatAgent's provider/model are pinned to whatever was actually registered
+so config_snapshot["provider"] resolves cleanly inside the harness.
 """
 from __future__ import annotations
 
@@ -12,9 +19,14 @@ from xana.agent_adapter.gateway import DefaultAgentGateway
 from xana.agent_adapter.router import DefaultAgentRequestRouter
 from xana.agents.chat_agent import ChatAgent, build_chat_agent_spec
 from xana.agents.interfaces import Agent
+from xana.config.loader import DefaultConfigProvider
 from xana.harness_sdk.default import DefaultHarness
 from xana.llm_driver.fake_client import FakeModelClient, InMemoryModelRegistry, ScriptedTurn
-from xana.llm_driver.interfaces import ModelRegistry
+from xana.llm_driver.interfaces import ModelClient, ModelRegistry
+from xana.llm_driver.providers.anthropic_deepseek import (
+    AnthropicDeepSeekClient,
+    AnthropicDeepSeekConfig,
+)
 from xana.memory.active_context import (
     DefaultMemoryInjectorRegistry,
     InMemoryActiveContextStore,
@@ -48,8 +60,9 @@ from xana.tools.interfaces import ToolRegistry
 from xana.tools.registry import InMemoryToolRegistry
 
 
-_INJECTOR_TOP_K = 3  # narrower than SearchMemoryInjector default (5) — single README_ai.md root
-_INJECTOR_BUDGET_CHARS = 2000  # half of SearchMemoryInjector default to keep prompt small for fake provider
+_INJECTOR_TOP_K = 3
+_INJECTOR_BUDGET_CHARS = 2000
+_FAKE_PROVIDER = "fake"
 
 
 @dataclass
@@ -65,13 +78,14 @@ class BootResult:
     skill_registry: SkillRegistry
     model_registry: ModelRegistry
     state_repository: StateRepository
+    provider: str
+    model: str
 
 
 async def boot(
     *,
     project_root: Path,
-    model: str = "fake-model",
-    provider: str = "fake",
+    config_provider: DefaultConfigProvider | None = None,
 ) -> BootResult:
     project_root = Path(project_root).resolve()
 
@@ -98,13 +112,13 @@ async def boot(
     skills = InMemorySkillRegistry()
     await skills.register(IdentitySkill())
 
+    cp = config_provider or DefaultConfigProvider()
+    runtime_config = await cp.load(project_root)
+    provider = runtime_config.default_model.provider
+    model = runtime_config.default_model.model
+    client = _build_model_client(provider, model, cp)
     model_registry = InMemoryModelRegistry()
-    await model_registry.register(
-        provider,
-        FakeModelClient(
-            ScriptedTurn(usage_input_tokens=4, usage_output_tokens=8),
-        ),
-    )
+    await model_registry.register(provider, client)
 
     state = InMemoryStateRepository()
 
@@ -140,4 +154,35 @@ async def boot(
         skill_registry=skills,
         model_registry=model_registry,
         state_repository=state,
+        provider=provider,
+        model=model,
     )
+
+
+def _build_model_client(provider: str, model: str, cp: DefaultConfigProvider) -> ModelClient:
+    """Pick a concrete ModelClient based on the resolved provider string.
+
+    Treats any provider starting with "deepseek" as the DSv4 Anthropic-dialect
+    client. The model entry's api_key + optional base_url are pulled from the
+    SystemConfig that DefaultConfigProvider cached during load(). Missing
+    entry or empty api_key falls back to FakeModelClient so a fresh setup
+    (empty models[]) still boots.
+    """
+    if provider == _FAKE_PROVIDER:
+        return _fake()
+    if provider.startswith("deepseek"):
+        system = cp.load_system_config()
+        entry = system.model(model)
+        if entry is None or not entry.api_key:
+            return _fake()
+        config = (
+            AnthropicDeepSeekConfig(api_key=entry.api_key, base_url=entry.base_url)
+            if entry.base_url
+            else AnthropicDeepSeekConfig(api_key=entry.api_key)
+        )
+        return AnthropicDeepSeekClient(config)
+    return _fake()
+
+
+def _fake() -> FakeModelClient:
+    return FakeModelClient(ScriptedTurn(usage_input_tokens=4, usage_output_tokens=8))
