@@ -60,6 +60,9 @@ class DefaultCommandRouter(CommandRouter):
             "/streaming":       DefaultCommandRouter._cmd_streaming,
             "/thinking":        DefaultCommandRouter._cmd_thinking,
             "/search_provider": DefaultCommandRouter._cmd_search_provider,
+            "/cancel":          DefaultCommandRouter._cmd_cancel,
+            "/attach":          DefaultCommandRouter._cmd_attach,
+            "/project":         DefaultCommandRouter._cmd_project,
         }
 
     async def list_commands(self) -> tuple[CommandSpec, ...]:
@@ -166,3 +169,38 @@ class DefaultCommandRouter(CommandRouter):
             return CommandResult(ok=False, message=f"未知搜索引擎 {target}")
         new = await self._persist_with(inbound.session_id, search_provider=target)
         return CommandResult(ok=True, message=f"搜索引擎切换为 {new.search_provider}")
+
+    async def _cmd_cancel(self, inbound: InboundMessage, args: str) -> CommandResult:
+        if self.gateway is None:
+            return CommandResult(ok=False, message="gateway 未注入")
+        await self.gateway.cancel(inbound.session_id, None)
+        return CommandResult(ok=True, message="[cancel] 已请求取消当前 turn")
+
+    async def _cmd_attach(self, inbound: InboundMessage, args: str) -> CommandResult:
+        if self.session_config_store is None:
+            return CommandResult(ok=False, message="session_config_store 未配置")
+        current = await self.session_config_store.get(inbound.session_id)
+        next_attached = not bool(current.metadata.get("attached"))
+        from xana.session_config.contracts import SessionConfig
+        new_metadata = dict(current.metadata)
+        new_metadata["attached"] = next_attached
+        new = SessionConfig(
+            session_id=current.session_id, model=current.model, effort=current.effort,
+            streaming=current.streaming, thinking=current.thinking,
+            search_provider=current.search_provider, project_root=current.project_root,
+            metadata=new_metadata,
+        )
+        await self.session_config_store.save(new)
+        return CommandResult(ok=True, message=f"attached={next_attached}")
+
+    async def _cmd_project(self, inbound: InboundMessage, args: str) -> CommandResult:
+        target = args.strip()
+        if not target:
+            if self.session_config_store is None:
+                return CommandResult(ok=True, message="未配置 project_root")
+            cur = await self.session_config_store.get(inbound.session_id)
+            return CommandResult(ok=True, message=f"当前 project_root: {cur.project_root or '(未设置)'}")
+        if self.session_config_store is None:
+            return CommandResult(ok=False, message="session_config_store 未配置")
+        new = await self._persist_with(inbound.session_id, project_root=target)
+        return CommandResult(ok=True, message=f"project_root 切换为 {new.project_root}")
