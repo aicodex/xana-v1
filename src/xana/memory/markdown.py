@@ -46,6 +46,7 @@ _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 _WIKI_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_\-/\.]+")
+_FTS5_PUNCT_RE = re.compile(r"[^\w\s]", flags=re.UNICODE)
 
 
 class MarkdownMemoryTree(MemoryTree):
@@ -429,7 +430,11 @@ class SQLiteMemorySearchEngine(MemorySearchEngine):
                 return False
 
     def _search_fts(self, query: SearchQuery) -> list[SearchHit]:
-        q = " OR ".join(_TOKEN_RE.findall(query.text))
+        # FTS5 bareword grammar errors on punctuation (`/`, `-`, `.`, `~`, …):
+        # collapse them to spaces before tokenizing so a query like
+        # `~/.xana/code` becomes `xana OR code`, not a parser-error.
+        cleaned = _FTS5_PUNCT_RE.sub(" ", query.text)
+        q = " OR ".join(_TOKEN_RE.findall(cleaned))
         if not q:
             return []
         rows = self.conn.execute(
