@@ -25,6 +25,7 @@ from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest
 from xana.harness_sdk.interfaces import Harness
+from xana.harness_sdk.usage import DefaultUsageAccumulator
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
 from xana.memory.contracts import HistoryRow, MemoryMessage
 from xana.policy.contracts import PermissionContext, PermissionResult
@@ -42,6 +43,7 @@ _MAX_TURNS = 25  # cc's default; yuxu uses max_iterations=200 but caps different
 class DefaultHarness(Harness):
     def __init__(self) -> None:
         self.last_assembled_messages: tuple[ModelMessage, ...] | None = None
+        self.usage_accumulator = DefaultUsageAccumulator()
 
     def invoke(self, request: HarnessRequest, context: HarnessContext) -> AsyncIterator[HarnessEvent]:
         return self._invoke(request, context)
@@ -151,12 +153,8 @@ class DefaultHarness(Harness):
                             "input": event.payload.get("input", {}) or {},
                             "call_id": event.payload.get("call_id", _ANON_CALL_ID),
                         })
-                    elif event.kind == "usage" and event.usage is not None:
-                        usage = replace(
-                            usage,
-                            exact_input_tokens=event.usage.input_tokens,
-                            exact_output_tokens=event.usage.output_tokens,
-                        )
+                    elif event.kind == "usage":
+                        usage = await self.usage_accumulator.apply_model_event(usage, event)
                     elif event.kind == "done":
                         break
                     elif event.kind == "error" and event.error is not None:
