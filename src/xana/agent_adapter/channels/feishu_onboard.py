@@ -20,7 +20,20 @@ _ACCOUNTS_BASE = {"feishu": "https://accounts.feishu.cn", "lark": "https://accou
 _OPEN_BASE = {"feishu": "https://open.feishu.cn", "lark": "https://open.larksuite.com"}
 
 
-def _default_post(url: str, body: dict) -> dict:
+def _default_post_form(url: str, body: dict) -> dict:
+    """POST form-encoded; tolerates 4xx with JSON body (e.g. authorization_pending)."""
+    import httpx
+    resp = httpx.post(url, data=body, timeout=15.0)
+    if resp.is_error:
+        try:
+            return resp.json()
+        except Exception:
+            resp.raise_for_status()
+    return resp.json()
+
+
+def _default_post_json(url: str, body: dict) -> dict:
+    """POST JSON; raises on any HTTP error."""
     import httpx
     resp = httpx.post(url, json=body, timeout=15.0)
     resp.raise_for_status()
@@ -34,7 +47,7 @@ def _default_get(url: str, headers: dict) -> dict:
     return resp.json()
 
 
-def begin_registration(*, domain: str = "feishu", post_json: PostJson = _default_post) -> dict:
+def begin_registration(*, domain: str = "feishu", post_json: PostJson = _default_post_form) -> dict:
     """init + begin; returns {device_code, qr_url, user_code, interval, expire_in}."""
     url = f"{_ACCOUNTS_BASE[domain]}/oauth/v1/app/registration"
     init = post_json(url, {"action": "init"})
@@ -62,19 +75,23 @@ def poll_registration(
     interval: int,
     expire_in: int,
     domain: str = "feishu",
-    post_json: PostJson = _default_post,
+    post_json: PostJson = _default_post_form,
 ) -> Optional[dict]:
     """Poll until scanned. Returns {app_id, app_secret, domain, open_id} or None."""
-    url = f"{_ACCOUNTS_BASE[domain]}/oauth/v1/app/registration"
+    current_domain = domain
     deadline = time.monotonic() + expire_in
     while time.monotonic() <= deadline:
+        url = f"{_ACCOUNTS_BASE[current_domain]}/oauth/v1/app/registration"
         res = post_json(url, {"action": "poll", "device_code": device_code, "tp": "ob_app"})
         user_info = res.get("user_info") or {}
+        # Mid-poll domain switch: Lark tenant detected
+        if user_info.get("tenant_brand") == "lark" and current_domain != "lark":
+            current_domain = "lark"
         if res.get("client_id") and res.get("client_secret"):
             return {
                 "app_id": res["client_id"],
                 "app_secret": res["client_secret"],
-                "domain": "lark" if user_info.get("tenant_brand") == "lark" else domain,
+                "domain": current_domain,
                 "open_id": user_info.get("open_id"),
             }
         if res.get("error") in ("access_denied", "expired_token"):
@@ -88,7 +105,7 @@ def probe_bot(
     app_secret: str,
     domain: str,
     *,
-    post_json: PostJson = _default_post,
+    post_json: PostJson = _default_post_json,
     get_json: GetJson = _default_get,
 ) -> dict:
     """Fetch bot display info; raises RuntimeError on logical error codes."""
@@ -105,7 +122,7 @@ def probe_bot(
     )
     if info.get("code", 0) != 0:
         raise RuntimeError(f"feishu bot info error: {info}")
-    bot = info.get("bot") or {}
+    bot = info.get("bot") or (info.get("data") or {}).get("bot") or {}
     return {"bot_name": bot.get("bot_name"), "bot_open_id": bot.get("open_id")}
 
 
@@ -126,11 +143,18 @@ def register_feishu(
     *,
     initial_domain: str = "feishu",
     timeout_seconds: int = 600,
-    post_json: PostJson = _default_post,
-    get_json: GetJson = _default_get,
+    post_form: Optional[PostJson] = None,
+    post_json: Optional[PostJson] = None,
+    get_json: Optional[GetJson] = None,
 ) -> Optional[dict]:
     """Full flow. Returns {app_id, app_secret, domain, open_id, bot_name, bot_open_id} or None."""
-    begin = begin_registration(domain=initial_domain, post_json=post_json)
+    # post_form used for registration (form-encoded, 4xx-tolerant)
+    # Falls back to post_json for backward compat with existing tests
+    _post_form = post_form or post_json or _default_post_form
+    _post_json = post_json or _default_post_json
+    _get_json = get_json or _default_get
+
+    begin = begin_registration(domain=initial_domain, post_json=_post_form)
     if render_qr(begin["qr_url"]):
         print(f"扫描上方二维码,或打开:\n{begin['qr_url']}")
     else:
@@ -140,10 +164,10 @@ def register_feishu(
         interval=begin["interval"],
         expire_in=min(begin["expire_in"], timeout_seconds),
         domain=initial_domain,
-        post_json=post_json,
+        post_json=_post_form,
     )
     if result is None:
         return None
     result.update(probe_bot(result["app_id"], result["app_secret"], result["domain"],
-                            post_json=post_json, get_json=get_json))
+                            post_json=_post_json, get_json=_get_json))
     return result
