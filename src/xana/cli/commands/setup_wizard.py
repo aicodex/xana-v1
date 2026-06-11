@@ -127,6 +127,9 @@ def _do_feishu(
     if not creds:
         print("error: 飞书扫码注册失败或超时。", file=out)
         return 1, False
+    if not creds.get("app_id") or not creds.get("app_secret"):
+        print("error: 飞书注册返回的凭证不完整。", file=out)
+        return 1, False
     channels = dict(data.get("channels") or {})
     fs = dict(channels.get("feishu") or {})
     fs.update({
