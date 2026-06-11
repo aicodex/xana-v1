@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Callable, Awaitable
 
 from aiohttp import web
@@ -80,6 +81,7 @@ class _HttpxFeishuSender:
     def __init__(self, config: FeishuConfig) -> None:
         self._config = config
         self._token: str | None = None
+        self._token_expires_at: float = 0.0
         self._lock: asyncio.Lock = asyncio.Lock()
         # Lazy import httpx to avoid hard dependency in tests that mock the sender
         import httpx
@@ -87,7 +89,8 @@ class _HttpxFeishuSender:
 
     async def _ensure_token(self) -> str:
         async with self._lock:
-            if self._token is not None:
+            # Refresh if no token or within 60s of expiry
+            if self._token is not None and time.monotonic() < self._token_expires_at - 60:
                 return self._token
             resp = await self._client.post(
                 "/open-apis/auth/v3/tenant_access_token/internal",
@@ -98,7 +101,12 @@ class _HttpxFeishuSender:
             )
             resp.raise_for_status()
             data = resp.json()
+            if data.get("code", 0) != 0:
+                raise RuntimeError(
+                    f"Feishu token error {data.get('code')}: {data.get('msg')}"
+                )
             self._token = str(data["tenant_access_token"])
+            self._token_expires_at = time.monotonic() + int(data.get("expire", 7200))
             return self._token
 
     async def send_card(self, *, receive_id: str, card: dict) -> str:
@@ -115,6 +123,10 @@ class _HttpxFeishuSender:
         )
         resp.raise_for_status()
         data = resp.json()
+        if data.get("code", 0) != 0:
+            raise RuntimeError(
+                f"Feishu send_card error {data.get('code')}: {data.get('msg')}"
+            )
         return str(data["data"]["message_id"])
 
     async def patch_card(self, *, message_id: str, card: dict) -> None:
@@ -125,6 +137,11 @@ class _HttpxFeishuSender:
             json={"content": json.dumps(card)},
         )
         resp.raise_for_status()
+        data = resp.json()
+        if data.get("code", 0) != 0:
+            raise RuntimeError(
+                f"Feishu patch_card error {data.get('code')}: {data.get('msg')}"
+            )
 
 
 def build_real_sender(config: FeishuConfig) -> _HttpxFeishuSender:

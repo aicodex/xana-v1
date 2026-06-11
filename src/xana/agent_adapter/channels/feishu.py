@@ -139,8 +139,9 @@ class FeishuAdapter(Adapter):
         return self._receive_gen()
 
     async def _receive_gen(self) -> AsyncGenerator[InboundMessage, None]:
-        msg = await self._inbound.get()
-        yield msg
+        while True:
+            msg = await self._inbound.get()
+            yield msg
 
     # ------------------------------------------------------------------
     # Event ingestion
@@ -192,7 +193,9 @@ class FeishuAdapter(Adapter):
             await self._patch_or_send(buf, event.session_id, finalize=False, footer_meta=[])
         elif kind == "final":
             if text:
-                buf.cumulative_text = text  # final carries cumulative; use it
+                # final payload["text"] is the full cumulative text joined by "\n"
+                # (set by harness_sdk/default.py final_text = "\n".join(cumulative_text))
+                buf.cumulative_text = text
             footer_meta = self._collect_footer_meta(event)
             await self._patch_or_send(buf, event.session_id, finalize=True, footer_meta=footer_meta)
         elif kind == "error":
