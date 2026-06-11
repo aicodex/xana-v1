@@ -44,15 +44,36 @@ class DefaultAgentGateway(AgentGateway):
         return self._submit(inbound)
 
     async def _submit(self, inbound: InboundMessage) -> AsyncGenerator[RenderedMessage, None]:
+        adapter = self.adapters.get(inbound.adapter_id)
+        if adapter is None:
+            yield RenderedMessage(
+                adapter_id=inbound.adapter_id, session_id=inbound.session_id,
+                text=f"[gateway] unknown adapter={inbound.adapter_id!r}",
+                metadata={"event_kind": "error"},
+            )
+            return
+
+        # Slash-command short-circuit: ask the command_router first. If it intercepts
+        # (ok=True or ok=False with pass_through=False), render the result and return.
+        if self.command_router is not None:
+            cmd_result = await self.command_router.route_command(inbound)
+            if cmd_result.ok or not cmd_result.payload.get("pass_through", False):
+                event = AgentEvent(
+                    kind="final" if cmd_result.ok else "error",
+                    session_id=inbound.session_id,
+                    payload={"text": cmd_result.message, **cmd_result.payload},
+                )
+                rendered = await adapter.render(event)
+                yield self._attach_event_kind(rendered, event)
+                return
+
         request = await self.router.route(inbound)
         target = request.target_agent or ""
         agent = self.agents.get(target)
-        adapter = self.adapters.get(inbound.adapter_id)
-        if agent is None or adapter is None:
+        if agent is None:
             yield RenderedMessage(
-                adapter_id=inbound.adapter_id,
-                session_id=inbound.session_id,
-                text=f"[gateway] unknown agent={target!r} or adapter={inbound.adapter_id!r}",
+                adapter_id=inbound.adapter_id, session_id=inbound.session_id,
+                text=f"[gateway] unknown agent={target!r}",
                 metadata={"event_kind": "error"},
             )
             return
