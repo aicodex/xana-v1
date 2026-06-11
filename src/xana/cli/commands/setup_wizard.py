@@ -154,7 +154,11 @@ def _do_telegram(data: dict, *, ask: AskFn, out: TextIO) -> tuple[int, bool]:
         print("error: bot token 形如 '123456:ABC-...'。", file=out)
         return 1, False
     allowed_raw = ask("  允许的 Telegram user_id (csv, 可选; 留空走配对审批): ").strip()
-    allowed = [int(x) for x in allowed_raw.split(",") if x.strip()] if allowed_raw else []
+    try:
+        allowed = [int(x) for x in allowed_raw.split(",") if x.strip()] if allowed_raw else []
+    except ValueError:
+        print("error: allowed_user_ids 必须是逗号分隔的整数。", file=out)
+        return 1, False
     channels = dict(data.get("channels") or {})
     tg = dict(channels.get("telegram") or {})
     tg["bot_token"] = token
