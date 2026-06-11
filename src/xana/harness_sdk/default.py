@@ -18,6 +18,7 @@ for durable log, RunStore (via StateRepository) for run metadata.
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from typing import AsyncGenerator, AsyncIterator
 
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest
@@ -81,7 +82,11 @@ class DefaultHarness(Harness):
         skill_blocks: list[str] = []
         if context.skill_registry is not None:
             activation = SkillActivation(
-                kind="model", session_id=session_id, agent_name=agent_name, run_id=run_id
+                kind="model",
+                session_id=session_id,
+                agent_name=agent_name,
+                run_id=run_id,
+                cwd=Path(context.cwd) if context.cwd else None,
             )
             skills = await context.skill_registry.discover(activation)
             for skill in skills:
