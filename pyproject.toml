@@ -5,6 +5,7 @@ description = "Input/output-first agent runtime skeleton."
 requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2",
+    "httpx>=0.28",
 ]
 
 [project.scripts]
