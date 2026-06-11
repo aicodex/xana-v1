@@ -31,7 +31,11 @@ _LAUNCHER_COMMANDS = ("xana", "xanac")
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    return None
+    parser.add_argument(
+        "--no-wizard",
+        action="store_true",
+        help="skip the interactive model/channel wizard",
+    )
 
 
 def run(args: argparse.Namespace, *, out: TextIO) -> int:
@@ -61,6 +65,11 @@ def run(args: argparse.Namespace, *, out: TextIO) -> int:
         print(f"[xana setup] PATH appended to {rc} — run: source {rc}", file=out)
     else:
         print(f"[xana setup] PATH already configured in {rc}", file=out)
+
+    if not getattr(args, "no_wizard", False) and sys.stdin.isatty():
+        from xana.cli.commands.setup_wizard import run_wizard
+        print(file=out)
+        return run_wizard(ask=input, out=out)
     return 0
 
 
