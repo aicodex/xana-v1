@@ -156,6 +156,8 @@ class FeishuAdapter(Adapter):
         if parsed is None:
             return
         sender_id = parsed.sender_open_id or ""
+        if self._pairing is not None and not sender_id:
+            return
         if self._pairing is not None and not self._pairing.is_allowed("feishu", sender_id):
             newly_pending = self._pairing.add_pending(
                 "feishu", sender_id, first_message=parsed.text, chat_id=parsed.chat_id

@@ -167,6 +167,8 @@ class TelegramAdapter(Adapter):
         message_id = msg.get("message_id")
 
         user_id = str(user_id_int) if user_id_int is not None else ""
+        if self._pairing is not None and not user_id:
+            return
         if self._pairing is not None and not self._pairing.is_allowed("telegram", user_id):
             newly_pending = self._pairing.add_pending(
                 "telegram", user_id, first_message=text, chat_id=chat_id
