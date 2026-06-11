@@ -1,4 +1,4 @@
-"""CliAdapter: stdin/stdout adapter for yuxuc.
+"""CliAdapter: stdin/stdout adapter for xanac.
 
 Pattern: inbound messages are queued via submit(); each call to receive()
 yields exactly one queued message. render() writes the event payload to

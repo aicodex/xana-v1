@@ -1,4 +1,4 @@
-"""yuxuc: xana's CLI client.
+"""xanac: xana's CLI client.
 
 Boots the runtime in-process, registers a CliAdapter, sends the user's
 message through the AgentGateway, prints streamed events to stdout,
@@ -17,7 +17,7 @@ from xana.runtime.boot import boot
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="yuxuc", description="xana CLI client")
+    parser = argparse.ArgumentParser(prog="xanac", description="xana CLI client")
     parser.add_argument("text", nargs="*", help="message to send (positional)")
     parser.add_argument("--project", type=Path, default=None, help="project root (default: cwd)")
     parser.add_argument("--session", default="cli-session", help="session id")
@@ -33,7 +33,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     text = " ".join(args.text).strip()
     if not text:
-        print("[yuxuc] (empty input — pass text positionally)", file=sys.stderr)
+        print("[xanac] (empty input — pass text positionally)", file=sys.stderr)
         return 2
 
     inbound = InboundMessage(adapter_id="cli", session_id=args.session, text=text)

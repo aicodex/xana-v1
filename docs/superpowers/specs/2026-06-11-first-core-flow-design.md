@@ -11,7 +11,7 @@ status: approved
 Land the first end-to-end vertical slice of xana:
 
 ```
-yuxuc (CLI) → AgentGateway → ChatAgent → Harness → {Tool, Skill} ← Memory
+xanac (CLI) → AgentGateway → ChatAgent → Harness → {Tool, Skill} ← Memory
 ```
 
 Every link must implement the abstract interfaces in `src/xana/*/interfaces.py` as-is. No interface changes. This slice is the reference that future parallel work (more tools, more skills, real LLM driver, more adapters) will plug into.
@@ -43,7 +43,7 @@ All interfaces in `src/xana/*/interfaces.py` are taken as fixed. Implementations
 
 ### Message flow (per turn)
 
-1. User types `yuxuc "hello"` (or runs interactive REPL).
+1. User types `xanac "hello"` (or runs interactive REPL).
 2. `CliAdapter.receive()` async-yields one `InboundMessage`.
 3. `DefaultAgentGateway.submit(inbound)` routes via `DefaultAgentRequestRouter` to `AgentRequest(target_agent="chat")`.
 4. `ChatAgent.send(request)` calls its mapper → `(HarnessRequest, HarnessContext)`. Context carries the shared registries/stores (not freshly minted per turn — wired once at boot, mapper passes the references through).
@@ -65,10 +65,10 @@ All interfaces in `src/xana/*/interfaces.py` are taken as fixed. Implementations
 - `DefaultHarness` calls `collect()` and places blocks per their `placement` field.
 - The `memory_search` Tool also calls the same `MemorySearchEngine`, so model-side L2 query and prompt-side L1 injection share one substrate.
 
-### CLI wiring (`yuxuc`)
+### CLI wiring (`xanac`)
 
-- Console script `yuxuc` → `xana.cli.yuxuc:main`.
-- `argparse`: `yuxuc TEXT...` (one-shot) or `yuxuc` (REPL).
+- Console script `xanac` → `xana.cli.xanac:main`.
+- `argparse`: `xanac TEXT...` (one-shot) or `xanac` (REPL).
 - Flags: `--project DIR` (default cwd), `--session ID`.
 - `runtime.boot.boot(project_root)` returns a wired `AgentGateway` plus references to underlying stores/registries (so tests can introspect).
 - Adapter writes deltas inline to stdout; on final, prints a newline and sets the turn-complete event.
@@ -104,9 +104,9 @@ src/xana/
     boot.py           # boot(project_root) -> BootResult
   cli/
     __init__.py
-    yuxuc.py          # main() entry point
+    xanac.py          # main() entry point
 tests/
-  test_yuxuc_e2e.py   # subprocess CLI smoke
+  test_xanac_e2e.py   # subprocess CLI smoke
   test_default_harness.py # DefaultHarness against the test_fake_pipeline_flow contract
 ```
 
@@ -128,13 +128,13 @@ Each new file ships with a clear surface so future parallel work can swap in:
 ## Memory mount
 
 `README_ai.md` is unchanged in structure but gains:
-- A "Runtime entry" pointer to `cli/yuxuc.py`.
+- A "Runtime entry" pointer to `cli/xanac.py`.
 - A "First core flow" status note under "项目入口".
 
 ## Acceptance criteria
 
 1. `pytest tests/` green, including the existing `test_fake_pipeline_flow.py`, `test_interfaces_are_abstract.py`, etc.
 2. New `test_default_harness.py` exercises `DefaultHarness` end-to-end with the same assertions shape as the canonical test.
-3. New `test_yuxuc_e2e.py` shells out to `yuxuc "hello"` and asserts stdout contains the expected `harness-final:` envelope.
+3. New `test_xanac_e2e.py` shells out to `xanac "hello"` and asserts stdout contains the expected `harness-final:` envelope.
 4. `MemoryInjectorRegistry.collect()` is exercised during a real turn (verified via an assertion that an injected block from `README_ai.md` made it into the model's system prompt).
 5. `git init` done, remote `git@github.com:aicodex/xana.git` set, two local commits, no push.

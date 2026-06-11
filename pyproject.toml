@@ -5,7 +5,7 @@ description = "Input/output-first agent runtime skeleton."
 requires-python = ">=3.10"
 
 [project.scripts]
-yuxuc = "xana.cli.yuxuc:main"
+xanac = "xana.cli.xanac:main"
 
 [build-system]
 requires = ["setuptools>=61"]

@@ -12,7 +12,7 @@ status: active
 
 ## 背景
 
-第一核心流 (`yuxuc → AgentGateway → ChatAgent → DefaultHarness → {Tool, Skill, Memory}`) 已经落地（125 个测试绿）。下面这些是 v1 显式接受的简化或测试态遗留，并行做 skill/tool/真 LLM 之前需要扫一遍，避免每个接手者各踩一次。
+第一核心流 (`xanac → AgentGateway → ChatAgent → DefaultHarness → {Tool, Skill, Memory}`) 已经落地（125 个测试绿）。下面这些是 v1 显式接受的简化或测试态遗留，并行做 skill/tool/真 LLM 之前需要扫一遍，避免每个接手者各踩一次。
 
 ## 需要做什么
 
@@ -47,7 +47,7 @@ status: active
 
 - [ ] **`runtime/boot.py` 里 `scripted_reply` 是 boot kwarg**。真 provider 接入后这个参数就没意义了，需要拆掉或挪到 `boot(provider="fake", fake_options={...})` 形式。先记着，接 anthropic 那次顺手拆。
 
-- [ ] **`yuxuc` 输出会重复**：`model_delta` 事件 (mapped 成 `draft`) 被 `CliAdapter.render` 打印一次，`final` 事件携带累加文本又打印一次。
+- [ ] **`xanac` 输出会重复**：`model_delta` 事件 (mapped 成 `draft`) 被 `CliAdapter.render` 打印一次，`final` 事件携带累加文本又打印一次。
   - 修复方向：`CliAdapter` 看到 `event_kind == "draft"` 时直接写 delta（不换行、不 flush 句末），收到 `final` 时只打换行不重打文本。
   - 或者 `DefaultAgentEventMapper` 把 `final` 的 payload `text` 去掉，让 adapter 只靠 deltas。
   - 现状：125 个测试不在乎这个；用户体验不行但不阻塞并行。
@@ -82,6 +82,6 @@ status: active
 ## 收工
 
 - [ ] 跑全量 `python -m pytest tests/`
-- [ ] 跑 yuxuc 烟测 `PYTHONPATH=src python -m xana.cli.yuxuc "hello"`
+- [ ] 跑 xanac 烟测 `PYTHONPATH=src python -m xana.cli.xanac "hello"`
 - [ ] 把已完成项从本文件里删掉；全部清空时把这个 TODO 文件归档
 - [ ] 若改动影响 architecture，先更新 `doc_ai` 当前真相
