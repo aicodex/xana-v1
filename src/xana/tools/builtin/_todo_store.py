@@ -30,7 +30,7 @@ class TodoStore:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _path(self, session_id: str) -> Path:
-        if not session_id or "/" in session_id or "\\" in session_id or ".." in session_id.split("/"):
+        if not session_id or "/" in session_id or "\\" in session_id or session_id in (".", ".."):
             raise ValueError(f"unsafe session_id: {session_id!r}")
         return self.root / f"{session_id}.todos.json"
 
@@ -43,7 +43,7 @@ class TodoStore:
 
     def save(self, session_id: str, items: tuple[TodoItem, ...]) -> None:
         path = self._path(session_id)
-        tmp = path.with_suffix(".todos.json.tmp")
+        tmp = path.parent / (path.name + ".tmp")
         payload = [dataclasses.asdict(i) for i in items]
         tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, path)

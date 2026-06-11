@@ -41,6 +41,7 @@ _SPEC = ToolSpec(
         },
         "required": ["todos"],
     },
+    destructive=True,
 )
 
 
