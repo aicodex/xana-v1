@@ -19,11 +19,12 @@ for durable log, RunStore (via StateRepository) for run metadata.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterator
 
-from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest
+from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest, ProgressEvent
 from xana.harness_sdk.interfaces import Harness
 from xana.harness_sdk.usage import DefaultUsageAccumulator
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
@@ -118,6 +119,7 @@ class DefaultHarness(Harness):
 
         usage = UsageSnapshot(model=context.model, provider=provider)
         cumulative_text: list[str] = []
+        turn_start = time.monotonic()
 
         for turn_index in range(_MAX_TURNS):
             if context.abort.aborted:
@@ -155,6 +157,17 @@ class DefaultHarness(Harness):
                         })
                     elif event.kind == "usage":
                         usage = await self.usage_accumulator.apply_model_event(usage, event)
+                        if context.progress_sink is not None:
+                            await context.progress_sink.report(ProgressEvent(
+                                session_id=session_id, run_id=run_id,
+                                message="usage_progress",
+                                payload={
+                                    "kind": "usage_progress",
+                                    "tokens_in": usage.exact_input_tokens or 0,
+                                    "tokens_out": usage.exact_output_tokens or 0,
+                                    "elapsed_s": time.monotonic() - turn_start,
+                                },
+                            ))
                     elif event.kind == "done":
                         break
                     elif event.kind == "error" and event.error is not None:
