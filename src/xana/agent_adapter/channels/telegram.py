@@ -139,10 +139,10 @@ class TelegramAdapter(Adapter):
                 await asyncio.sleep(1)
                 continue
             for upd in updates:
-                upd_id = upd.get("update_id", 0)
-                if offset is None or upd_id + 1 > offset:
-                    offset = upd_id + 1
                 await self._dispatch_update(upd)
+            if updates:
+                batch_max = max(int(u.get("update_id", 0)) for u in updates)
+                offset = max(offset or 0, batch_max + 1)
 
     # ------------------------------------------------------------------
     # Update dispatch

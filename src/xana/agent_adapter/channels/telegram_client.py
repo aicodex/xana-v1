@@ -53,6 +53,12 @@ class HttpxTelegramClient(TelegramApiClient):
                 **({"parse_mode": parse_mode} if parse_mode else {}),
             },
         )
+        # Telegram answers 400 when the new text equals the current text;
+        # that's a no-op for us, not an error.
+        if resp.status_code == 400:
+            desc = resp.json().get("description") or ""
+            if "message is not modified" in desc:
+                return
         resp.raise_for_status()
         data = resp.json()
         if not data.get("ok"):
