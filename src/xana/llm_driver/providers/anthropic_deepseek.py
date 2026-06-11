@@ -154,26 +154,68 @@ class AnthropicDeepSeekClient(ModelClient):
 
 
 def _build_request_body(request: ModelRequest, config: AnthropicDeepSeekConfig) -> dict[str, Any]:
+    """Translate ModelMessages into Anthropic /v1/messages wire shape.
+
+    Two tool-cycle details matter:
+
+      * assistant messages with ``metadata['tool_calls']`` are rendered as
+        content blocks: an optional text block followed by one tool_use block
+        per call. Without this the next request would only ship the assistant
+        text and DS would forget what it had asked for.
+      * adjacent ``role='tool'`` messages are collapsed into one user message
+        whose content is the list of tool_result blocks (Anthropic requires
+        all tool_results for a single assistant tool_use round to live in one
+        user turn, not separate messages).
+    """
     system_parts: list[str] = []
     history: list[dict[str, Any]] = []
+    pending_tool_results: list[dict[str, Any]] = []
+
+    def _flush_pending() -> None:
+        if pending_tool_results:
+            history.append({"role": "user", "content": list(pending_tool_results)})
+            pending_tool_results.clear()
+
     for msg in request.messages:
         if msg.role == "system":
-            system_parts.append(msg.content)
-        elif msg.role in ("user", "assistant"):
-            history.append({"role": msg.role, "content": msg.content})
-        elif msg.role == "tool":
-            history.append(
-                {
-                    "role": "user",
-                    "content": [
+            _flush_pending()
+            if msg.content:
+                system_parts.append(msg.content)
+            continue
+        if msg.role == "user":
+            _flush_pending()
+            history.append({"role": "user", "content": msg.content})
+            continue
+        if msg.role == "assistant":
+            _flush_pending()
+            tool_calls = (msg.metadata or {}).get("tool_calls") or []
+            if tool_calls:
+                blocks: list[dict[str, Any]] = []
+                if msg.content:
+                    blocks.append({"type": "text", "text": msg.content})
+                for tc in tool_calls:
+                    blocks.append(
                         {
-                            "type": "tool_result",
-                            "tool_use_id": msg.metadata.get("tool_use_id", ""),
-                            "content": msg.content,
+                            "type": "tool_use",
+                            "id": tc.get("call_id", ""),
+                            "name": tc.get("tool_name", ""),
+                            "input": tc.get("input", {}) or {},
                         }
-                    ],
+                    )
+                history.append({"role": "assistant", "content": blocks})
+            else:
+                history.append({"role": "assistant", "content": msg.content})
+            continue
+        if msg.role == "tool":
+            pending_tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": (msg.metadata or {}).get("tool_use_id", ""),
+                    "content": msg.content,
                 }
             )
+            continue
+    _flush_pending()
 
     body: dict[str, Any] = {
         "model": request.model,

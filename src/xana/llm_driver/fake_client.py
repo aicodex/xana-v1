@@ -1,18 +1,18 @@
 """Fake LLM client for tests and offline development.
 
-A `ScriptedTurn` defaults to empty. On a default turn `FakeModelClient.stream`
-mimics the DeepSeek wire shape used by the real `provider_deepseek` client:
+Behavior depends on whether a `ScriptedTurn` overrides the default:
 
-  1. multiple `text_delta` chunks — the assembled `ModelRequest` is echoed
-     line-by-line so each chunk is its own SSE-style event;
-  2. a single `tool_call` to `memory_search` derived from the last user
-     message — exercises the harness tool-dispatch loop;
-  3. more `text_delta` chunks for a post-tool wrap-up ending with the fixed
-     `[fake-reply ok]` marker that proves the model actually replied;
-  4. `usage` then `done`.
+* **Default turn** (empty `text_deltas` + no `tool_call`) cooperates with
+  DefaultHarness's multi-round tool loop:
+  - cursor=0: chunk-stream the echoed prompt (DS wire-shape) and emit one
+    `tool_call` to `memory_search` derived from the last user message.
+  - cursor>=1: stream a post-tool wrap-up ending with the fixed
+    `[fake-reply ok]` marker; NO tool_call → the harness loop terminates.
 
-Pass explicit `text_deltas` / `tool_call` to a `ScriptedTurn` to override and
-drive a precise sequence (no echo, no auto tool call).
+* **Scripted turn**: explicit `text_deltas` / `tool_call` produce that exact
+  sequence. Once the scripted list is exhausted (`cursor >= len(turns)`)
+  the client returns a no-op `usage` + `done` so any subsequent harness
+  iteration ends cleanly instead of looping forever on the last script.
 """
 from __future__ import annotations
 
@@ -53,6 +53,13 @@ def _last_user_text(messages: tuple[ModelMessage, ...]) -> str:
     return "(no user input)"
 
 
+def _last_tool_result(messages: tuple[ModelMessage, ...]) -> str:
+    for msg in reversed(messages):
+        if msg.role == "tool" and msg.content:
+            return msg.content
+    return "(no tool result on history)"
+
+
 def _chunk_lines(text: str) -> list[str]:
     """Split text into line-sized chunks, preserving terminators.
 
@@ -71,12 +78,25 @@ class FakeModelClient(ModelClient):
         return self._stream(request)
 
     async def _stream(self, request: ModelRequest) -> AsyncGenerator[ModelEvent, None]:
-        turn = self._turns[min(self._cursor, len(self._turns) - 1)]
+        cursor = self._cursor
         self._cursor += 1
+
+        turn = self._turns[min(cursor, len(self._turns) - 1)]
         is_default_turn = not turn.text_deltas and turn.tool_call is None
+
+        # Default turn handles its own cursor-based round logic (echo+tool
+        # on round 0, wrap-up on round >=1) — let it own that decision.
         if is_default_turn:
-            async for event in self._default_turn_events(request, turn):
+            async for event in self._default_turn_events(request, turn, cursor):
                 yield event
+            return
+
+        # Explicit scripted turns: once the list is exhausted, return a no-op
+        # so DefaultHarness's outer loop terminates instead of replaying the
+        # last script forever. NO usage event — the prior round's tally
+        # should stay (a zero-value emit here would clobber it).
+        if cursor >= len(self._turns):
+            yield ModelEvent(kind="done")
             return
 
         for delta in turn.text_deltas:
@@ -97,27 +117,34 @@ class FakeModelClient(ModelClient):
         yield ModelEvent(kind="done")
 
     async def _default_turn_events(
-        self, request: ModelRequest, turn: ScriptedTurn
+        self, request: ModelRequest, turn: ScriptedTurn, cursor: int
     ) -> AsyncGenerator[ModelEvent, None]:
-        for chunk in _chunk_lines(_echo_prompt_body(request.messages)):
-            yield ModelEvent(kind="text_delta", payload={"text": chunk})
-
-        query = _last_user_text(request.messages)
-        yield ModelEvent(
-            kind="tool_call",
-            payload={
-                "tool_name": _DEFAULT_TOOL_NAME,
-                "input": {"query": query, "top_k": _DEFAULT_TOOL_TOP_K},
-                "call_id": _DEFAULT_TOOL_CALL_ID,
-            },
-        )
-
-        wrapup = (
-            f"[fake-reply] dispatched {_DEFAULT_TOOL_NAME}(query={query!r}); "
-            f"continuing turn.\n{_FAKE_REPLY_MARKER}\n"
-        )
-        for chunk in _chunk_lines(wrapup):
-            yield ModelEvent(kind="text_delta", payload={"text": chunk})
+        if cursor == 0:
+            # Round 0: echo the assembled prompt + fire one tool_call to
+            # memory_search. No marker yet — the harness must run the tool and
+            # invoke us again with the tool result before we conclude.
+            for chunk in _chunk_lines(_echo_prompt_body(request.messages)):
+                yield ModelEvent(kind="text_delta", payload={"text": chunk})
+            query = _last_user_text(request.messages)
+            yield ModelEvent(
+                kind="tool_call",
+                payload={
+                    "tool_name": _DEFAULT_TOOL_NAME,
+                    "input": {"query": query, "top_k": _DEFAULT_TOOL_TOP_K},
+                    "call_id": _DEFAULT_TOOL_CALL_ID,
+                },
+            )
+        else:
+            # Round >=1: harness re-entered us with the tool result on the
+            # history. Wrap up with the marker, no further tool_calls — the
+            # outer loop then exits.
+            tool_result = _last_tool_result(request.messages)
+            wrapup = (
+                f"[fake-reply] saw {_DEFAULT_TOOL_NAME} result "
+                f"({tool_result[:60]!r}); concluding.\n{_FAKE_REPLY_MARKER}\n"
+            )
+            for chunk in _chunk_lines(wrapup):
+                yield ModelEvent(kind="text_delta", payload={"text": chunk})
 
         yield ModelEvent(
             kind="usage",
