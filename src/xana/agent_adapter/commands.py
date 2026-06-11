@@ -52,7 +52,9 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/search_provider", description="搜索引擎切换"),
         )
         self._handlers: dict[str, _HandlerFn] = {
-            "/help": DefaultCommandRouter._cmd_help,
+            "/help":     DefaultCommandRouter._cmd_help,
+            "/clear":    DefaultCommandRouter._cmd_clear,
+            "/compact":  DefaultCommandRouter._cmd_compact,
         }
 
     async def list_commands(self) -> tuple[CommandSpec, ...]:
@@ -85,3 +87,16 @@ class DefaultCommandRouter(CommandRouter):
         for spec in self._specs:
             lines.append(f"  {spec.name:<20} {spec.description}")
         return CommandResult(ok=True, message="\n".join(lines))
+
+    async def _cmd_clear(self, inbound: InboundMessage, args: str) -> CommandResult:
+        if self.active_context_store is None:
+            return CommandResult(ok=False, message="active_context_store 未配置")
+        await self.active_context_store.clear(inbound.session_id, "chat")
+        return CommandResult(ok=True, message="[cleared] 上下文已清空")
+
+    async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
+        if self.active_context_store is None:
+            return CommandResult(ok=False, message="active_context_store 未配置")
+        summary = args.strip() or "(用户触发的压缩 — 无具体摘要)"
+        await self.active_context_store.compact(inbound.session_id, "chat", summary)
+        return CommandResult(ok=True, message="[compacted] 历史已压缩")
