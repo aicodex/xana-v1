@@ -142,6 +142,7 @@ async def boot(
         cwd=str(project_root),
         model=model,
         provider=provider,
+        session_config_store=session_config_store,
     )
 
     gateway = DefaultAgentGateway(

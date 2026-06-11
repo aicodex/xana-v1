@@ -1,7 +1,7 @@
 """ChatAgent: default agent that calls DefaultHarness with mapped request/context."""
 from __future__ import annotations
 
-from typing import AsyncGenerator, AsyncIterator
+from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agents.contracts import (
     AgentControlRequest,
@@ -25,6 +25,7 @@ from xana.memory.interfaces import (
     MemoryInjectorRegistry,
 )
 from xana.policy.contracts import PermissionContext
+from xana.session_config.interfaces import SessionConfigStore
 from xana.skills.interfaces import SkillRegistry
 from xana.state.interfaces import StateRepository
 from xana.tools.interfaces import ToolRegistry
@@ -57,6 +58,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         cwd: str,
         model: str,
         provider: str,
+        session_config_store: SessionConfigStore | None = None,
     ) -> None:
         self.active_context_store = active_context_store
         self.history_mirror = history_mirror
@@ -68,6 +70,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         self.cwd = cwd
         self.model = model
         self.provider = provider
+        self.session_config_store = session_config_store
         self._run_counter = 0
 
     async def to_harness_request(self, spec: AgentSpec, request: AgentRequest) -> HarnessRequest:
@@ -81,11 +84,26 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
     async def to_harness_context(self, spec: AgentSpec, request: AgentRequest) -> HarnessContext:
         self._run_counter += 1
         run_id = f"{request.session_id}-{self._run_counter}"
+        model = self.model
+        effort: str | int | None = None
+        config_snapshot: dict[str, Any] = {"provider": self.provider}
+        if self.session_config_store is not None:
+            cfg = await self.session_config_store.get(request.session_id)
+            if cfg.model:
+                model = cfg.model
+            if cfg.effort is not None:
+                effort = cfg.effort
+            config_snapshot.update({
+                "streaming": cfg.streaming,
+                "thinking": cfg.thinking,
+                "search_provider": cfg.search_provider,
+            })
         return HarnessContext(
             session_id=request.session_id,
             agent_name=spec.component.name,
             cwd=self.cwd,
-            model=self.model,
+            model=model,
+            effort=effort,
             run_id=run_id,
             permission=PermissionContext(mode="default", session_id=request.session_id),
             state_repository=self.state_repository,
@@ -95,7 +113,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             tool_registry=self.tool_registry,
             skill_registry=self.skill_registry,
             model_registry=self.model_registry,
-            config_snapshot={"provider": self.provider},
+            config_snapshot=config_snapshot,
         )
 
 
@@ -133,6 +151,7 @@ class ChatAgent(Agent):
         cwd: str,
         model: str,
         provider: str,
+        session_config_store: SessionConfigStore | None = None,
     ) -> None:
         self._spec = spec
         self.harness = harness
@@ -147,6 +166,7 @@ class ChatAgent(Agent):
             cwd=cwd,
             model=model,
             provider=provider,
+            session_config_store=session_config_store,
         )
         self.event_mapper = DefaultAgentEventMapper()
         self._pending_cancel_sessions: set[str] = set()
