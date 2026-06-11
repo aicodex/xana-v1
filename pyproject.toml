@@ -21,7 +21,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "xana.config" = ["defaults/*.json"]
-"xana._templates" = ["xana_skeleton/**/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
