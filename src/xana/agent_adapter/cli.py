@@ -34,7 +34,6 @@ class CliAdapter(Adapter):
         self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self.turn_complete: asyncio.Event = asyncio.Event()
         self._status: str = "stopped"
-        self._bindings: list[SessionBinding] = []
 
     async def start(self) -> None:
         self._status = "healthy"
@@ -76,7 +75,7 @@ class CliAdapter(Adapter):
         )
 
     async def bind_session(self, binding: SessionBinding) -> None:
-        self._bindings.append(binding)
+        return None
 
     async def health(self) -> AdapterHealth:
         return AdapterHealth(adapter_id=self.adapter_id, status=self._status)  # type: ignore[arg-type]

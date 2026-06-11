@@ -5,7 +5,7 @@ Scripts a sequence of ModelEvents: text deltas, optional tool call, usage, done.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.llm_driver.contracts import ModelEvent, ModelRequest, ModelUsage, ProviderCapabilities
 from xana.llm_driver.interfaces import ModelClient, ModelRegistry
@@ -24,7 +24,10 @@ class FakeModelClient(ModelClient):
         self._turns: list[ScriptedTurn] = list(turns) or [ScriptedTurn()]
         self._cursor = 0
 
-    async def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
+    def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
+        return self._stream(request)
+
+    async def _stream(self, request: ModelRequest) -> AsyncGenerator[ModelEvent, None]:
         turn = self._turns[min(self._cursor, len(self._turns) - 1)]
         self._cursor += 1
         for delta in turn.text_deltas:

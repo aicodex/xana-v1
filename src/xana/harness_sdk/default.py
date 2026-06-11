@@ -30,6 +30,11 @@ from xana.state.contracts import RunRecord, UsageSnapshot
 from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult
 
 
+_DEFAULT_PROVIDER = "fake"
+_ANON_RUN_ID = "run-anon"
+_ANON_CALL_ID = "call-anon"
+
+
 class DefaultHarness(Harness):
     def __init__(self) -> None:
         self.last_assembled_messages: tuple[ModelMessage, ...] | None = None
@@ -38,7 +43,7 @@ class DefaultHarness(Harness):
         return self._invoke(request, context)
 
     async def _invoke(self, request: HarnessRequest, context: HarnessContext) -> AsyncGenerator[HarnessEvent, None]:
-        run_id = context.run_id or "run-anon"
+        run_id = context.run_id or _ANON_RUN_ID
         session_id = request.session_id
         agent_name = request.agent_name
 
@@ -99,7 +104,7 @@ class DefaultHarness(Harness):
         assembled = (ModelMessage(role="system", content=system_content),) + history_model_messages
         self.last_assembled_messages = assembled
 
-        provider = str(context.config_snapshot.get("provider", "fake"))
+        provider = str(context.config_snapshot.get("provider", _DEFAULT_PROVIDER))
         if context.model_registry is None:
             yield HarnessEvent(
                 kind="error",
@@ -136,7 +141,7 @@ class DefaultHarness(Harness):
                     )
                 elif event.kind == "tool_call":
                     tool_name = event.payload.get("tool_name", "")
-                    call_id = event.payload.get("call_id", "call-anon")
+                    call_id = event.payload.get("call_id", _ANON_CALL_ID)
                     tool_input = event.payload.get("input", {}) or {}
                     if context.tool_registry is None:
                         yield HarnessEvent(
@@ -155,29 +160,39 @@ class DefaultHarness(Harness):
                             payload={"error": f"tool {tool_name!r} not registered"},
                         )
                         return
-                    invocation = ToolInvocation(
-                        tool_name=tool_name,
-                        input=tool_input,
-                        call_id=call_id,
-                        session_id=session_id,
-                        run_id=run_id,
-                    )
-                    tool_ctx = ToolContext(
-                        session_id=session_id,
-                        agent_name=agent_name,
-                        cwd=context.cwd,
-                        permission=context.permission or _default_permission(session_id),
-                        run_id=run_id,
-                    )
-                    await tool.validate(invocation)
-                    perm = await tool.check_permission(invocation, tool_ctx)
-                    if perm.decision != "allow":
-                        result = _denied_result(perm)
-                    else:
-                        prepared = await tool.pre_tool_use(invocation, tool_ctx)
-                        result = await tool.execute(prepared, tool_ctx)
-                        result = await tool.post_tool_use(prepared, tool_ctx, result)
-                    rendered = await tool.render_result(result)
+                    try:
+                        invocation = ToolInvocation(
+                            tool_name=tool_name,
+                            input=tool_input,
+                            call_id=call_id,
+                            session_id=session_id,
+                            run_id=run_id,
+                        )
+                        tool_ctx = ToolContext(
+                            session_id=session_id,
+                            agent_name=agent_name,
+                            cwd=context.cwd,
+                            permission=context.permission or _default_permission(session_id),
+                            run_id=run_id,
+                        )
+                        await tool.validate(invocation)
+                        perm = await tool.check_permission(invocation, tool_ctx)
+                        if perm.decision != "allow":
+                            result = _denied_result(perm)
+                        else:
+                            prepared = await tool.pre_tool_use(invocation, tool_ctx)
+                            result = await tool.execute(prepared, tool_ctx)
+                            result = await tool.post_tool_use(prepared, tool_ctx, result)
+                        rendered = await tool.render_result(result)
+                    except Exception as tool_exc:
+                        result = ToolResult(
+                            ok=False,
+                            content=None,
+                            error=str(tool_exc),
+                            failure_kind="execution",
+                            rendered=f"[tool failed: {tool_exc}]",
+                        )
+                        rendered = result.rendered or ""
                     tool_outputs.append(rendered)
                     yield HarnessEvent(
                         kind="tool_finished",
