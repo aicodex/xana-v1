@@ -11,6 +11,9 @@ dependencies = [
     "aiohttp>=3.9",
 ]
 
+[project.optional-dependencies]
+qr = ["qrcode>=7.4"]
+
 [project.scripts]
 xana = "xana.cli.xana:main"
 xanac = "xana.cli.xanac:main"
