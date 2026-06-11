@@ -23,6 +23,7 @@ from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels.feishu import FeishuAdapter, FeishuConfig
 from xana.agent_adapter.channels.telegram import TelegramAdapter, TelegramConfig
 from xana.agent_adapter.interfaces import Adapter
+from xana.config.loader import DefaultConfigProvider
 from xana.config.system_model import SystemConfig
 from xana.runtime.boot import boot
 
@@ -86,13 +87,11 @@ async def _run_inbound_pump(adapter: Adapter, gateway) -> None:
 
 async def _run(argv: argparse.Namespace) -> int:
     project_root = (argv.project or Path.cwd()).resolve()
-    boot_result = await boot(project_root=project_root)
     from xana.cli.commands.pair import pairings_path
-    from xana.config.loader import DefaultConfigProvider
-    bindings_root = pairings_path().parent
     cp = DefaultConfigProvider()
-    await cp.load(project_root)
-    system = cp.load_system_config()
+    boot_result = await boot(project_root=project_root, config_provider=cp)
+    system = cp.load_system_config()  # boot() already called cp.load()
+    bindings_root = pairings_path().parent
     adapters = build_adapters(bindings_root=bindings_root, env=dict(os.environ), system=system)
     if not adapters:
         print("[xana serve] no adapter env vars set — nothing to run.")
