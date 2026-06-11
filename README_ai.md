@@ -13,6 +13,9 @@ status: active
 ## 项目入口
 
 - **模块设计总览**：[doc_ai](doc_ai/README_ai.md) — 模块边界和文档入口
+- **Runtime entry**：[cli.yuxuc](src/xana/cli/yuxuc.py) — 一进程 CLI 入口；`boot(project_root)` 装好整个第一核心流（gateway/agent/harness/tool/skill/memory）
+- **第一核心流 spec**：[docs/superpowers/specs/2026-06-11-first-core-flow-design.md](docs/superpowers/specs/2026-06-11-first-core-flow-design.md)
+- **第一核心流 plan**：[docs/superpowers/plans/2026-06-11-first-core-flow.md](docs/superpowers/plans/2026-06-11-first-core-flow.md)
 - **系统设计**：[system](doc_ai/system.md) — 全局数据流、状态权威、恢复流程
 - **经验入口**：[exp_ai](exp_ai/README_ai.md) — 经验、迁移、复盘，非目标架构权威
 - **TODO 入口**：[todo_ai](todo_ai/README_ai.md) — 特殊记忆树，维护待办和执行 scratch
