@@ -63,6 +63,8 @@ class CliAdapter(Adapter):
         self._status: str = "stopped"
         self._turn_start_ts: float | None = None
         self._draft_seen_this_turn: bool = False
+        self.last_progress: dict[str, Any] | None = None
+        self._progress_callback = None
 
     async def start(self) -> None:
         self._status = "healthy"
@@ -183,6 +185,16 @@ class CliAdapter(Adapter):
         if first:
             self.out.write(f"  {first}\n")
         self.out.flush()
+
+    def note_progress(self, payload: dict[str, Any]) -> None:
+        """Adapter hook for progress updates. Stores latest; REPL may register a
+        callback to repaint the footer in place."""
+        self.last_progress = dict(payload)
+        if self._progress_callback is not None:
+            self._progress_callback(payload)
+
+    def set_progress_callback(self, cb) -> None:
+        self._progress_callback = cb
 
     async def bind_session(self, binding: SessionBinding) -> None:
         return None
