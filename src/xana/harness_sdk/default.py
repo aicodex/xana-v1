@@ -126,7 +126,16 @@ class DefaultHarness(Harness):
             )
             return
 
-        model_request = ModelRequest(provider=provider, model=context.model, messages=assembled)
+        tools_schema: tuple[dict, ...] = ()
+        if context.tool_registry is not None:
+            specs = await context.tool_registry.list_specs()
+            tools_schema = tuple(_to_anthropic_tool_schema(s) for s in specs)
+        model_request = ModelRequest(
+            provider=provider,
+            model=context.model,
+            messages=assembled,
+            tools_schema=tools_schema,
+        )
         usage = UsageSnapshot(model=context.model, provider=provider)
         text_accumulator: list[str] = []
         tool_outputs: list[str] = []
@@ -259,6 +268,18 @@ class DefaultHarness(Harness):
 
 def _default_permission(session_id: str) -> PermissionContext:
     return PermissionContext(mode="default", session_id=session_id)
+
+
+def _to_anthropic_tool_schema(spec) -> dict:
+    """Pack a ToolSpec into the {name, description, input_schema} shape the
+    Anthropic /v1/messages `tools` array expects. Without this DS receives a
+    blank tools list and falls back to *narrating* a tool call inside its
+    text channel (markdown fence with shell), which the harness can't dispatch."""
+    return {
+        "name": spec.component.name,
+        "description": spec.component.description or "",
+        "input_schema": dict(spec.input_schema),
+    }
 
 
 def _denied_result(perm: PermissionResult) -> ToolResult:
