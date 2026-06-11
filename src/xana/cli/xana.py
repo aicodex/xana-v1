@@ -33,7 +33,18 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_cmd.add_arguments(sync_parser)
     sync_parser.set_defaults(func=sync_cmd.run)
 
+    serve_parser = subparsers.add_parser(
+        "serve", help="boot channel adapters from env and attach to gateway"
+    )
+    serve_parser.add_argument("--project", type=__import__("pathlib").Path, default=None)
+    serve_parser.set_defaults(func=_run_serve)
+
     return parser
+
+
+def _run_serve(args: argparse.Namespace, *, out=None) -> int:  # noqa: ARG001
+    from xana.cli.serve import main as serve_main
+    return serve_main(["--project", str(args.project)] if args.project else [])
 
 
 def main(argv: list[str] | None = None, *, out: TextIO | None = None) -> int:
