@@ -17,11 +17,13 @@ from pathlib import Path
 
 from xana.agent_adapter.commands import DefaultCommandRouter
 from xana.agent_adapter.gateway import DefaultAgentGateway
+from xana.agent_adapter.progress import AdapterProgressSink
 from xana.agent_adapter.router import DefaultAgentRequestRouter
 from xana.agents.chat_agent import ChatAgent, build_chat_agent_spec
 from xana.agents.interfaces import Agent
 from xana.config.loader import DefaultConfigProvider
 from xana.harness_sdk.default import DefaultHarness
+from xana.harness_sdk.interfaces import ProgressSink
 from xana.llm_driver.fake_client import FakeModelClient, InMemoryModelRegistry, ScriptedTurn
 from xana.llm_driver.interfaces import ModelClient, ModelRegistry
 from xana.llm_driver.providers.anthropic_deepseek import (
@@ -82,6 +84,7 @@ class BootResult:
     model_registry: ModelRegistry
     state_repository: StateRepository
     session_config_store: SessionConfigStore
+    progress_sink: ProgressSink
     provider: str
     model: str
 
@@ -129,6 +132,13 @@ async def boot(
     session_config_root = Path.home() / ".xana" / "sessions"
     session_config_store: SessionConfigStore = FileSessionConfigStore(root=session_config_root)
 
+    gateway = DefaultAgentGateway(
+        agents={},
+        router=DefaultAgentRequestRouter(default_agent="chat"),
+    )
+
+    progress_sink = AdapterProgressSink(gateway.adapters)
+
     chat_agent = ChatAgent(
         spec=build_chat_agent_spec(),
         harness=DefaultHarness(),
@@ -143,12 +153,10 @@ async def boot(
         model=model,
         provider=provider,
         session_config_store=session_config_store,
+        progress_sink=progress_sink,
     )
 
-    gateway = DefaultAgentGateway(
-        agents={"chat": chat_agent},
-        router=DefaultAgentRequestRouter(default_agent="chat"),
-    )
+    gateway.agents["chat"] = chat_agent
 
     command_router = DefaultCommandRouter(
         session_config_store=session_config_store,
@@ -172,6 +180,7 @@ async def boot(
         model_registry=model_registry,
         state_repository=state,
         session_config_store=session_config_store,
+        progress_sink=progress_sink,
         provider=provider,
         model=model,
     )

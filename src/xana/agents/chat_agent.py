@@ -17,7 +17,7 @@ from xana.agents.interfaces import (
 )
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest
-from xana.harness_sdk.interfaces import Harness
+from xana.harness_sdk.interfaces import Harness, ProgressSink
 from xana.llm_driver.interfaces import ModelRegistry
 from xana.memory.interfaces import (
     ActiveContextStore,
@@ -59,6 +59,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         model: str,
         provider: str,
         session_config_store: SessionConfigStore | None = None,
+        progress_sink: ProgressSink | None = None,
     ) -> None:
         self.active_context_store = active_context_store
         self.history_mirror = history_mirror
@@ -71,6 +72,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         self.model = model
         self.provider = provider
         self.session_config_store = session_config_store
+        self.progress_sink = progress_sink
         self._run_counter = 0
 
     async def to_harness_request(self, spec: AgentSpec, request: AgentRequest) -> HarnessRequest:
@@ -114,6 +116,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             skill_registry=self.skill_registry,
             model_registry=self.model_registry,
             config_snapshot=config_snapshot,
+            progress_sink=self.progress_sink,
         )
 
 
@@ -152,9 +155,11 @@ class ChatAgent(Agent):
         model: str,
         provider: str,
         session_config_store: SessionConfigStore | None = None,
+        progress_sink: ProgressSink | None = None,
     ) -> None:
         self._spec = spec
         self.harness = harness
+        self.progress_sink = progress_sink
         self.request_mapper = DefaultAgentRequestMapper(
             active_context_store=active_context_store,
             history_mirror=history_mirror,
@@ -167,6 +172,7 @@ class ChatAgent(Agent):
             model=model,
             provider=provider,
             session_config_store=session_config_store,
+            progress_sink=progress_sink,
         )
         self.event_mapper = DefaultAgentEventMapper()
         self._pending_cancel_sessions: set[str] = set()
