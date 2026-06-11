@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.channels._bindings import BindingStore
+from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels._throttle import Throttle
 from xana.agent_adapter.contracts import (
     AdapterHealth,
@@ -94,10 +95,12 @@ class TelegramAdapter(Adapter):
         config: TelegramConfig,
         bindings: BindingStore,
         api_client: TelegramApiClient | None = None,
+        pairing: PairingStore | None = None,
     ) -> None:
         self._config = config
         self._bindings = bindings
         self._api_client = api_client
+        self._pairing = pairing
         self._status: str = "starting"
         self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._buffers: dict[str, _SessionBuffer] = {}
@@ -163,6 +166,21 @@ class TelegramAdapter(Adapter):
         chat_id = str(chat.get("id", ""))
         message_id = msg.get("message_id")
 
+        user_id = str(user_id_int) if user_id_int is not None else ""
+        if self._pairing is not None and not self._pairing.is_allowed("telegram", user_id):
+            newly_pending = self._pairing.add_pending(
+                "telegram", user_id, first_message=text, chat_id=chat_id
+            )
+            if newly_pending and self._api_client is not None:
+                await self._api_client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "您尚未配对。请管理员在服务器上运行:\n"
+                        f"xana pair approve telegram {user_id}"
+                    ),
+                )
+            return
+
         session_id = self._bindings.allocate(chat_id, prefix="tg")
         self._get_or_create_buffer(session_id).chat_id = chat_id
 
@@ -170,7 +188,7 @@ class TelegramAdapter(Adapter):
             adapter_id=self.adapter_id,
             session_id=session_id,
             text=text,
-            user_id=str(user_id_int) if user_id_int is not None else None,
+            user_id=user_id or None,
             metadata={"chat_id": chat_id, "message_id": message_id},
         )
         await self._inbound.put(inbound)

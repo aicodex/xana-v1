@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.channels._bindings import BindingStore
+from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels._throttle import Throttle
 from xana.agent_adapter.channels.feishu_events import parse_message_event
 from xana.agent_adapter.contracts import (
@@ -110,10 +111,12 @@ class FeishuAdapter(Adapter):
         config: FeishuConfig,
         bindings: BindingStore,
         api_sender: FeishuApiSender | None = None,
+        pairing: PairingStore | None = None,
     ) -> None:
         self._config = config
         self._bindings = bindings
         self._api_sender = api_sender
+        self._pairing = pairing
         self._status: str = "starting"
         self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._buffers: dict[str, _SessionBuffer] = {}
@@ -151,6 +154,19 @@ class FeishuAdapter(Adapter):
         """Parse a Feishu v2 event dict and enqueue an InboundMessage."""
         parsed = parse_message_event(event)
         if parsed is None:
+            return
+        sender_id = parsed.sender_open_id or ""
+        if self._pairing is not None and not self._pairing.is_allowed("feishu", sender_id):
+            newly_pending = self._pairing.add_pending(
+                "feishu", sender_id, first_message=parsed.text, chat_id=parsed.chat_id
+            )
+            if newly_pending and self._api_sender is not None:
+                hint = (
+                    "您尚未配对。请管理员运行: "
+                    f"`xana pair approve feishu {sender_id}`"
+                )
+                card = _build_card(hint, [], True)
+                await self._api_sender.send_card(receive_id=parsed.chat_id, card=card)
             return
         session_id = self._bindings.allocate(parsed.chat_id, prefix="feishu")
         self._get_or_create_buffer(session_id).chat_id = parsed.chat_id
