@@ -42,7 +42,7 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"xanac · interactive · session={args.session}")
         print(f"model={boot_result.model}  provider={boot_result.provider}  cwd={project_root}")
         print("输入 /help 查看命令；Ctrl-C 取消当前 turn；Ctrl-D 退出。\n")
-        return await _repl_loop(boot_result.gateway, session_id=args.session)
+        return await _repl_loop(boot_result.gateway, adapter=adapter, session_id=args.session)
 
     inbound = InboundMessage(adapter_id="cli", session_id=args.session, text=text)
     exit_code = 0
@@ -72,6 +72,7 @@ async def _drain(stream) -> None:
 async def _repl_loop(
     gateway,
     *,
+    adapter=None,
     prompt_factory: Callable[[], _PromptLike] | None = None,
     session_id: str = "cli-session",
     adapter_id: str = "cli",
@@ -84,7 +85,19 @@ async def _repl_loop(
     if prompt_factory is None:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.patch_stdout import patch_stdout
-        prompt = PromptSession("> ")
+
+        def _bottom_toolbar() -> str:
+            if adapter is None:
+                return "ready"
+            p = adapter.last_progress
+            if not p:
+                return "ready"
+            return (
+                f"tokens: {p.get('tokens_in', 0)} in / {p.get('tokens_out', 0)} out · "
+                f"elapsed: {p.get('elapsed_s', 0):.1f}s"
+            )
+
+        prompt = PromptSession("> ", bottom_toolbar=_bottom_toolbar)
         prompt_ctx = patch_stdout()
     else:
         prompt = prompt_factory()
