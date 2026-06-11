@@ -67,7 +67,8 @@ class EnterWorktreeTool(Tool):
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         name = invocation.input.get("name") or f"wt-{secrets.token_hex(4)}"
-        if not _NAME_RE.match(context.session_id):
+        sid = context.session_id
+        if not sid or "/" in sid or "\\" in sid or sid in (".", ".."):
             return ToolResult(
                 ok=False,
                 content=None,
