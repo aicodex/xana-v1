@@ -85,7 +85,7 @@ def summary_progress(text: str) -> tuple[str, str]:
             done = total
             current = "完成"
     bar = "▰" * done + "▱" * (total - done)
-    return f"🗜 正在压缩上下文\n{bar} {done}/{total}", current
+    return bar, current
 
 
 def summary_progress_bar(text: str) -> str:

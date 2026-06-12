@@ -157,7 +157,7 @@ class DefaultCommandRouter(CommandRouter):
                          "thinking_title": f"🗜 正在压缩 · {status}"},
             ))
 
-        await _emit("")  # 立即出卡:0/9 进度条
+        await _emit("")  # 立即出卡:空进度条
         summary = await generate_summary(
             client, provider=self.provider, model=model, messages=live,
             on_progress=_emit)
@@ -167,11 +167,10 @@ class DefaultCommandRouter(CommandRouter):
         await self.active_context_store.set(build_post_compact_context(
             session_id=inbound.session_id, agent_name="chat",
             summary=summary, recent=recent))
-        # 最终卡:正文只有标题 + 满格进度条;数量信息都在折叠块标题里
-        n = len(SUMMARY_SECTIONS)
+        # 最终卡:正文只有满格进度条;数量/状态信息都在折叠块标题里
         return CommandResult(
             ok=True,
-            message=f"🗜 已压缩上下文\n{'▰' * n} {n}/{n}",
+            message="▰" * len(SUMMARY_SECTIONS),
             payload={"thinking": summary,
                      "thinking_title": f"已压缩 {len(live)} 条消息"},
         )
