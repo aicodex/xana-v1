@@ -7,12 +7,13 @@ asyncio 任务)定期调 pop_due() 并把 prompt 经 gateway 注入对应 sessio
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from croniter import croniter
 
@@ -76,3 +77,35 @@ class FileSchedulerService(SchedulerService):
                 keep.append(rolled)
         self._save(keep)
         return tuple(due)
+
+
+class SchedulerRunner:
+    """serve 内的轮询器:每 poll_interval_s 调一次 tick(),把到点任务的 prompt
+    经 dispatch 回调(gateway 注入)送进任务记录的 session。dispatch 异常只记日志
+    ——一个失败任务不能杀死 runner。"""
+
+    def __init__(self, *, scheduler: FileSchedulerService,
+                 dispatch: Callable[..., Awaitable[None]],
+                 poll_interval_s: float = 30.0) -> None:
+        self._scheduler = scheduler
+        self._dispatch = dispatch
+        self._interval = poll_interval_s
+        self._task: asyncio.Task | None = None
+
+    async def tick(self, *, now_epoch: float | None = None) -> None:
+        for job in await self._scheduler.pop_due(now_epoch=now_epoch):
+            try:
+                await self._dispatch(session_id=job["session_id"], text=job["prompt"])
+            except Exception:
+                _logger.exception("scheduled job %s dispatch failed", job["id"])
+
+    def start(self) -> None:
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(self._interval)
+                await self.tick()
+        self._task = asyncio.create_task(_loop())
+
+    def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()

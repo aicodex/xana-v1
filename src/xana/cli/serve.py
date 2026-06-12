@@ -88,6 +88,34 @@ def build_adapters_from_env(*, bindings_root: Path, env: dict[str, str]) -> list
     return build_adapters(bindings_root=bindings_root, env=env, system=SystemConfig())
 
 
+def _make_scheduler_dispatch(gateway):
+    """SchedulerRunner 的 dispatch 回调:把到点任务的 prompt 注入 gateway。
+
+    入口选择:gateway.submit(InboundMessage) —— 与 adapter 入站泵同一条路径
+    (router 在 gateway 内部把 InboundMessage 转成 AgentRequest,adapter.render
+    把回复送回渠道)。adapter_id 按任务记录的 session_id 前缀推断
+    (tg-… → telegram,feishu-… → feishu),没匹配时退回首个已注册 adapter。
+    """
+    prefix_to_adapter = {"tg": "telegram", "feishu": "feishu"}
+
+    async def dispatch(*, session_id: str, text: str) -> None:
+        from xana.agent_adapter.contracts import InboundMessage
+
+        adapter_id = prefix_to_adapter.get(session_id.split("-", 1)[0])
+        if adapter_id not in gateway.adapters:
+            adapter_id = next(iter(gateway.adapters), None)
+        if adapter_id is None:
+            return
+        inbound = InboundMessage(
+            adapter_id=adapter_id, session_id=session_id, text=text,
+            metadata={"source": "scheduler"},
+        )
+        async for _rendered in gateway.submit(inbound):
+            pass
+
+    return dispatch
+
+
 async def _run_inbound_pump(adapter: Adapter, gateway) -> None:
     """Pull inbound messages, submit to gateway, and drain RenderedMessage stream.
 
@@ -193,10 +221,23 @@ async def _run_inner(argv: argparse.Namespace) -> int:
             else:
                 print("[feishu] websocket long-connection mode (no public URL needed)")
 
+    runner = None
+    if boot_result.scheduler is not None:
+        from xana.runtime.scheduler import SchedulerRunner
+
+        runner = SchedulerRunner(
+            scheduler=boot_result.scheduler,
+            dispatch=_make_scheduler_dispatch(boot_result.gateway),
+        )
+        runner.start()
+        print("[xana serve] scheduler runner started")
+
     print(f"[xana serve] running adapters: {', '.join(a.adapter_id for a in adapters)}")
     try:
         await asyncio.gather(*pumps)
     finally:
+        if runner is not None:
+            runner.stop()
         for pump in pumps:
             pump.cancel()
         await asyncio.gather(*pumps, return_exceptions=True)
