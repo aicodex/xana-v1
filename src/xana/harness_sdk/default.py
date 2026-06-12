@@ -470,6 +470,11 @@ class DefaultHarness(Harness):
                 schemas = [s for s in schemas if s.get("name") != "web_search"]
                 deferred_names = [d for d in deferred_names if d[0] != "web_search"]
                 request_metadata["web_search_native"] = True
+            # SessionConfig.thinking(bool)→ provider 方言开关;缺省不发,保持原行为
+            if "thinking" in context.config_snapshot:
+                request_metadata.setdefault(
+                    "thinking",
+                    "enabled" if context.config_snapshot.get("thinking") else "disabled")
             tools_schema: tuple[dict, ...] = tuple(schemas)
             system_content = build_system_prompt(
                 identity=str(context.config_snapshot.get("agent_identity", "") or ""),

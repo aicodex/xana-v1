@@ -17,7 +17,7 @@ class SessionConfig:
     model: str | None = None
     effort: str | int | None = None
     streaming: bool = True
-    thinking: bool = False
+    thinking: bool = True  # DS API 默认 thinking enabled,与之对齐(2026-06-13 授权)
     search_provider: str | None = None
     project_root: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
