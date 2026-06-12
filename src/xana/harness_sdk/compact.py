@@ -59,7 +59,12 @@ SUMMARY_SECTIONS = (
 
 def summary_progress_bar(text: str) -> str:
     """流式摘要文本 → 进度条。摘要格式固定为 9 个编号小节,
-    见到第 n 节标题即认为前 n-1 节完成。"""
+    见到第 n 节标题即认为前 n-1 节完成。
+    只扫 <summary> 之后的部分 — <analysis> 阶段模型会复述小节标题,会虚高。"""
+    _, sep, text = text.partition("<summary>")
+    if not sep:
+        return ("🗜 正在压缩上下文\n"
+                + "▱" * len(SUMMARY_SECTIONS) + f" 0/{len(SUMMARY_SECTIONS)} · 分析对话")
     done = 0
     current = "分析对话"
     for i, title in enumerate(SUMMARY_SECTIONS):
