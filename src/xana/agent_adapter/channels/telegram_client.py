@@ -1,7 +1,11 @@
 """HttpxTelegramClient: thin Bot API HTTP wrapper."""
 from __future__ import annotations
 
+import logging
+
 import httpx
+
+_logger = logging.getLogger(__name__)
 
 from xana.agent_adapter.channels.telegram import TelegramApiClient, TelegramConfig
 
@@ -20,7 +24,12 @@ class HttpxTelegramClient(TelegramApiClient):
         )
 
     async def send_message(
-        self, *, chat_id: str, text: str, parse_mode: str | None = None
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        parse_mode: str | None = None,
+        reply_markup: dict | None = None,
     ) -> int:
         resp = await self._client.post(
             "/sendMessage",
@@ -28,6 +37,7 @@ class HttpxTelegramClient(TelegramApiClient):
                 "chat_id": chat_id,
                 "text": text,
                 **({"parse_mode": parse_mode} if parse_mode else {}),
+                **({"reply_markup": reply_markup} if reply_markup else {}),
             },
         )
         resp.raise_for_status()
@@ -43,6 +53,7 @@ class HttpxTelegramClient(TelegramApiClient):
         message_id: int,
         text: str,
         parse_mode: str | None = None,
+        reply_markup: dict | None = None,
     ) -> None:
         resp = await self._client.post(
             "/editMessageText",
@@ -51,6 +62,7 @@ class HttpxTelegramClient(TelegramApiClient):
                 "message_id": message_id,
                 "text": text,
                 **({"parse_mode": parse_mode} if parse_mode else {}),
+                **({"reply_markup": reply_markup} if reply_markup else {}),
             },
         )
         # Telegram answers 400 when the new text equals the current text;
@@ -63,6 +75,25 @@ class HttpxTelegramClient(TelegramApiClient):
         data = resp.json()
         if not data.get("ok"):
             raise RuntimeError(f"Telegram editMessageText error: {data.get('description')}")
+
+    async def answer_callback_query(
+        self, *, callback_query_id: str, text: str | None = None
+    ) -> None:
+        """Ack a button tap so the client stops the spinner. Best-effort:
+        failures are swallowed at debug level (stale/expired ids are common)."""
+        try:
+            resp = await self._client.post(
+                "/answerCallbackQuery",
+                json={
+                    "callback_query_id": callback_query_id,
+                    **({"text": text} if text else {}),
+                },
+            )
+            resp.raise_for_status()
+        except Exception as exc:
+            _logger.debug(
+                "telegram: answerCallbackQuery failed (%s)", type(exc).__name__
+            )
 
     async def get_updates(self, *, offset: int | None, timeout: int) -> list[dict]:
         params: dict = {"timeout": timeout}
