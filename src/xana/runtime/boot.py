@@ -183,6 +183,7 @@ async def boot(
         model_registry=model_registry,
         provider=provider,
         model=model,
+        progress_sink=progress_sink,
     )
     await gateway.register_command_router(command_router)
 

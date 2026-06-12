@@ -6,7 +6,7 @@ boundary/summary/保留消息全部是普通 MemoryMessage,summary 字段不再�
 from __future__ import annotations
 
 import re
-from typing import Sequence
+from typing import Awaitable, Callable, Sequence
 
 from xana.harness_sdk.compact_prompt import (
     COMPACT_BOUNDARY_MARKER,
@@ -51,8 +51,31 @@ def recent_user_messages(
     return tuple(reversed(kept))
 
 
+SUMMARY_SECTIONS = (
+    "主要请求与意图", "关键技术概念", "文件与代码部分", "错误与修复",
+    "问题解决", "所有用户消息", "待处理任务", "当前工作", "可选的下一步",
+)
+
+
+def summary_progress_bar(text: str) -> str:
+    """流式摘要文本 → 进度条。摘要格式固定为 9 个编号小节,
+    见到第 n 节标题即认为前 n-1 节完成。"""
+    done = 0
+    current = "分析对话"
+    for i, title in enumerate(SUMMARY_SECTIONS):
+        if title in text:
+            done = i  # 第 i+1 节开始 → 前 i 节完成
+            current = title
+    if "</summary>" in text:
+        done = len(SUMMARY_SECTIONS)
+        current = "完成"
+    bar = "▰" * done + "▱" * (len(SUMMARY_SECTIONS) - done)
+    return f"🗜 正在压缩上下文\n{bar} {done}/{len(SUMMARY_SECTIONS)} · {current}"
+
+
 async def generate_summary(
-    client, *, provider: str, model: str, messages: Sequence[MemoryMessage]
+    client, *, provider: str, model: str, messages: Sequence[MemoryMessage],
+    on_progress: Callable[[str], Awaitable[None]] | None = None,
 ) -> str | None:
     """同模型生成摘要: 无 tools、单回合;<summary> 缺失重试,3 次后放弃返回 None。"""
     def _plain(m: MemoryMessage) -> ModelMessage:
@@ -73,6 +96,8 @@ async def generate_summary(
             async for event in client.stream(req):
                 if event.kind == "text_delta":
                     parts.append(event.payload.get("text", ""))
+                    if on_progress is not None:
+                        await on_progress("".join(parts))
                 elif event.kind in ("done", "error"):
                     break
         except Exception:

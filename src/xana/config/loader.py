@@ -30,7 +30,7 @@ from xana.config.system_model import ModelEntry, SystemConfig
 
 
 _FALLBACK_PROVIDER = "fake"
-_DEFAULT_CONTEXT_WINDOW = 128_000  # DeepSeek 缺省;entry.context_window 可覆盖
+_DEFAULT_CONTEXT_WINDOW = 967_000  # 967k 预算 — 用户指定;entry.context_window 可覆盖
 _DEFAULT_MAX_OUTPUT = 16_384  # 与 anthropic_deepseek._DEFAULT_MAX_TOKENS 对齐,否则输出可能在 compact 触发前撑爆窗口
 _COMPACT_HEADROOM = 13_000  # CC 风格: force_compact = ctx - max_output - 13K
 _FALLBACK_MODEL = "fake-model"

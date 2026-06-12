@@ -494,6 +494,9 @@ class TelegramAdapter(Adapter):
             ts = self._ensure_turn(buf, run_id)
         if payload.get("kind") == "usage_progress":
             ts.last_progress = dict(payload)
+        if payload.get("kind") == "compact_progress" and payload.get("text"):
+            # /compact 命令流式进度:进度条直接进消息正文
+            ts.draft.content = str(payload["text"])
         ts.draft.footer_meta = footer_from_progress(payload)
         ts.coalescer.flush(self._make_stream_send(buf, ts))
 

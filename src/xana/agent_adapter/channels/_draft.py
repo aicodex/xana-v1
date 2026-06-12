@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from xana.agent_adapter._tool_titles import tool_header
 
-CONTEXT_BUDGET_TOKENS = 128_000  # fallback;真实预算来自 usage_progress payload 的 context_window
+CONTEXT_BUDGET_TOKENS = 967_000  # fallback;真实预算来自 usage_progress payload 的 context_window
 
 _BODY_LIMIT = 3000  # 折叠块内 args/result 各自的截断上限
 

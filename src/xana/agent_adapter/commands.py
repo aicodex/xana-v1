@@ -34,6 +34,7 @@ class DefaultCommandRouter(CommandRouter):
         model_registry: Any = None,
         provider: str = "",
         model: str = "",
+        progress_sink: Any = None,
     ) -> None:
         self.session_config_store = session_config_store
         self.active_context_store = active_context_store
@@ -43,6 +44,8 @@ class DefaultCommandRouter(CommandRouter):
         self.model_registry = model_registry
         self.provider = provider
         self.model = model
+        self.progress_sink = progress_sink
+        self._compact_seq = 0
 
         self._specs: tuple[CommandSpec, ...] = (
             CommandSpec(name="/help",     description="显示命令菜单。用法 `/help` 或 `/help /命令`"),
@@ -111,8 +114,9 @@ class DefaultCommandRouter(CommandRouter):
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
         from xana.harness_sdk.compact import (
             build_post_compact_context, generate_summary,
-            messages_since_boundary, recent_user_messages,
+            messages_since_boundary, recent_user_messages, summary_progress_bar,
         )
+        from xana.harness_sdk.contracts import ProgressEvent
         if self.active_context_store is None:
             return CommandResult(ok=False, message="active_context_store 未配置")
         if self.model_registry is None:
@@ -129,8 +133,28 @@ class DefaultCommandRouter(CommandRouter):
         client = await self.model_registry.get(self.provider)
         if client is None:
             return CommandResult(ok=False, message=f"provider {self.provider!r} 未注册")
+        self._compact_seq += 1
+        run_id = f"compactcmd-{inbound.session_id}-{self._compact_seq}"
+        last_bar: list[str] = [""]
+
+        async def _emit(text_so_far: str = "", phase: str = "running") -> None:
+            if self.progress_sink is None:
+                return
+            bar = summary_progress_bar(text_so_far)
+            if phase == "running" and bar == last_bar[0]:
+                return  # 只在进度变化时刷新
+            last_bar[0] = bar
+            await self.progress_sink.report(ProgressEvent(
+                session_id=inbound.session_id, run_id=run_id,
+                message="compact_progress",
+                payload={"kind": "compact_progress", "session_id": inbound.session_id,
+                         "run_id": run_id, "model": model, "phase": phase, "text": bar},
+            ))
+
+        await _emit("")  # 立即出卡:0/9 进度条
         summary = await generate_summary(
-            client, provider=self.provider, model=model, messages=live)
+            client, provider=self.provider, model=model, messages=live,
+            on_progress=_emit)
         if summary is None:
             return CommandResult(ok=False, message="压缩失败:模型未返回 <summary>,请重试")
         recent = recent_user_messages(live)
@@ -138,7 +162,9 @@ class DefaultCommandRouter(CommandRouter):
             session_id=inbound.session_id, agent_name="chat",
             summary=summary, recent=recent))
         return CommandResult(
-            ok=True, message=f"[compacted] 历史已压缩,逐字保留最近 {len(recent)} 条消息")
+            ok=True,
+            message=f"✅ 上下文已压缩,逐字保留最近 {len(recent)} 条消息\n\n{summary}",
+        )
 
     async def _persist_with(self, session_id: str, **changes) -> "SessionConfig":
         from xana.session_config.contracts import SessionConfig
