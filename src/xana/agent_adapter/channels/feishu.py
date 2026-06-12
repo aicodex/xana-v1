@@ -40,6 +40,7 @@ class FeishuConfig:
     encrypt_key: str | None = None
     api_base: str = "https://open.feishu.cn"
     bot_open_id: str | None = None
+    connection_mode: str = "ws"  # "ws" (WebSocket long-connection) | "webhook"
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +121,7 @@ class FeishuAdapter(Adapter):
         self._status: str = "starting"
         self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._buffers: dict[str, _SessionBuffer] = {}
+        self._ws_client: Any | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -129,9 +131,22 @@ class FeishuAdapter(Adapter):
         if self._api_sender is None:
             from xana.agent_adapter.channels.feishu_webhook import build_real_sender
             self._api_sender = build_real_sender(self._config)
+        if self._config.connection_mode == "ws":
+            # Lazy import keeps lark-oapi an optional dep for webhook mode.
+            from xana.agent_adapter.channels.feishu_ws import FeishuWSClient
+            self._ws_client = FeishuWSClient(
+                self._config.app_id,
+                self._config.app_secret,
+                domain=self._config.api_base,
+                on_im_message=self._on_event,
+            )
+            await self._ws_client.start(asyncio.get_running_loop())
         self._status = "healthy"
 
     async def stop(self) -> None:
+        if self._ws_client is not None:
+            await self._ws_client.stop()
+            self._ws_client = None
         self._status = "stopped"
 
     # ------------------------------------------------------------------
@@ -262,7 +277,14 @@ class FeishuAdapter(Adapter):
     # ------------------------------------------------------------------
 
     async def health(self) -> AdapterHealth:
-        return AdapterHealth(adapter_id=self.adapter_id, status=self._status)  # type: ignore[arg-type]
+        status = self._status
+        if (
+            status == "healthy"
+            and self._ws_client is not None
+            and not self._ws_client.thread_alive()
+        ):
+            status = "degraded"
+        return AdapterHealth(adapter_id=self.adapter_id, status=status)  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------
     # Internal helpers
