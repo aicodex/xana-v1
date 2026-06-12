@@ -221,6 +221,8 @@ class DefaultCommandRouter(CommandRouter):
         if val:
             new_val = val == "on"
         else:
+            if self.session_config_store is None:
+                return CommandResult(ok=False, message="session_config_store 未配置")
             current = await self.session_config_store.get(inbound.session_id)
             new_val = not current.streaming
         new = await self._persist_with(inbound.session_id, streaming=new_val)
@@ -233,6 +235,8 @@ class DefaultCommandRouter(CommandRouter):
         if val:
             new_val = val == "on"
         else:
+            if self.session_config_store is None:
+                return CommandResult(ok=False, message="session_config_store 未配置")
             current = await self.session_config_store.get(inbound.session_id)
             new_val = not current.thinking
         new = await self._persist_with(inbound.session_id, thinking=new_val)
