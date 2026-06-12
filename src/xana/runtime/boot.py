@@ -67,6 +67,7 @@ from xana.tools.builtin.memory_search import MemorySearchTool
 from xana.tools.builtin.read import ReadTool
 from xana.tools.builtin.todo_write import TodoWriteTool
 from xana.tools.builtin.tool_search import ToolSearchTool
+from xana.tools.builtin.web_fetch import WebFetchTool
 from xana.tools.builtin.web_search import WebSearchTool
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import ToolRegistry
@@ -150,6 +151,7 @@ async def boot(
     await tools.register(WebSearchTool(
         session_config_store=session_config_store,
         brave_api_key=(system_cfg.web_search.brave_search_key or None)))
+    await tools.register(WebFetchTool())
     provider = runtime_config.default_model.provider
     model = runtime_config.default_model.model
     client = _build_model_client(provider, model, cp)
