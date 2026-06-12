@@ -62,9 +62,11 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         progress_sink: ProgressSink | None = None,
         context_window: int | None = None,
         force_compact: int | None = None,
+        model_thresholds: dict[str, tuple[int, int]] | None = None,
     ) -> None:
         self.context_window = context_window
         self.force_compact = force_compact
+        self.model_thresholds = model_thresholds
         self.active_context_store = active_context_store
         self.history_mirror = history_mirror
         self.memory_injector_registry = memory_injector_registry
@@ -92,17 +94,22 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         run_id = f"{request.session_id}-{self._run_counter}"
         model = self.model
         effort: str | int | None = None
-        config_snapshot: dict[str, Any] = {
-            "provider": self.provider,
-            "context_window": self.context_window,
-            "force_compact": self.force_compact,
-        }
+        cfg = None
         if self.session_config_store is not None:
             cfg = await self.session_config_store.get(request.session_id)
             if cfg.model:
                 model = cfg.model
             if cfg.effort is not None:
                 effort = cfg.effort
+        ctx_win, force_at = self.context_window, self.force_compact
+        if self.model_thresholds and model in self.model_thresholds:
+            ctx_win, force_at = self.model_thresholds[model]
+        config_snapshot: dict[str, Any] = {
+            "provider": self.provider,
+            "context_window": ctx_win,
+            "force_compact": force_at,
+        }
+        if cfg is not None:
             config_snapshot.update({
                 "streaming": cfg.streaming,
                 "thinking": cfg.thinking,
@@ -166,6 +173,7 @@ class ChatAgent(Agent):
         progress_sink: ProgressSink | None = None,
         context_window: int | None = None,
         force_compact: int | None = None,
+        model_thresholds: dict[str, tuple[int, int]] | None = None,
     ) -> None:
         self._spec = spec
         self.harness = harness
@@ -185,6 +193,7 @@ class ChatAgent(Agent):
             progress_sink=progress_sink,
             context_window=context_window,
             force_compact=force_compact,
+            model_thresholds=model_thresholds,
         )
         self.event_mapper = DefaultAgentEventMapper()
         self._pending_cancel_sessions: set[str] = set()

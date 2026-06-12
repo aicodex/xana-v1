@@ -55,13 +55,17 @@ async def generate_summary(
     client, *, provider: str, model: str, messages: Sequence[MemoryMessage]
 ) -> str | None:
     """同模型生成摘要: 无 tools、单回合;<summary> 缺失重试,3 次后放弃返回 None。"""
-    model_msgs = tuple(
-        ModelMessage(
-            role=m.role if m.role in ("user", "assistant", "system", "tool") else "system",
-            content=m.content,
-        )
-        for m in messages
-    ) + (ModelMessage(role="user", content=get_compact_prompt()),)
+    def _plain(m: MemoryMessage) -> ModelMessage:
+        # 摘要请求必须是纯文本转录:tool 消息降级为 user 文本,
+        # assistant 的 tool_calls 元数据丢弃 — 否则 Anthropic 方言会拼出孤儿 tool_result(400)。
+        if m.role == "tool":
+            name = m.metadata.get("tool_name", "?")
+            return ModelMessage(role="user", content=f"[工具 {name} 的结果]\n{m.content}")
+        role = m.role if m.role in ("user", "assistant", "system") else "system"
+        return ModelMessage(role=role, content=m.content)
+
+    model_msgs = tuple(_plain(m) for m in messages) + (
+        ModelMessage(role="user", content=get_compact_prompt()),)
     req = ModelRequest(provider=provider, model=model, messages=model_msgs, tools_schema=())
     for _ in range(_COMPACT_RETRIES):
         parts: list[str] = []

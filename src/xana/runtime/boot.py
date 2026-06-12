@@ -21,7 +21,7 @@ from xana.agent_adapter.progress import AdapterProgressSink
 from xana.agent_adapter.router import DefaultAgentRequestRouter
 from xana.agents.chat_agent import ChatAgent, build_chat_agent_spec
 from xana.agents.interfaces import Agent
-from xana.config.loader import DefaultConfigProvider
+from xana.config.loader import DefaultConfigProvider, derive_compact_thresholds
 from xana.extension_api.registry import ExtensionRegistry
 from xana.harness_sdk.default import DefaultHarness
 from xana.harness_sdk.interfaces import ProgressSink
@@ -135,6 +135,8 @@ async def boot(
 
     cp = config_provider or DefaultConfigProvider()
     runtime_config = await cp.load(project_root)
+    system_cfg = cp.load_system_config()
+    model_thresholds = {e.name: derive_compact_thresholds(e) for e in system_cfg.models}
     provider = runtime_config.default_model.provider
     model = runtime_config.default_model.model
     client = _build_model_client(provider, model, cp)
@@ -167,6 +169,7 @@ async def boot(
         progress_sink=progress_sink,
         context_window=runtime_config.default_model.context_window,
         force_compact=runtime_config.default_model.force_compact,
+        model_thresholds=model_thresholds,
     )
 
     gateway.agents["chat"] = chat_agent

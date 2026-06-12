@@ -70,7 +70,7 @@ class DefaultHarness(Harness):
         self._extensions = extension_registry
         self._thread_stores: dict[str, ExtensionData] = {}
         self._config_snapshots: dict[str, dict] = {}
-        self._session_prompt_tokens: dict[tuple[str, str], int] = {}
+        self._session_prompt_tokens: dict[tuple[str, str], tuple[int, int]] = {}  # key → (prompt_tokens, history_len_at_record)
 
     async def close_thread(self, session_id: str) -> None:
         """Fire on_thread_stop and drop the thread-scoped extension store.
@@ -417,9 +417,14 @@ class DefaultHarness(Harness):
             # ---- auto-compact: token 数 vs force_compact 线 ----
             ctx_win = context.config_snapshot.get("context_window")
             force_at = context.config_snapshot.get("force_compact")
-            if ctx_win and force_at and history_msgs:
+            if ctx_win and force_at is not None and history_msgs:
                 key = (session_id, agent_name)
-                tokens = self._session_prompt_tokens.get(key) or estimate_tokens(history_msgs)
+                stored = self._session_prompt_tokens.get(key)
+                if stored is not None and len(history_msgs) >= stored[1]:
+                    tokens = stored[0]
+                else:
+                    # /clear 等导致历史变短 → 旧精确值失效,退回估算
+                    tokens = estimate_tokens(history_msgs)
                 live = messages_since_boundary(history_msgs)
                 if tokens >= int(force_at) and live and not compact_attempted:
                     compact_attempted = True
@@ -477,7 +482,8 @@ class DefaultHarness(Harness):
                     elif event.kind == "usage":
                         usage = await self.usage_accumulator.apply_model_event(usage, event)
                         if usage.exact_input_tokens:
-                            self._session_prompt_tokens[(session_id, agent_name)] = usage.exact_input_tokens
+                            self._session_prompt_tokens[(session_id, agent_name)] = (
+                                usage.exact_input_tokens, len(history_msgs))
                         if context.progress_sink is not None:
                             await context.progress_sink.report(ProgressEvent(
                                 session_id=session_id, run_id=run_id,

@@ -26,7 +26,7 @@ from pathlib import Path
 
 from xana.config.contracts import ConfigSource, ModelConfig, RawConfig, RuntimeConfig
 from xana.config.interfaces import ConfigProvider, ConfigReader
-from xana.config.system_model import SystemConfig
+from xana.config.system_model import ModelEntry, SystemConfig
 
 
 _FALLBACK_PROVIDER = "fake"
@@ -115,14 +115,20 @@ class DefaultConfigProvider(ConfigProvider):
         return self._system
 
 
+def derive_compact_thresholds(entry: "ModelEntry") -> tuple[int, int]:
+    """(context_window, force_compact) — compact_override 优先,0 也有效。"""
+    ctx_win = entry.context_window if entry.context_window is not None else _DEFAULT_CONTEXT_WINDOW
+    force_at = (entry.compact_override if entry.compact_override is not None
+                else ctx_win - _DEFAULT_MAX_OUTPUT - _COMPACT_HEADROOM)
+    return ctx_win, force_at
+
+
 def _resolve_default_model(system: SystemConfig) -> ModelConfig:
     chat_name = system.default_model.chat
     if chat_name is not None:
         entry = system.model(chat_name)
         if entry is not None:
-            ctx_win = entry.context_window if entry.context_window is not None else _DEFAULT_CONTEXT_WINDOW
-            force_at = (entry.compact_override if entry.compact_override is not None
-                        else ctx_win - _DEFAULT_MAX_OUTPUT - _COMPACT_HEADROOM)
+            ctx_win, force_at = derive_compact_thresholds(entry)
             return ModelConfig(
                 provider=entry.type, model=entry.name,
                 context_window=ctx_win, force_compact=force_at,
