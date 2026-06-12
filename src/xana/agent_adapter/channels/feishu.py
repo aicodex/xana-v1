@@ -125,6 +125,7 @@ class FeishuAdapter(Adapter):
                 self._config.app_secret,
                 domain=self._config.api_base,
                 on_im_message=self._on_event,
+                on_card_action=self._on_card_action,
             )
             await self._ws_client.start(asyncio.get_running_loop())
         self._status = "healthy"
@@ -157,19 +158,7 @@ class FeishuAdapter(Adapter):
         if parsed is None:
             return
         sender_id = parsed.sender_open_id or ""
-        if self._pairing is not None and not sender_id:
-            return
-        if self._pairing is not None and not self._pairing.is_allowed("feishu", sender_id):
-            newly_pending = self._pairing.add_pending(
-                "feishu", sender_id, first_message=parsed.text, chat_id=parsed.chat_id
-            )
-            if newly_pending and self._api_sender is not None:
-                hint = (
-                    "您尚未配对。请管理员运行: "
-                    f"`xana pair approve feishu {sender_id}`"
-                )
-                card = build_card(TurnDraft(run_id="?", content=hint), finalize=True)
-                await self._api_sender.send_card(receive_id=parsed.chat_id, card=card)
+        if not await self._gate_pairing(sender_id, parsed.chat_id, parsed.text):
             return
         session_id = self._bindings.allocate(parsed.chat_id, prefix="feishu")
         self._get_or_create_buffer(session_id).chat_id = parsed.chat_id
@@ -181,6 +170,51 @@ class FeishuAdapter(Adapter):
             metadata={"chat_id": parsed.chat_id, "message_id": parsed.message_id},
         )
         await self._inbound.put(msg)
+
+    async def _gate_pairing(self, user_id: str, chat_id: str, text: str) -> bool:
+        """Pairing gate. True = allowed; False = blocked (user added to
+        pending and hint card sent if newly pending)."""
+        if self._pairing is None:
+            return True
+        if not user_id:
+            return False
+        if self._pairing.is_allowed("feishu", user_id):
+            return True
+        newly_pending = self._pairing.add_pending(
+            "feishu", user_id, first_message=text, chat_id=chat_id
+        )
+        if newly_pending and self._api_sender is not None:
+            hint = (
+                "您尚未配对。请管理员运行: "
+                f"`xana pair approve feishu {user_id}`"
+            )
+            card = build_card(TurnDraft(run_id="?", content=hint), finalize=True)
+            await self._api_sender.send_card(receive_id=chat_id, card=card)
+        return False
+
+    async def _on_card_action(self, event: dict[str, Any]) -> None:
+        """Handle a converted `card.action.trigger` dict: a button click
+        re-enters the gateway as a normal user message."""
+        send_text = str((event.get("action") or {}).get("value", {}).get("send_text", "") or "")
+        open_id = str((event.get("operator") or {}).get("open_id", "") or "")
+        chat_id = str((event.get("context") or {}).get("open_chat_id", "") or "")
+        if not send_text or not chat_id:
+            return
+        if self._pairing is not None and not await self._gate_pairing(
+            open_id, chat_id, send_text
+        ):
+            return
+        session_id = self._bindings.allocate(chat_id, prefix="feishu")
+        self._get_or_create_buffer(session_id).chat_id = chat_id
+        await self._inbound.put(
+            InboundMessage(
+                adapter_id=self.adapter_id,
+                session_id=session_id,
+                text=send_text,
+                user_id=open_id or None,
+                metadata={"chat_id": chat_id, "source": "card_action"},
+            )
+        )
 
     # ------------------------------------------------------------------
     # Session binding helpers
@@ -227,8 +261,8 @@ class FeishuAdapter(Adapter):
         elif hkind == "tool_finished":
             call_id = str(payload.get("call_id", ""))
             if not call_id:
-                # default.py 的 tool_finished payload 目前没有 call_id:
-                # 容错地匹配最后一个同名 running 块。
+                # 防御性兜底:个别 harness 的 tool_finished 可能不带 call_id
+                # (default.py 现已携带),此时匹配最后一个同名 running 块。
                 name = str(payload.get("tool_name", ""))
                 for blk in reversed(ts.draft.tool_blocks):
                     if blk.running and blk.name == name:

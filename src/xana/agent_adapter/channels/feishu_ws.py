@@ -58,6 +58,7 @@ class FeishuWSClient:
         *,
         domain: str = DEFAULT_DOMAIN,
         on_im_message: EventCallback,
+        on_card_action: Optional[EventCallback] = None,
     ) -> None:
         if not app_id or not app_secret:
             raise ValueError("FeishuWSClient requires app_id and app_secret")
@@ -65,6 +66,12 @@ class FeishuWSClient:
         self._app_secret = app_secret
         self._domain = domain
         self._on_im_message = on_im_message
+        # Optional callback for `card.action.trigger` events (button
+        # clicks on interactive cards). When None, the dispatcher
+        # simply doesn't register the handler — keeps the SDK from
+        # logging "no handler" warnings on hosts that don't ship
+        # interactive cards.
+        self._on_card_action = on_card_action
         self._client = None  # lark_oapi.ws.client.Client (lazy, thread-local)
         self._thread: Optional[threading.Thread] = None
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -117,11 +124,13 @@ class FeishuWSClient:
         # Builder takes (encrypt_key, verification_token) but WS auth is
         # per-connection via app_id/app_secret, so empty strings are fine.
         try:
-            handler = (
-                lark.EventDispatcherHandler.builder("", "")
-                .register_p2_im_message_receive_v1(self._on_p2_im_message)
-                .build()
-            )
+            builder = lark.EventDispatcherHandler.builder("", "")
+            builder = builder.register_p2_im_message_receive_v1(self._on_p2_im_message)
+            if self._on_card_action is not None:
+                builder = builder.register_p2_card_action_trigger(
+                    self._on_p2_card_action
+                )
+            handler = builder.build()
             self._client = WSClient(
                 self._app_id,
                 self._app_secret,
@@ -164,11 +173,100 @@ class FeishuWSClient:
         except Exception:
             log.exception("feishu_ws: event callback raised")
 
+    def _on_p2_card_action(self, data):
+        """Sync callback from lark thread for ``card.action.trigger``.
+
+        Bridges to the async ``on_card_action`` callback on the main loop,
+        mirroring the IM message path. The lark SDK requires a
+        ``P2CardActionTriggerResponse`` return value so the toast / card
+        update fields can be populated by Feishu — we return an empty
+        response (no toast, no card update). The actual user feedback
+        comes from the gateway re-handling the synthesized text command
+        and posting a normal reply.
+        """
+        # Return type — lazy import so the module-level import in the
+        # worker thread is the only one (matches the IM path which uses
+        # string-typed data).
+        try:
+            from lark_oapi.event.callback.model.p2_card_action_trigger import (
+                P2CardActionTriggerResponse,
+            )
+        except Exception:
+            P2CardActionTriggerResponse = None
+        if self._stopping:
+            return P2CardActionTriggerResponse({}) if P2CardActionTriggerResponse else None
+        try:
+            event_dict = _p2_card_action_to_event_dict(data)
+        except Exception:
+            log.exception("feishu_ws: failed to convert P2CardActionTrigger")
+            return P2CardActionTriggerResponse({}) if P2CardActionTriggerResponse else None
+        loop = self._main_loop
+        cb = self._on_card_action
+        if loop is None or loop.is_closed() or cb is None:
+            log.warning("feishu_ws: main loop / callback unavailable; dropping card action")
+            return P2CardActionTriggerResponse({}) if P2CardActionTriggerResponse else None
+        try:
+            asyncio.run_coroutine_threadsafe(self._invoke_card_callback(event_dict), loop)
+        except Exception:
+            log.exception("feishu_ws: run_coroutine_threadsafe (card) failed")
+        return P2CardActionTriggerResponse({}) if P2CardActionTriggerResponse else None
+
+    async def _invoke_card_callback(self, event_dict: dict) -> None:
+        cb = self._on_card_action
+        if cb is None:
+            return
+        try:
+            await cb(event_dict)
+        except Exception:
+            log.exception("feishu_ws: card action callback raised")
+
     async def stop(self) -> None:
         """Best-effort shutdown: flip ``_stopping`` so in-flight bridged
         callbacks short-circuit. The daemon thread dies with the process
         (the lark SDK exposes no public stop/close)."""
         self._stopping = True
+
+
+def _p2_card_action_to_event_dict(data) -> dict:
+    """Convert lark-oapi ``P2CardActionTrigger`` into a flat dict so the
+    adapter's async callback can route it without importing lark types.
+
+    Fields we expose:
+      - ``header.event_type``           = ``"card.action.trigger"``
+      - ``operator.open_id``            = clicking user (open_id)
+      - ``action.value``                = the dict we set on the button
+        (``{"send_text": "<verbatim>"}`` for our flow)
+      - ``action.tag``                  = button / select / etc.
+      - ``context.open_chat_id``        = chat where the card lives
+      - ``context.open_message_id``     = card message id (for edit/patch)
+
+    Anything else from the trigger payload is dropped on purpose —
+    surfaced fields stay minimal so SDK additions don't drift the
+    contract.
+    """
+    ev = getattr(data, "event", None)
+    if ev is None:
+        return {"header": {"event_type": "card.action.trigger"}}
+    op = getattr(ev, "operator", None)
+    act = getattr(ev, "action", None)
+    ctx = getattr(ev, "context", None)
+    op_open_id = getattr(op, "open_id", None) if op is not None else None
+    act_value = getattr(act, "value", None) if act is not None else None
+    act_tag = getattr(act, "tag", None) if act is not None else None
+    ctx_chat = getattr(ctx, "open_chat_id", None) if ctx is not None else None
+    ctx_msg = getattr(ctx, "open_message_id", None) if ctx is not None else None
+    return {
+        "header": {"event_type": "card.action.trigger"},
+        "operator": {"open_id": op_open_id or ""},
+        "action": {
+            "value": dict(act_value) if isinstance(act_value, dict) else {},
+            "tag": act_tag or "",
+        },
+        "context": {
+            "open_chat_id": ctx_chat or "",
+            "open_message_id": ctx_msg or "",
+        },
+    }
 
 
 def _p2_im_message_to_event_dict(data) -> dict:
