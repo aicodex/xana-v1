@@ -28,7 +28,13 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.channels._bindings import BindingStore
-from xana.agent_adapter.channels._draft import TurnDraft, build_footer_meta, extract_buttons
+from xana.agent_adapter.channels._draft import (
+    STOP_BUTTON_ROWS,
+    TurnDraft,
+    build_footer_meta,
+    extract_buttons,
+    footer_from_progress,
+)
 from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels._throttle import DraftCoalescer
 from xana.agent_adapter.channels.telegram_html import (
@@ -153,6 +159,7 @@ class TelegramAdapter(Adapter):
         self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._buffers: dict[str, _SessionBuffer] = {}
         self._poll_task: asyncio.Task[None] | None = None
+        self._last_progress: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -449,10 +456,23 @@ class TelegramAdapter(Adapter):
         ts = buf.turns.get(run_id)
         if ts is None:
             ts = _TurnState(draft=TurnDraft(run_id=run_id))
+            # 脚标常驻:turn 第一个事件就带上次已知的 model/context
+            if self._last_progress is not None:
+                ts.draft.footer_meta = footer_from_progress(self._last_progress)
             buf.turns[run_id] = ts
             while len(buf.turns) > _MAX_TURNS_KEPT:
                 buf.turns.popitem(last=False)
         return ts
+
+    def note_progress(self, payload: dict) -> None:
+        """AdapterProgressSink hook(sync):usage_progress 实时刷新当前 turn 脚标。"""
+        self._last_progress = dict(payload)
+        buf = self._buffers.get(str(payload.get("session_id") or ""))
+        if buf is None or not buf.turns:
+            return
+        ts = buf.turns[next(reversed(buf.turns))]
+        ts.draft.footer_meta = footer_from_progress(payload)
+        ts.coalescer.flush(self._make_stream_send(buf, ts))
 
     # -- outbound senders ------------------------------------------------
 
@@ -461,14 +481,19 @@ class TelegramAdapter(Adapter):
             if buf.chat_id is None or self._api_client is None:
                 return
             html = render_streaming(ts.draft)
+            # 流式期间挂 ⏹ 停止按钮;finalize 路径会换成模型提取的选项按钮。
+            # 同步存入 last_buttons,callback 'btn:0:0' 才能反查到 "/cancel"。
+            ts.last_buttons = STOP_BUTTON_ROWS
+            markup = buttons_to_reply_markup(STOP_BUTTON_ROWS)
             if ts.message_id is None:
                 ts.message_id = await self._api_client.send_message(
-                    chat_id=buf.chat_id, text=html, parse_mode="HTML"
+                    chat_id=buf.chat_id, text=html, parse_mode="HTML",
+                    reply_markup=markup,
                 )
             else:
                 await self._api_client.edit_message_text(
                     chat_id=buf.chat_id, message_id=ts.message_id,
-                    text=html, parse_mode="HTML",
+                    text=html, parse_mode="HTML", reply_markup=markup,
                 )
         return _send
 

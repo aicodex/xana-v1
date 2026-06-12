@@ -51,7 +51,10 @@ def _tool_panel(blk: ToolBlock) -> dict:
     return _panel(blk.header(), "\n".join(parts))
 
 
-def build_card(draft: TurnDraft, *, finalize: bool) -> dict:
+def build_card(
+    draft: TurnDraft, *, finalize: bool, buttons: list[list[dict]] | None = None
+) -> dict:
+    """buttons=None → 用 draft.buttons;显式传入(如流式停止按钮)则覆盖。"""
     elements: list[dict] = []
     if draft.thinking:
         elements.append(_panel("💭 思考过程", draft.thinking))
@@ -65,7 +68,7 @@ def build_card(draft: TurnDraft, *, finalize: bool) -> dict:
         elements.append({"tag": "hr"})
         meta = " | ".join(f"{k}: {v}" for k, v in draft.footer_meta)
         elements.append({"tag": "markdown", "content": f"<font color='grey'>{meta}</font>"})
-    elements.extend(_buttons_elements(draft.buttons))
+    elements.extend(_buttons_elements(draft.buttons if buttons is None else buttons))
     return {"schema": "2.0", "config": {"width_mode": "fill"}, "body": {"elements": elements}}
 
 

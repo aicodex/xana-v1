@@ -102,8 +102,17 @@ def _fmt_k(n: int) -> str:
     return f"{n / 1000:.1f}k".replace(".0k", "k")
 
 
+# 流式期间的停止按钮:点击复用现有按钮回流(send_text → gateway 命令路由 → /cancel)
+STOP_BUTTON_ROWS = [[{"text": "⏹ 停止", "send": "/cancel"}]]
+
+
+def _context_pair(tin: int) -> tuple[str, str]:
+    pct = round(tin * 100 / CONTEXT_BUDGET_TOKENS)
+    return ("context", f"{_fmt_k(tin)}/{CONTEXT_BUDGET_TOKENS // 1000}k ({pct}%)")
+
+
 def build_footer_meta(usage) -> list[tuple[str, str]]:
-    """脚标: model | tokens in/out | context used/budget (pct%)。
+    """脚标: model | context used/budget (pct%)。tokens in/out 不展示(不重要)。
     usage 为 UsageSnapshot 或 None(鸭子类型,避免依赖 state contracts)。"""
     if usage is None:
         return []
@@ -111,10 +120,19 @@ def build_footer_meta(usage) -> list[tuple[str, str]]:
     if getattr(usage, "model", None):
         pairs.append(("model", str(usage.model)))
     tin = getattr(usage, "exact_input_tokens", None)
-    tout = getattr(usage, "exact_output_tokens", None)
-    if tin is not None or tout is not None:
-        pairs.append(("tokens", f"{tin or 0} in / {tout or 0} out"))
     if tin:
-        pct = round(tin * 100 / CONTEXT_BUDGET_TOKENS)
-        pairs.append(("context", f"{_fmt_k(tin)}/{CONTEXT_BUDGET_TOKENS // 1000}k ({pct}%)"))
+        pairs.append(_context_pair(tin))
+    return pairs
+
+
+def footer_from_progress(payload: dict, *, model: str | None = None) -> list[tuple[str, str]]:
+    """usage_progress payload → 脚标对(与 build_footer_meta 同公式/同格式)。
+    payload 形如 {"kind":"usage_progress","tokens_in":...,"model":...}。"""
+    pairs: list[tuple[str, str]] = []
+    m = model or payload.get("model")
+    if m:
+        pairs.append(("model", str(m)))
+    tin = int(payload.get("tokens_in") or 0)
+    if tin:
+        pairs.append(_context_pair(tin))
     return pairs

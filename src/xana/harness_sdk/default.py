@@ -435,6 +435,8 @@ class DefaultHarness(Harness):
                                 message="usage_progress",
                                 payload={
                                     "kind": "usage_progress",
+                                    "session_id": session_id,
+                                    "model": usage.model,
                                     "tokens_in": usage.exact_input_tokens or 0,
                                     "tokens_out": usage.exact_output_tokens or 0,
                                     "elapsed_s": time.monotonic() - turn_start,

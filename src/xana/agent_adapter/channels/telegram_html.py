@@ -48,13 +48,21 @@ def render_tool_block(blk: ToolBlock) -> str:
 
 
 def render_streaming(draft: TurnDraft) -> str:
-    """流式中的单消息: [thinking 折叠块] + 正文。工具块独立 sealed 消息,不在此。"""
+    """流式中的单消息: [thinking 折叠块] + 正文 + 脚标(常驻,随 usage_progress 变)。
+    工具块独立 sealed 消息,不在此。"""
     parts: list[str] = []
     if draft.thinking:
         parts.append(render_thinking(draft.thinking))
     if draft.content:
         parts.append(md_to_html(draft.content))
+    if draft.footer_meta:
+        parts.append(_footer_html(draft.footer_meta))
     return clip_html("\n".join(parts) or "…")
+
+
+def _footer_html(footer_meta: list[tuple[str, str]]) -> str:
+    meta = " | ".join(f"{k}: {v}" for k, v in footer_meta)
+    return "――――――――――――\n<i>" + _html.escape(meta) + "</i>"
 
 
 def render_answer(draft: TurnDraft) -> str:
@@ -62,8 +70,7 @@ def render_answer(draft: TurnDraft) -> str:
     if draft.content:
         parts.append(md_to_html(draft.content))
     if draft.footer_meta:
-        meta = " | ".join(f"{k}: {v}" for k, v in draft.footer_meta)
-        parts.append("――――――――――――\n<i>" + _html.escape(meta) + "</i>")
+        parts.append(_footer_html(draft.footer_meta))
     return clip_html("\n".join(parts).strip() or " ")
 
 
