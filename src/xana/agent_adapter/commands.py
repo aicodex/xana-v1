@@ -108,8 +108,10 @@ class DefaultCommandRouter(CommandRouter):
     async def _cmd_clear(self, inbound: InboundMessage, args: str) -> CommandResult:
         if self.active_context_store is None:
             return CommandResult(ok=False, message="active_context_store 未配置")
+        snapshot = await self.active_context_store.get(inbound.session_id, "chat")
+        n = len(snapshot.messages) if snapshot else 0
         await self.active_context_store.clear(inbound.session_id, "chat")
-        return CommandResult(ok=True, message="[cleared] 上下文已清空")
+        return CommandResult(ok=True, message=f"[cleared] 已清空 {n} 条历史")
 
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
         from xana.harness_sdk.compact import (
@@ -163,7 +165,8 @@ class DefaultCommandRouter(CommandRouter):
             summary=summary, recent=recent))
         return CommandResult(
             ok=True,
-            message=f"✅ 上下文已压缩,逐字保留最近 {len(recent)} 条消息\n\n{summary}",
+            message=(f"✅ 上下文已压缩:{len(live)} 条消息 → 摘要,"
+                     f"逐字保留最近 {len(recent)} 条\n\n{summary}"),
         )
 
     async def _persist_with(self, session_id: str, **changes) -> "SessionConfig":

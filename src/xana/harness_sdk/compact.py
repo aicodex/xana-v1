@@ -61,7 +61,7 @@ def summary_progress_bar(text: str) -> str:
     """流式摘要文本 → 进度条。摘要格式固定为 9 个编号小节,
     见到第 n 节标题即认为前 n-1 节完成。
     只扫 <summary> 之后的部分 — <analysis> 阶段模型会复述小节标题,会虚高。"""
-    _, sep, text = text.partition("<summary>")
+    _, sep, text = text.rpartition("<summary>")
     if not sep:
         return ("🗜 正在压缩上下文\n"
                 + "▱" * len(SUMMARY_SECTIONS) + f" 0/{len(SUMMARY_SECTIONS)} · 分析对话")
@@ -107,9 +107,12 @@ async def generate_summary(
                     break
         except Exception:
             continue  # 传输层异常 = 一次失败重试,与缺 <summary> 同等对待
-        match = _SUMMARY_RE.search("".join(parts))
-        if match and match.group(1).strip():
-            return match.group(1).strip()
+        # 模型可能在 <analysis> 里复述格式时写出占位的 <summary>…</summary>,
+        # 第一个匹配会是 "…" — 取最长的非空匹配才是真摘要。
+        candidates = [c.strip() for c in _SUMMARY_RE.findall("".join(parts))]
+        candidates = [c for c in candidates if c]
+        if candidates:
+            return max(candidates, key=len)
     return None
 
 
