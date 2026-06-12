@@ -92,7 +92,7 @@ OUTPUT = """\
 
 如果一句话能说清，不要用三句。偏好短而直接的句子胜过冗长的解释。这不适用于代码或工具调用。"""
 
-STATIC_HEAD = (INTRO, SYSTEM, DOING_TASKS, ACTIONS)
+# 头部静态段不抽元组:identity 必须插在 INTRO 与 SYSTEM 之间,见 build_system_prompt
 STATIC_TAIL = (USING_TOOLS, TONE, OUTPUT)
 
 
