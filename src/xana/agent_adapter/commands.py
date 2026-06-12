@@ -55,8 +55,8 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/compact",  description="用 LLM 把本会话历史压缩成摘要"),
             CommandSpec(name="/model",    description="切换本会话模型，无参列出可选"),
             CommandSpec(name="/effort",   description="推理强度切换，无参列出可选"),
-            CommandSpec(name="/streaming", description="token 流开关 on/off"),
-            CommandSpec(name="/thinking", description="思考链开关 on/off"),
+            CommandSpec(name="/streaming", description="token 流开关 on/off(无参数切换)"),
+            CommandSpec(name="/thinking", description="思考链开关 on/off(无参数切换)"),
             CommandSpec(name="/attach",   description="切换 task 订阅"),
             CommandSpec(name="/cancel",   description="取消当前 turn"),
             CommandSpec(name="/project",  description="项目管理"),
@@ -216,16 +216,26 @@ class DefaultCommandRouter(CommandRouter):
 
     async def _cmd_streaming(self, inbound: InboundMessage, args: str) -> CommandResult:
         val = args.strip().lower()
-        if val not in {"on", "off"}:
-            return CommandResult(ok=False, message="streaming 必须为 on/off")
-        new = await self._persist_with(inbound.session_id, streaming=(val == "on"))
+        if val and val not in {"on", "off"}:
+            return CommandResult(ok=False, message="streaming 用法: /streaming [on|off](无参数=切换)")
+        if val:
+            new_val = val == "on"
+        else:
+            current = await self.session_config_store.get(inbound.session_id)
+            new_val = not current.streaming
+        new = await self._persist_with(inbound.session_id, streaming=new_val)
         return CommandResult(ok=True, message=f"streaming={new.streaming}")
 
     async def _cmd_thinking(self, inbound: InboundMessage, args: str) -> CommandResult:
         val = args.strip().lower()
-        if val not in {"on", "off"}:
-            return CommandResult(ok=False, message="thinking 必须为 on/off")
-        new = await self._persist_with(inbound.session_id, thinking=(val == "on"))
+        if val and val not in {"on", "off"}:
+            return CommandResult(ok=False, message="thinking 用法: /thinking [on|off](无参数=切换)")
+        if val:
+            new_val = val == "on"
+        else:
+            current = await self.session_config_store.get(inbound.session_id)
+            new_val = not current.thinking
+        new = await self._persist_with(inbound.session_id, thinking=new_val)
         return CommandResult(ok=True, message=f"thinking={new.thinking}")
 
     async def _cmd_search_provider(self, inbound: InboundMessage, args: str) -> CommandResult:
