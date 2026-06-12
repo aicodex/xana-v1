@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, AsyncIterator
 
@@ -44,7 +45,8 @@ from xana.llm_driver.contracts import (
     RateLimitSignal,
 )
 from xana.llm_driver.interfaces import ModelClient
-from xana.llm_driver.providers.dsml_recovery import parse_dsml_tool_calls
+from xana.llm_driver.providers.dsml_recovery import DSML_FENCE_TAGS, parse_dsml_tool_calls
+from xana.llm_driver.providers.stream_scrubber import StreamingContextScrubber
 
 
 _logger = logging.getLogger(__name__)
@@ -317,6 +319,9 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
     text_buffer: list[str] = []
     blocks: dict[int, dict[str, Any]] = {}
     usage_acc: dict[str, int] = {}
+    # Per-stream scrubber: yielded text_delta events are scrubbed of raw
+    # DSML fences; the RAW text still enters text_buffer for recovery.
+    scrubber = StreamingContextScrubber(DSML_FENCE_TAGS)
 
     event_type: str | None = None
     data_lines: list[str] = []
@@ -327,7 +332,7 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
                 payload = _decode_sse_data(data_lines)
                 if payload is not None:
                     async for ev in _dispatch_sse_event(
-                        event_type, payload, blocks, text_buffer
+                        event_type, payload, blocks, text_buffer, scrubber
                     ):
                         yield ev
                     if event_type == "message_start":
@@ -346,18 +351,28 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
     if event_type is not None and data_lines:
         payload = _decode_sse_data(data_lines)
         if payload is not None:
-            async for ev in _dispatch_sse_event(event_type, payload, blocks, text_buffer):
+            async for ev in _dispatch_sse_event(
+                event_type, payload, blocks, text_buffer, scrubber
+            ):
                 yield ev
+
+    tail = scrubber.flush()
+    if tail:
+        yield ModelEvent(kind="text_delta", payload={"text": tail})
 
     recovered_text = "".join(text_buffer)
     _, leaked = parse_dsml_tool_calls(recovered_text)
-    for idx, call in enumerate(leaked):
+    if leaked:
+        _logger.warning(
+            "DSML_LEAK_WORKAROUND deepseek endpoint leaked %d tool call(s) as raw "
+            "DSML; recovered client-side: %s", len(leaked), [c["name"] for c in leaked])
+    for call in leaked:
         yield ModelEvent(
             kind="tool_call",
             payload={
                 "tool_name": call["name"],
                 "input": call["input"],
-                "call_id": f"{_DSML_RECOVERED_CALL_ID_PREFIX}{idx}",
+                "call_id": f"{_DSML_RECOVERED_CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}",
             },
         )
 
@@ -387,6 +402,7 @@ async def _dispatch_sse_event(
     payload: dict[str, Any],
     blocks: dict[int, dict[str, Any]],
     text_buffer: list[str],
+    scrubber: StreamingContextScrubber,
 ) -> AsyncGenerator[ModelEvent, None]:
     if event_type == "content_block_start":
         idx = int(payload.get("index", 0))
@@ -405,9 +421,13 @@ async def _dispatch_sse_event(
         dtype = delta.get("type")
         if dtype == "text_delta":
             text = delta.get("text") or ""
+            # RAW text feeds the post-stream DSML recovery scan; the
+            # yielded event carries only the scrubbed visible portion.
             text_buffer.append(text)
-            for ev in _delta_to_events({"content": text}):
-                yield ev
+            visible = scrubber.feed(text)
+            if visible:
+                for ev in _delta_to_events({"content": visible}):
+                    yield ev
         elif dtype in ("thinking_delta", "reasoning_content_delta"):
             # Reasoning never enters text_buffer: it must not leak into the
             # final answer text nor the post-stream DSML recovery scan.

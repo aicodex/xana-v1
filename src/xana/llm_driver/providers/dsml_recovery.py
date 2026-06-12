@@ -29,6 +29,14 @@ _P = "｜{1,2}"
 _DSML_OPEN = rf"<{_P}DSML{_P}"
 _DSML_CLOSE = rf"</{_P}DSML{_P}"
 
+# Open/close marker pairs for the streaming scrubber (StreamingContextScrubber
+# does literal substring matching, so the variable-pipe regex can't be used —
+# enumerate both the endpoint's double-pipe and the model card's single-pipe).
+DSML_FENCE_TAGS: tuple[tuple[str, str], ...] = (
+    ("<｜｜DSML｜｜tool_calls>", "</｜｜DSML｜｜tool_calls>"),
+    ("<｜DSML｜tool_calls>", "</｜DSML｜tool_calls>"),
+)
+
 _TOOL_CALLS_RE = re.compile(
     rf"{_DSML_OPEN}tool_calls>(.*?){_DSML_CLOSE}tool_calls>",
     re.DOTALL,
