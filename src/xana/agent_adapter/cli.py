@@ -41,15 +41,8 @@ from xana.agents.contracts import AgentEvent
 
 
 from xana.agent_adapter._tool_titles import (
-    TOOL_GLYPH as _TOOL_GLYPH,
-    _PREVIEW_LIMIT,
-    _RESULT_PREVIEW_LIMIT,
-    _ELLIPSIS,
-    bash_comment_label as _bash_comment_label,
     first_line_preview as _first_line_preview,
     tool_header as _tool_header,
-    tool_preview as _tool_preview,
-    truncate as _truncate,
 )
 _FOOTER_DIVIDER = "―" * 20  # U+2015 × 20, matches yuxuc
 
