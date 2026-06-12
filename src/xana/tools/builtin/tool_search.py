@@ -98,9 +98,13 @@ class ToolSearchTool(Tool):
                     ensure_ascii=False) + "</function>"
                 for s in matched)
             rendered = f"<functions>\n{lines}\n</functions>"
+        display = (f"已加载 {len(revealed)} 个工具: {', '.join(revealed)},下一轮可直接调用。"
+                   if revealed else rendered)  # 未命中时的纯文本本来就友好
+        # metadata 同时携带 revealed_tools(harness 持久化)与 display_text(UI 覆盖)
         return ToolResult(ok=True, content={"matches": revealed, "query": query,
                                             "total_deferred_tools": len(specs)},
-                          rendered=rendered, metadata={"revealed_tools": revealed})
+                          rendered=rendered,
+                          metadata={"revealed_tools": revealed, "display_text": display})
 
     async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
         return result

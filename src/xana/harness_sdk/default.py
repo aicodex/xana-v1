@@ -625,12 +625,15 @@ class DefaultHarness(Harness):
                         ts=0.0,
                     )
                 )
+                # UI 展示可被 display_text 覆盖(如 tool_search 的友好文案);
+                # 模型上下文(MemoryMessage)仍存 rendered,完整 schema 不变。
+                display_text = result.metadata.get("display_text") or rendered
                 yield HarnessEvent(
                     kind="tool_finished",
                     session_id=session_id,
                     run_id=run_id,
                     payload={
-                        "text": rendered,
+                        "text": display_text,
                         "tool_name": tc["tool_name"],
                         "call_id": tc["call_id"],
                         "input": dict(tc["input"]),
