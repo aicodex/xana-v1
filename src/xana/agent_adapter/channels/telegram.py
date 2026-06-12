@@ -127,6 +127,7 @@ class _TurnState:
     tool_msg_ids: dict[str, int] = field(default_factory=dict)  # call_id → sealed 消息
     tool_started_ts: dict = field(default_factory=dict)
     last_buttons: list[list[dict]] = field(default_factory=list)
+    finalized: bool = False
 
 
 @dataclass
@@ -422,12 +423,14 @@ class TelegramAdapter(Adapter):
             ts.last_buttons = ts.draft.buttons
             usage = event.harness_event.usage if event.harness_event else None
             ts.draft.footer_meta = build_footer_meta(usage)
+            ts.finalized = True
             await ts.coalescer.finalize(self._make_finalize_send(buf, ts))
         elif hkind == "error":
             for blk in ts.draft.close_running_tools():
                 await self._send_tool_message(buf, ts, blk.call_id)
             err = text or str(payload.get("error", "") or "")
             ts.draft.content += f"\n[error] {err}" if err else "\n[error]"
+            ts.finalized = True
             await ts.coalescer.finalize(self._make_finalize_send(buf, ts))
         # 其他 harness kind(turn_started/paused/cancelled 等):不渲染。
 
@@ -471,6 +474,8 @@ class TelegramAdapter(Adapter):
         if buf is None or not buf.turns:
             return
         ts = buf.turns[next(reversed(buf.turns))]
+        if ts.finalized:
+            return
         ts.draft.footer_meta = footer_from_progress(payload)
         ts.coalescer.flush(self._make_stream_send(buf, ts))
 

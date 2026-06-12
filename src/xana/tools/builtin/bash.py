@@ -19,6 +19,25 @@ from xana.tools.interfaces import Tool
 _DEFAULT_TIMEOUT_S = 120.0
 _MAX_TIMEOUT_S = 600.0
 _MAX_OUTPUT_CHARS = 50_000
+_MS_HEURISTIC_THRESHOLD = 600  # values above this for the "timeout" alias are treated as ms
+
+
+def _resolve_timeout_s(input_: dict) -> float:
+    """Return the effective timeout in seconds from a tool input dict.
+
+    ``timeout_s`` is always treated as seconds.  ``timeout`` (alias) is treated
+    as milliseconds when its value exceeds ``_MS_HEURISTIC_THRESHOLD`` (600),
+    because models sometimes send milliseconds (e.g. ``{"timeout": 5000}``).
+    """
+    if input_.get("timeout_s") is not None:
+        return float(input_["timeout_s"])
+    raw = input_.get("timeout")
+    if raw is None:
+        return _DEFAULT_TIMEOUT_S
+    raw = float(raw)
+    if raw > _MS_HEURISTIC_THRESHOLD:
+        return raw / 1000.0
+    return raw
 
 
 _SPEC = ToolSpec(
@@ -60,14 +79,7 @@ class BashTool(Tool):
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         command = invocation.input["command"]
-        # schema 规范键是 timeout_s,但模型常传 "timeout" —— 容忍别名,
-        # 否则被静默忽略后回落 120s 默认(2026-06-12 飞书实测踩坑)。
-        requested = float(
-            invocation.input.get("timeout_s")
-            or invocation.input.get("timeout")
-            or _DEFAULT_TIMEOUT_S
-        )
-        timeout = min(requested, _MAX_TIMEOUT_S)
+        timeout = min(_resolve_timeout_s(invocation.input), _MAX_TIMEOUT_S)
 
         proc = await asyncio.create_subprocess_shell(
             command,
