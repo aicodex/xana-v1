@@ -29,9 +29,10 @@ def clip_html(s: str, limit: int = _TG_LIMIT) -> str:
     return s if len(s) <= limit else s[:limit] + "…"
 
 
-def render_thinking(thinking: str) -> str:
-    return ("💭 <b>Thinking</b>\n"
-            f"<blockquote expandable>{md_to_html(clip_body(thinking))}</blockquote>")
+def render_thinking(thinking: str, title: str | None = None) -> str:
+    head = _html.escape(title) if title else "💭 <b>Thinking</b>"
+    body = md_to_html(clip_body(thinking)) or " "  # 空内容也保留块(布局不跳变)
+    return f"{head}\n<blockquote expandable>{body}</blockquote>"
 
 
 def render_tool_block(blk: ToolBlock) -> str:
@@ -51,8 +52,8 @@ def render_streaming(draft: TurnDraft) -> str:
     """流式中的单消息: [thinking 折叠块] + 正文 + 脚标(常驻,随 usage_progress 变)。
     工具块独立 sealed 消息,不在此。"""
     parts: list[str] = []
-    if draft.thinking:
-        parts.append(render_thinking(draft.thinking))
+    if draft.thinking or draft.thinking_title:
+        parts.append(render_thinking(draft.thinking, draft.thinking_title))
     if draft.content:
         parts.append(md_to_html(draft.content))
     if draft.footer_meta:

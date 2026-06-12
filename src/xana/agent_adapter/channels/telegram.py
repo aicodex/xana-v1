@@ -420,6 +420,11 @@ class TelegramAdapter(Adapter):
                 await self._send_tool_message(buf, ts, blk.call_id)
             if text:
                 ts.draft.content = text
+            # /compact 最终事件携带完整摘要 → 折叠块;普通模型 final 无这两个键,不受影响
+            if isinstance(payload.get("thinking"), str) and payload.get("thinking") \
+                    and payload.get("thinking_title"):
+                ts.draft.thinking = str(payload["thinking"])
+                ts.draft.thinking_title = str(payload["thinking_title"])
             ts.draft.content, ts.draft.buttons = extract_buttons(ts.draft.content)
             ts.last_buttons = ts.draft.buttons
             usage = event.harness_event.usage if event.harness_event else None
@@ -495,8 +500,11 @@ class TelegramAdapter(Adapter):
         if payload.get("kind") == "usage_progress":
             ts.last_progress = dict(payload)
         if payload.get("kind") == "compact_progress" and payload.get("text"):
-            # /compact 命令流式进度:进度条直接进消息正文
+            # /compact 命令流式进度:进度条直接进消息正文;部分摘要进折叠块
             ts.draft.content = str(payload["text"])
+            ts.draft.thinking = str(payload.get("thinking") or "")
+            if "thinking_title" in payload:
+                ts.draft.thinking_title = payload.get("thinking_title")
         ts.draft.footer_meta = footer_from_progress(payload)
         ts.coalescer.flush(self._make_stream_send(buf, ts))
 
@@ -562,7 +570,21 @@ class TelegramAdapter(Adapter):
             markup = buttons_to_reply_markup(ts.draft.buttons)
             answer = render_answer(ts.draft)
             has_answer = bool(answer.strip())
-            if ts.draft.thinking:
+            if ts.draft.thinking_title:
+                # /compact 形态:进度条正文 + 折叠摘要块同在一条消息,布局不跳变
+                combined = render_thinking(ts.draft.thinking, ts.draft.thinking_title) \
+                    + ("\n" + answer if has_answer else "")
+                if ts.message_id is not None:
+                    await self._api_client.edit_message_text(
+                        chat_id=buf.chat_id, message_id=ts.message_id,
+                        text=combined, parse_mode="HTML", reply_markup=markup,
+                    )
+                else:
+                    ts.message_id = await self._api_client.send_message(
+                        chat_id=buf.chat_id, text=combined,
+                        parse_mode="HTML", reply_markup=markup,
+                    )
+            elif ts.draft.thinking:
                 thinking_html = render_thinking(ts.draft.thinking)
                 if ts.message_id is not None:
                     await self._api_client.edit_message_text(

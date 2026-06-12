@@ -56,8 +56,9 @@ def build_card(
 ) -> dict:
     """buttons=None → 用 draft.buttons;显式传入(如流式停止按钮)则覆盖。"""
     elements: list[dict] = []
-    if draft.thinking:
-        elements.append(_panel("💭 思考过程", draft.thinking))
+    if draft.thinking or draft.thinking_title:
+        # thinking_title 非空时即使正文为空也出面板(/compact 卡片布局从第一帧起不跳变)
+        elements.append(_panel(draft.thinking_title or "💭 思考过程", draft.thinking or " "))
     for blk in draft.tool_blocks:
         elements.append(_tool_panel(blk))
     if draft.content:

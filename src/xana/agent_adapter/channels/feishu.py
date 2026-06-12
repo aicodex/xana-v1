@@ -284,6 +284,11 @@ class FeishuAdapter(Adapter):
             ts.draft.close_running_tools()
             if text:
                 ts.draft.content = text
+            # /compact 最终事件携带完整摘要 → 折叠块;普通模型 final 无这两个键,不受影响
+            if isinstance(payload.get("thinking"), str) and payload.get("thinking") \
+                    and payload.get("thinking_title"):
+                ts.draft.thinking = str(payload["thinking"])
+                ts.draft.thinking_title = str(payload["thinking_title"])
             ts.draft.content, ts.draft.buttons = extract_buttons(ts.draft.content)
             usage = event.harness_event.usage if event.harness_event else None
             ts.draft.footer_meta = (
@@ -357,8 +362,11 @@ class FeishuAdapter(Adapter):
         if payload.get("kind") == "usage_progress":
             ts.last_progress = dict(payload)
         if payload.get("kind") == "compact_progress" and payload.get("text"):
-            # /compact 命令流式进度:进度条直接进卡片正文
+            # /compact 命令流式进度:进度条直接进卡片正文;部分摘要进折叠块
             ts.draft.content = str(payload["text"])
+            ts.draft.thinking = str(payload.get("thinking") or "")
+            if "thinking_title" in payload:
+                ts.draft.thinking_title = payload.get("thinking_title")
         ts.draft.footer_meta = footer_from_progress(payload)
         ts.coalescer.flush(self._make_send(buf, ts, finalize=False))
 

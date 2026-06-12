@@ -115,8 +115,9 @@ class DefaultCommandRouter(CommandRouter):
 
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
         from xana.harness_sdk.compact import (
-            build_post_compact_context, generate_summary,
-            messages_since_boundary, recent_user_messages, summary_progress_bar,
+            SUMMARY_SECTIONS, build_post_compact_context, generate_summary,
+            messages_since_boundary, partial_summary, recent_user_messages,
+            summary_progress_bar,
         )
         from xana.harness_sdk.contracts import ProgressEvent
         if self.active_context_store is None:
@@ -137,20 +138,22 @@ class DefaultCommandRouter(CommandRouter):
             return CommandResult(ok=False, message=f"provider {self.provider!r} 未注册")
         self._compact_seq += 1
         run_id = f"compactcmd-{inbound.session_id}-{self._compact_seq}"
-        last_bar: list[str] = [""]
+        last_emitted: list[tuple[str, str]] = [("", "")]
 
         async def _emit(text_so_far: str = "", phase: str = "running") -> None:
             if self.progress_sink is None:
                 return
             bar = summary_progress_bar(text_so_far)
-            if phase == "running" and bar == last_bar[0]:
-                return  # 只在进度变化时刷新
-            last_bar[0] = bar
+            partial = partial_summary(text_so_far) or ""
+            if phase == "running" and (bar, partial) == last_emitted[0]:
+                return  # 进度条和部分摘要都没变 → 不发纯重复
+            last_emitted[0] = (bar, partial)
             await self.progress_sink.report(ProgressEvent(
                 session_id=inbound.session_id, run_id=run_id,
                 message="compact_progress",
                 payload={"kind": "compact_progress", "session_id": inbound.session_id,
-                         "run_id": run_id, "model": model, "phase": phase, "text": bar},
+                         "run_id": run_id, "model": model, "phase": phase, "text": bar,
+                         "thinking": partial, "thinking_title": "🗜 正在压缩…"},
             ))
 
         await _emit("")  # 立即出卡:0/9 进度条
@@ -163,10 +166,15 @@ class DefaultCommandRouter(CommandRouter):
         await self.active_context_store.set(build_post_compact_context(
             session_id=inbound.session_id, agent_name="chat",
             summary=summary, recent=recent))
+        # 最终卡:进度条留在正文(9/9 · 完成),完整摘要进折叠块
+        n = len(SUMMARY_SECTIONS)
+        bar_done = "▰" * n + f" {n}/{n} · 完成"
         return CommandResult(
             ok=True,
-            message=(f"✅ 上下文已压缩:{len(live)} 条消息 → 摘要,"
-                     f"逐字保留最近 {len(recent)} 条\n\n{summary}"),
+            message=(f"🗜 已压缩上下文\n{bar_done}\n"
+                     f"✅ {len(live)} 条消息 → 摘要,逐字保留最近 {len(recent)} 条"),
+            payload={"thinking": summary,
+                     "thinking_title": f"已压缩 {len(live)} 条消息"},
         )
 
     async def _persist_with(self, session_id: str, **changes) -> "SessionConfig":

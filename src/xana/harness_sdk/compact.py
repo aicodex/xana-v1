@@ -141,6 +141,10 @@ def _extract_summary(text: str) -> str | None:
     return seg or None
 
 
+# 公开别名:/compact 命令流式进度需要随时取「目前已生成的部分摘要」
+partial_summary = _extract_summary
+
+
 def build_post_compact_context(
     *, session_id: str, agent_name: str, summary: str, recent: tuple[MemoryMessage, ...]
 ) -> ActiveContext:

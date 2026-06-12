@@ -39,6 +39,7 @@ class TurnDraft:
     run_id: str
     content: str = ""
     thinking: str = ""
+    thinking_title: str | None = None  # None → 渲染器用默认标题(💭 思考过程/Thinking)
     footer_meta: list[tuple[str, str]] = field(default_factory=list)
     buttons: list[list[dict]] = field(default_factory=list)
     tool_blocks: list[ToolBlock] = field(default_factory=list)
