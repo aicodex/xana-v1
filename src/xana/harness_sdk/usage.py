@@ -42,6 +42,11 @@ class DefaultUsageAccumulator(UsageAccumulator):
         if event.kind != "usage" or event.usage is None:
             return current
         u = event.usage
-        new_in = u.input_tokens if (u.input_tokens is not None and u.input_tokens > 0) else current.exact_input_tokens
+        # context used = 最近一次模型调用的完整 prompt:cache 命中/写入也占上下文,
+        # 必须并回 input(provider 把 cached 部分从 input_tokens 里拆走了)。
+        prompt_parts = (u.input_tokens, u.cache_read_tokens, u.cache_write_tokens)
+        prompt_total = sum(p or 0 for p in prompt_parts)
+        has_prompt = any(p is not None for p in prompt_parts) and prompt_total > 0
+        new_in = prompt_total if has_prompt else current.exact_input_tokens
         new_out = u.output_tokens if u.output_tokens is not None else current.exact_output_tokens
         return replace(current, exact_input_tokens=new_in, exact_output_tokens=new_out)
