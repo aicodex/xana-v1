@@ -13,6 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 qr = ["qrcode>=7.4"]
+feishu-ws = ["lark-oapi>=1.4"]
 
 [project.scripts]
 xana = "xana.cli.xana:main"
