@@ -323,6 +323,8 @@ class TelegramAdapter(Adapter):
             r, c = int(r_s), int(c_s)
         except ValueError:
             return None
+        if r < 0 or c < 0:
+            return None
         session_id = self._bindings.allocate(chat_id, prefix="tg")
         buf = self._buffers.get(session_id)
         if buf is None:
@@ -483,14 +485,21 @@ class TelegramAdapter(Adapter):
             return
         html = render_tool_block(blk)
         mid = ts.tool_msg_ids.get(call_id)
-        if mid is None:
-            mid = await self._api_client.send_message(
-                chat_id=buf.chat_id, text=html, parse_mode="HTML"
-            )
-            ts.tool_msg_ids[call_id] = mid
-        else:
-            await self._api_client.edit_message_text(
-                chat_id=buf.chat_id, message_id=mid, text=html, parse_mode="HTML"
+        try:
+            if mid is None:
+                mid = await self._api_client.send_message(
+                    chat_id=buf.chat_id, text=html, parse_mode="HTML"
+                )
+                ts.tool_msg_ids[call_id] = mid
+            else:
+                await self._api_client.edit_message_text(
+                    chat_id=buf.chat_id, message_id=mid, text=html, parse_mode="HTML"
+                )
+        except Exception as exc:
+            _logger.warning(
+                "telegram: _send_tool_message failed (%s): %s",
+                type(exc).__name__,
+                self._redact(str(exc)),
             )
 
     def _make_finalize_send(self, buf: _SessionBuffer, ts: _TurnState):
