@@ -262,6 +262,19 @@ def _delta_to_events(delta: dict[str, Any]) -> list[ModelEvent]:
     return events
 
 
+_USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+
+
+def _merge_usage(acc: dict[str, int], usage: dict | None) -> None:
+    """message_start/message_delta 的 usage 逐字段合并 — 后到的非空值覆盖。"""
+    if not usage:
+        return
+    for key in _USAGE_KEYS:
+        val = usage.get(key)
+        if val is not None:
+            acc[key] = int(val)
+
+
 async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, None]:
     """Parse Anthropic-style SSE → ModelEvent sequence + DSML recovery on end.
 
@@ -273,8 +286,7 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
     """
     text_buffer: list[str] = []
     blocks: dict[int, dict[str, Any]] = {}
-    input_tokens = 0
-    output_tokens = 0
+    usage_acc: dict[str, int] = {}
 
     event_type: str | None = None
     data_lines: list[str] = []
@@ -289,11 +301,9 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
                     ):
                         yield ev
                     if event_type == "message_start":
-                        usage = (payload.get("message") or {}).get("usage") or {}
-                        input_tokens = int(usage.get("input_tokens") or 0)
+                        _merge_usage(usage_acc, (payload.get("message") or {}).get("usage"))
                     elif event_type == "message_delta":
-                        usage = payload.get("usage") or {}
-                        output_tokens = int(usage.get("output_tokens") or 0)
+                        _merge_usage(usage_acc, payload.get("usage"))
             event_type, data_lines = None, []
             continue
         if raw_line.startswith(":"):
@@ -323,7 +333,12 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
 
     yield ModelEvent(
         kind="usage",
-        usage=ModelUsage(input_tokens=input_tokens or None, output_tokens=output_tokens or None),
+        usage=ModelUsage(
+            input_tokens=usage_acc.get("input_tokens"),
+            output_tokens=usage_acc.get("output_tokens"),
+            cache_read_tokens=usage_acc.get("cache_read_input_tokens"),
+            cache_write_tokens=usage_acc.get("cache_creation_input_tokens"),
+        ),
     )
     yield ModelEvent(kind="done")
 
