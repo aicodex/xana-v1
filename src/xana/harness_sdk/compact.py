@@ -55,21 +55,33 @@ SUMMARY_SECTIONS = (
 )
 
 
+def _summary_window(text: str) -> str | None:
+    """真摘要窗口 = </analysis> 之后的第一个 <summary> 起。
+    摘要正文可能复述 "<summary>"/小节标题(对话内容本身在讨论 compact 时必然如此),
+    所以全文第一个(analysis 里的占位)和最后一个(正文里的复述)都不可靠 —
+    必须锚定 analysis 结束后的第一个;窗口起点稳定,流式进度才单调。"""
+    _, sep, after = text.rpartition("</analysis>")
+    scan = after if sep else text
+    start = scan.find("<summary>")
+    if start == -1:
+        return None
+    return scan[start + len("<summary>"):]
+
+
 def summary_progress_bar(text: str) -> str:
     """流式摘要文本 → 进度条。摘要格式固定为 9 个编号小节,
-    见到第 n 节标题即认为前 n-1 节完成。
-    只扫 <summary> 之后的部分 — <analysis> 阶段模型会复述小节标题,会虚高。"""
-    _, sep, text = text.rpartition("<summary>")
-    if not sep:
+    见到第 n 节标题即认为前 n-1 节完成。只扫真摘要窗口(_summary_window)。"""
+    seg = _summary_window(text)
+    if seg is None:
         return ("🗜 正在压缩上下文\n"
                 + "▱" * len(SUMMARY_SECTIONS) + f" 0/{len(SUMMARY_SECTIONS)} · 分析对话")
     done = 0
     current = "分析对话"
     for i, title in enumerate(SUMMARY_SECTIONS):
-        if title in text:
+        if title in seg:
             done = i  # 第 i+1 节开始 → 前 i 节完成
             current = title
-    if "</summary>" in text:
+    if "</summary>" in seg:
         done = len(SUMMARY_SECTIONS)
         current = "完成"
     bar = "▰" * done + "▱" * (len(SUMMARY_SECTIONS) - done)
@@ -117,14 +129,12 @@ async def generate_summary(
 
 
 def _extract_summary(text: str) -> str | None:
-    """取最后一个 <summary> 起、到其后 </summary>(缺失则到结尾)的内容。
-    analysis 文本里复述 "<summary>" 字样会让 first-match 正则吞掉混合体,
-    真摘要总在最后 — rfind 是 CC 同语义的稳健做法。"""
-    start = text.rfind("<summary>")
-    if start == -1:
+    """真摘要 = _summary_window 起、到最后一个 </summary>(缺失则到结尾)。
+    闭合标签用 rfind:摘要正文里复述的 "</summary>" 不应提前截断。"""
+    seg = _summary_window(text)
+    if seg is None:
         return None
-    seg = text[start + len("<summary>"):]
-    end = seg.find("</summary>")
+    end = seg.rfind("</summary>")
     if end != -1:
         seg = seg[:end]
     seg = seg.strip()
