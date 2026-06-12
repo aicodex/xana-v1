@@ -41,7 +41,7 @@ from xana.extension_api.contracts import (
 from xana.extension_api.registry import ExtensionRegistry
 from xana.harness_sdk.compact import (
     BLOCKING_HEADROOM, build_post_compact_context, estimate_tokens,
-    generate_summary, messages_since_boundary,
+    generate_summary, messages_since_boundary, revealed_tools_from_messages,
 )
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest, ProgressEvent
 from xana.harness_sdk.interfaces import Harness
@@ -435,8 +435,9 @@ class DefaultHarness(Harness):
                         await self._report_compact(context, session_id, run_id, "failed")
                     else:
                         await context.active_context_store.set(build_post_compact_context(
-                            session_id=session_id, agent_name=agent_name,
-                            summary=summary))
+                            session_id=session_id, agent_name=agent_name, summary=summary,
+                            revealed_tools=sorted(
+                                revealed_tools_from_messages(history_msgs))))
                         self._session_prompt_tokens.pop(key, None)
                         await self._report_compact(context, session_id, run_id, "done")
                         snapshot = await context.active_context_store.get(session_id, agent_name)
@@ -704,15 +705,8 @@ def _split_tool_schemas(
     return schemas, deferred
 
 
-def _revealed_tools(messages) -> set[str]:
-    """从消息历史恢复已揭示工具(tool_search 结果的 metadata.revealed_tools)。
-    CC 同款思路:揭示状态存在历史里,不是单独状态变量。"""
-    out: set[str] = set()
-    for m in messages:
-        names = m.metadata.get("revealed_tools")
-        if names:
-            out.update(names)
-    return out
+# 揭示状态存在历史里(CC 同款思路);实现移到 compact.py 与 /compact 共用,留别名保持旧 import。
+_revealed_tools = revealed_tools_from_messages
 
 
 def _denied_result(perm: PermissionResult) -> ToolResult:

@@ -119,7 +119,7 @@ class DefaultCommandRouter(CommandRouter):
         from xana.harness_sdk.compact import (
             SUMMARY_SECTIONS, build_post_compact_context, generate_summary,
             messages_since_boundary, partial_summary, post_compact_message,
-            summary_progress,
+            revealed_tools_from_messages, summary_progress,
         )
         from xana.harness_sdk.contracts import ProgressEvent
         if self.active_context_store is None:
@@ -165,8 +165,10 @@ class DefaultCommandRouter(CommandRouter):
             on_progress=_emit)
         if summary is None:
             return CommandResult(ok=False, message="压缩失败:模型未返回 <summary>,请重试")
+        revealed = revealed_tools_from_messages(snapshot.messages) if snapshot else set()
         await self.active_context_store.set(build_post_compact_context(
-            session_id=inbound.session_id, agent_name="chat", summary=summary))
+            session_id=inbound.session_id, agent_name="chat", summary=summary,
+            revealed_tools=sorted(revealed)))
         # 最终卡:正文只有满格进度条;折叠块 = 上下文里那条 post-compact 消息全文(开头+摘要+结尾)
         return CommandResult(
             ok=True,

@@ -140,12 +140,29 @@ def post_compact_message(summary: str) -> str:
     return POST_COMPACT_TEMPLATE.format(summary=summary, transcript=_TRANSCRIPT_PLACEHOLDER)
 
 
+def revealed_tools_from_messages(messages) -> set[str]:
+    """已揭示工具 = 消息 metadata.revealed_tools ∪ compact boundary 的
+    pre_compact_revealed_tools(CC: preCompactDiscoveredTools 同思路)。"""
+    out: set[str] = set()
+    for m in messages:
+        for key in ("revealed_tools", "pre_compact_revealed_tools"):
+            names = m.metadata.get(key)
+            if names:
+                out.update(names)
+    return out
+
+
 def build_post_compact_context(
-    *, session_id: str, agent_name: str, summary: str
+    *, session_id: str, agent_name: str, summary: str,
+    revealed_tools: Sequence[str] = (),
 ) -> ActiveContext:
-    """compact 后上下文清空,只留 boundary + 一条 post-compact 消息(CC 行为,不逐字保留近期消息)。"""
+    """compact 后上下文清空,只留 boundary + 一条 post-compact 消息(CC 行为,不逐字保留近期消息)。
+    revealed_tools 非空时写进 boundary metadata,压缩后 deferred 工具的揭示状态不丢。"""
+    boundary_meta: dict = {"compact_boundary": True}
+    if revealed_tools:
+        boundary_meta["pre_compact_revealed_tools"] = sorted(revealed_tools)
     boundary = MemoryMessage(
-        role="system", content=COMPACT_BOUNDARY_MARKER, metadata={"compact_boundary": True}
+        role="system", content=COMPACT_BOUNDARY_MARKER, metadata=boundary_meta
     )
     summary_msg = MemoryMessage(role="user", content=post_compact_message(summary))
     return ActiveContext(
