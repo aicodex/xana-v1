@@ -291,11 +291,15 @@ class FeishuAdapter(Adapter):
                 ts.draft.thinking_title = str(payload["thinking_title"])
             ts.draft.content, ts.draft.buttons = extract_buttons(ts.draft.content)
             usage = event.harness_event.usage if event.harness_event else None
-            ts.draft.footer_meta = (
+            footer = (
                 footer_from_progress(ts.last_progress)
                 if ts.last_progress and ts.last_progress.get("kind") == "usage_progress"
                 else build_footer_meta(usage)
             )
+            if not footer and ts.draft.footer_meta:
+                # compact 答案卡: 无 usage — 保留 model,丢上下文(此时不好算)
+                footer = [p for p in ts.draft.footer_meta if p[0] == "model"]
+            ts.draft.footer_meta = footer
             ts.finalized = True
             await ts.coalescer.finalize(self._make_send(buf, ts, finalize=True))
         elif hkind == "error":
