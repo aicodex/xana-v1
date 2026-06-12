@@ -87,12 +87,21 @@ class WebSearchTool(Tool):
                 used = "duckduckgo"
         except Exception as exc:  # 网络/上游错误 → 结构化失败,不抛给 harness
             return ToolResult(ok=False, content=None, failure_kind="execution",
-                              error=f"{type(exc).__name__}: {exc}", retryable=True,
+                              error=f"{type(exc).__name__}: {exc}",
+                              retryable=self._is_retryable(exc),
                               rendered=f"[web_search] 搜索失败: {exc}")
         rendered = "\n".join(f"- {r['title']}\n  {r['url']}\n  {r['snippet']}" for r in results) \
                    or "(无结果)"
         return ToolResult(ok=True, content={"provider": used, "results": results},
                           rendered=rendered)
+
+    @staticmethod
+    def _is_retryable(exc: Exception) -> bool:
+        """缺依赖(ImportError)与认证失败(401/403)是永久错误;其余网络错误可重试。"""
+        if isinstance(exc, ImportError):
+            return False
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        return status not in (401, 403)
 
     async def _http_get_json(self, url: str, *, headers: dict[str, str],
                              params: dict[str, Any]) -> dict[str, Any]:
@@ -105,6 +114,7 @@ class WebSearchTool(Tool):
 
     @staticmethod
     def _duckduckgo(query: str, max_results: int) -> list[dict[str, str]]:
+        # 两个搜索库都缺 → 永久性错误,不可重试(见 _is_retryable)
         try:
             from ddgs import DDGS
         except Exception:  # pragma: no cover - 环境回退
