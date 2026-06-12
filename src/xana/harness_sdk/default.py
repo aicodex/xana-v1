@@ -486,6 +486,16 @@ class DefaultHarness(Harness):
                 break
 
             for call_idx, tc in enumerate(iter_tool_calls):
+                yield HarnessEvent(
+                    kind="tool_started",
+                    session_id=session_id,
+                    run_id=run_id,
+                    payload={
+                        "tool_name": tc["tool_name"],
+                        "call_id": tc["call_id"],
+                        "input": dict(tc["input"]),
+                    },
+                )
                 result, rendered = await self._dispatch_tool(
                     tc, context, session_id, agent_name, run_id,
                     ext_tools=ext_tools, ext=ext,
@@ -518,6 +528,7 @@ class DefaultHarness(Harness):
                     payload={
                         "text": rendered,
                         "tool_name": tc["tool_name"],
+                        "call_id": tc["call_id"],
                         "input": dict(tc["input"]),
                         "ok": result.ok,
                     },
