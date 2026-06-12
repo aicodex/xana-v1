@@ -31,6 +31,8 @@ class PromptAssembler:
         by_slot: dict[str, list[str]] = {slot: [] for slot in SLOT_ORDER}
         remaining = self._budget
         for slot in SLOT_ORDER:
+            if remaining <= 0:
+                break
             for f in (x for x in fragments if x.slot == slot):
                 if remaining <= 0:
                     break
