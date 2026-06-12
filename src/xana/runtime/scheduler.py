@@ -103,7 +103,11 @@ class SchedulerRunner:
         async def _loop() -> None:
             while True:
                 await asyncio.sleep(self._interval)
-                await self.tick()
+                try:
+                    await self.tick()
+                except Exception:
+                    # tick 自身的意外异常(如 pop_due 失败)不能悄悄杀死轮询任务
+                    _logger.exception("SchedulerRunner tick 意外失败")
         self._task = asyncio.create_task(_loop())
 
     def stop(self) -> None:
