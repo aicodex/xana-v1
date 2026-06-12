@@ -53,19 +53,50 @@ class TurnDraft:
     def start_tool(self, *, call_id: str, name: str, args: dict) -> None:
         self.tool_blocks.append(ToolBlock(call_id=call_id, name=name, args=dict(args or {})))
 
-    def finish_tool(self, *, call_id: str, ok: bool, result: str, elapsed_ms: int | None) -> None:
+    def finish_tool(
+        self, *, call_id: str, ok: bool, result: str,
+        elapsed_ms: int | None, name: str = "?",
+    ) -> ToolBlock:
+        """结束一个工具块,返回被并入的块。
+
+        匹配顺序:① call_id 精确匹配 running 块;② call_id 失配(生产中
+        finished 可能带空/不同 call_id)时按工具名兜底,取最后一个同名
+        running 块;③ 都没有 → 落成独立完成块(事件不丢)。"""
         for blk in self.tool_blocks:
             if blk.call_id == call_id and blk.running:
-                blk.running = False
-                blk.ok = ok
-                blk.result = result
-                blk.elapsed_ms = elapsed_ms
-                return
-        # 没有匹配的 started(容错): 落成独立完成块,事件不丢
-        self.tool_blocks.append(ToolBlock(
-            call_id=call_id, name="?", args={}, running=False,
+                return self._seal(blk, ok=ok, result=result, elapsed_ms=elapsed_ms)
+        if name and name != "?":
+            for blk in reversed(self.tool_blocks):
+                if blk.running and blk.name == name:
+                    return self._seal(blk, ok=ok, result=result, elapsed_ms=elapsed_ms)
+        blk = ToolBlock(
+            call_id=call_id, name=name, args={}, running=False,
             ok=ok, result=result, elapsed_ms=elapsed_ms,
-        ))
+        )
+        self.tool_blocks.append(blk)
+        return blk
+
+    @staticmethod
+    def _seal(blk: ToolBlock, *, ok: bool, result: str, elapsed_ms: int | None) -> ToolBlock:
+        blk.running = False
+        blk.ok = ok
+        blk.result = result
+        blk.elapsed_ms = elapsed_ms
+        return blk
+
+    def close_running_tools(
+        self, *, result: str = "(turn ended before tool finished)"
+    ) -> list[ToolBlock]:
+        """turn 结束(final/error)时封掉所有仍 running 的工具块,
+        避免面板在轮次结束后永远显示 ⏳。返回被关闭的块。"""
+        closed: list[ToolBlock] = []
+        for blk in self.tool_blocks:
+            if blk.running:
+                blk.running = False
+                blk.ok = False
+                blk.result = blk.result or result
+                closed.append(blk)
+        return closed
 
 
 def clip_body(s: str, limit: int = _BODY_LIMIT) -> str:

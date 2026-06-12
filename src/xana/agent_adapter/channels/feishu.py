@@ -267,24 +267,19 @@ class FeishuAdapter(Adapter):
             ts.coalescer.flush(self._make_send(buf, ts, finalize=False))
         elif hkind == "tool_finished":
             call_id = str(payload.get("call_id", ""))
-            if not call_id:
-                # 防御性兜底:个别 harness 的 tool_finished 可能不带 call_id
-                # (default.py 现已携带),此时匹配最后一个同名 running 块。
-                name = str(payload.get("tool_name", ""))
-                for blk in reversed(ts.draft.tool_blocks):
-                    if blk.running and blk.name == name:
-                        call_id = blk.call_id
-                        break
             started = ts.tool_started_ts.pop(call_id, None)
             elapsed_ms = int((time.monotonic() - started) * 1000) if started is not None else None
+            # call_id 失配的同名兜底在 TurnDraft.finish_tool 内部完成
             ts.draft.finish_tool(
                 call_id=call_id,
+                name=str(payload.get("tool_name", "")),
                 ok=bool(payload.get("ok", True)),
                 result=str(payload.get("text", "")),
                 elapsed_ms=elapsed_ms,
             )
             ts.coalescer.flush(self._make_send(buf, ts, finalize=False))
         elif hkind == "final":
+            ts.draft.close_running_tools()
             if text:
                 ts.draft.content = text
             ts.draft.content, ts.draft.buttons = extract_buttons(ts.draft.content)
@@ -292,6 +287,7 @@ class FeishuAdapter(Adapter):
             ts.draft.footer_meta = build_footer_meta(usage)
             await ts.coalescer.finalize(self._make_send(buf, ts, finalize=True))
         elif hkind == "error":
+            ts.draft.close_running_tools()
             err = text or str(payload.get("error", "") or "")
             ts.draft.content += f"\n[error] {err}" if err else "\n[error]"
             await ts.coalescer.finalize(self._make_send(buf, ts, finalize=True))

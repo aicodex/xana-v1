@@ -401,23 +401,21 @@ class TelegramAdapter(Adapter):
             await self._send_tool_message(buf, ts, call_id)
         elif hkind == "tool_finished":
             call_id = str(payload.get("call_id", ""))
-            if not call_id:
-                # 防御性兜底:匹配最后一个同名 running 块(同 feishu)。
-                name = str(payload.get("tool_name", ""))
-                for blk in reversed(ts.draft.tool_blocks):
-                    if blk.running and blk.name == name:
-                        call_id = blk.call_id
-                        break
             started = ts.tool_started_ts.pop(call_id, None)
             elapsed_ms = int((time.monotonic() - started) * 1000) if started is not None else None
-            ts.draft.finish_tool(
+            # call_id 失配的同名兜底在 TurnDraft.finish_tool 内部完成;
+            # 用返回块的 call_id 回查占位 sealed 消息再 edit。
+            blk = ts.draft.finish_tool(
                 call_id=call_id,
+                name=str(payload.get("tool_name", "")),
                 ok=bool(payload.get("ok", True)),
                 result=str(payload.get("text", "")),
                 elapsed_ms=elapsed_ms,
             )
-            await self._send_tool_message(buf, ts, call_id)
+            await self._send_tool_message(buf, ts, blk.call_id)
         elif hkind == "final":
+            for blk in ts.draft.close_running_tools():
+                await self._send_tool_message(buf, ts, blk.call_id)
             if text:
                 ts.draft.content = text
             ts.draft.content, ts.draft.buttons = extract_buttons(ts.draft.content)
@@ -426,6 +424,8 @@ class TelegramAdapter(Adapter):
             ts.draft.footer_meta = build_footer_meta(usage)
             await ts.coalescer.finalize(self._make_finalize_send(buf, ts))
         elif hkind == "error":
+            for blk in ts.draft.close_running_tools():
+                await self._send_tool_message(buf, ts, blk.call_id)
             err = text or str(payload.get("error", "") or "")
             ts.draft.content += f"\n[error] {err}" if err else "\n[error]"
             await ts.coalescer.finalize(self._make_finalize_send(buf, ts))

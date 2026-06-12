@@ -60,7 +60,13 @@ class BashTool(Tool):
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         command = invocation.input["command"]
-        requested = float(invocation.input.get("timeout_s") or _DEFAULT_TIMEOUT_S)
+        # schema 规范键是 timeout_s,但模型常传 "timeout" —— 容忍别名,
+        # 否则被静默忽略后回落 120s 默认(2026-06-12 飞书实测踩坑)。
+        requested = float(
+            invocation.input.get("timeout_s")
+            or invocation.input.get("timeout")
+            or _DEFAULT_TIMEOUT_S
+        )
         timeout = min(requested, _MAX_TIMEOUT_S)
 
         proc = await asyncio.create_subprocess_shell(
