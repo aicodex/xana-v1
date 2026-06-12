@@ -188,11 +188,19 @@ class DefaultHarness(Harness):
 
         provider = str(context.config_snapshot.get("provider", _DEFAULT_PROVIDER))
         if context.model_registry is None:
+            await self._fire_turn_end(
+                ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                thread_store=thread_store, turn_store=turn_store, status="error",
+            )
             yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
                                payload={"error": "model_registry missing"})
             return
         client = await context.model_registry.get(provider)
         if client is None:
+            await self._fire_turn_end(
+                ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                thread_store=thread_store, turn_store=turn_store, status="error",
+            )
             yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
                                payload={"error": f"provider {provider!r} not registered"})
             return
