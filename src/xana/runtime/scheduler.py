@@ -8,12 +8,15 @@ asyncio 任务)定期调 pop_due() 并把 prompt 经 gateway 注入对应 sessio
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 from croniter import croniter
+
+_logger = logging.getLogger(__name__)
 
 from xana.extension_api.capabilities import SchedulerService
 
@@ -28,7 +31,12 @@ class FileSchedulerService(SchedulerService):
     def _load(self) -> list[dict[str, Any]]:
         if not self._path.exists():
             return []
-        return json.loads(self._path.read_text(encoding="utf-8"))
+        try:
+            return json.loads(self._path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            # 半写损坏的任务文件不能杀死 runner/serve;丢弃并从空开始
+            _logger.warning("scheduled_tasks 文件损坏,忽略并重建: %s", self._path)
+            return []
 
     def _save(self, jobs: list[dict[str, Any]]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,7 +70,9 @@ class FileSchedulerService(SchedulerService):
         keep = [j for j in jobs if j["next_fire"] > now]
         for j in due:
             if j["recurring"]:
-                j["next_fire"] = croniter(j["cron"], now).get_next(float)
-                keep.append(j)
+                # 滚动副本入库:返回给调用方的 due 条目保留触发时刻的 next_fire
+                rolled = dict(j)
+                rolled["next_fire"] = croniter(j["cron"], now).get_next(float)
+                keep.append(rolled)
         self._save(keep)
         return tuple(due)
