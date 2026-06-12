@@ -460,6 +460,16 @@ class DefaultHarness(Harness):
                     + [_to_anthropic_tool_schema(t.spec()) for t in ext_tools.values()]
                 )
                 deferred_names = [d for d in deferred_names if d[0] not in ext_tool_names]
+            # native web_search 互斥(同构 yuxu _maybe_inject_web_search):
+            # search_provider 为 native(或未设)且 provider 为 deepseek 系 →
+            # 函数版 web_search 整体让位给模型端 server tool,从 schema 与
+            # deferred 名单一并剔除,并经 metadata 通知 provider 注入。
+            request_metadata: dict[str, Any] = {}
+            if (context.config_snapshot.get("search_provider") in (None, "", "native")
+                    and provider.startswith("deepseek")):
+                schemas = [s for s in schemas if s.get("name") != "web_search"]
+                deferred_names = [d for d in deferred_names if d[0] != "web_search"]
+                request_metadata["web_search_native"] = True
             tools_schema: tuple[dict, ...] = tuple(schemas)
             system_content = build_system_prompt(
                 identity=str(context.config_snapshot.get("agent_identity", "") or ""),
@@ -479,6 +489,7 @@ class DefaultHarness(Harness):
                 model=context.model,
                 messages=assembled,
                 tools_schema=tools_schema,
+                metadata=request_metadata,
             )
 
             iter_text: list[str] = []

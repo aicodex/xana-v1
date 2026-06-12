@@ -67,6 +67,7 @@ from xana.tools.builtin.memory_search import MemorySearchTool
 from xana.tools.builtin.read import ReadTool
 from xana.tools.builtin.todo_write import TodoWriteTool
 from xana.tools.builtin.tool_search import ToolSearchTool
+from xana.tools.builtin.web_search import WebSearchTool
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import ToolRegistry
 from xana.tools.registry import InMemoryToolRegistry
@@ -145,6 +146,10 @@ async def boot(
     runtime_config = await cp.load(project_root)
     system_cfg = cp.load_system_config()
     model_thresholds = {e.name: derive_compact_thresholds(e) for e in system_cfg.models}
+    # web_search:brave key 走 system.json 既有 web_search.brave_search_key 字段
+    await tools.register(WebSearchTool(
+        session_config_store=session_config_store,
+        brave_api_key=(system_cfg.web_search.brave_search_key or None)))
     provider = runtime_config.default_model.provider
     model = runtime_config.default_model.model
     client = _build_model_client(provider, model, cp)
@@ -187,7 +192,7 @@ async def boot(
         active_context_store=active_ctx,
         gateway=gateway,
         available_models=tuple(runtime_config.models.keys()) if hasattr(runtime_config, "models") else (model,),
-        available_search_providers=("bm25",),
+        available_search_providers=("native", "brave", "duckduckgo"),
         model_registry=model_registry,
         provider=provider,
         model=model,

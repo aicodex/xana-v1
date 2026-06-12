@@ -227,6 +227,11 @@ def _build_request_body(request: ModelRequest, config: AnthropicDeepSeekConfig) 
         body["system"] = "\n\n".join(system_parts)
     if request.tools_schema:
         body["tools"] = [dict(t) for t in request.tools_schema]
+    # native web_search:harness 在互斥剔除函数版 web_search 后经 metadata
+    # 通知此处 append server tool(verbatim 形状,不得过工具转换器)。
+    if (request.metadata or {}).get("web_search_native"):
+        body.setdefault("tools", []).append(
+            {"type": "web_search_20250305", "name": "web_search", "max_uses": 5})
     # request.metadata["thinking"] = "disabled"/"enabled" → Anthropic 方言 thinking 开关
     # (compact 摘要调用必须关思考;缺省不发,保持原行为)
     thinking = (request.metadata or {}).get("thinking")
