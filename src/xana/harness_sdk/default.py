@@ -24,6 +24,17 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterator
 
+from xana.extension_api.assembler import PromptAssembler
+from xana.extension_api.contracts import (
+    ExtensionData,
+    ThreadStartInput,
+    ThreadStopInput,
+    TurnAbortInput,
+    TurnInputContext,
+    TurnStartInput,
+    TurnStopInput,
+)
+from xana.extension_api.registry import ExtensionRegistry
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest, ProgressEvent
 from xana.harness_sdk.interfaces import Harness
 from xana.harness_sdk.usage import DefaultUsageAccumulator
@@ -42,9 +53,47 @@ _MAX_TURNS = 25  # cc's default; yuxu uses max_iterations=200 but caps different
 
 
 class DefaultHarness(Harness):
-    def __init__(self) -> None:
+    def __init__(self, extension_registry: "ExtensionRegistry | None" = None) -> None:
         self.last_assembled_messages: tuple[ModelMessage, ...] | None = None
         self.usage_accumulator = DefaultUsageAccumulator()
+        self._extensions = extension_registry
+        self._thread_stores: dict[str, ExtensionData] = {}
+        self._config_snapshots: dict[str, dict] = {}
+
+    async def close_thread(self, session_id: str) -> None:
+        """Fire on_thread_stop and drop the thread-scoped extension store."""
+        store = self._thread_stores.pop(session_id, None)
+        self._config_snapshots.pop(session_id, None)
+        if self._extensions is None or store is None:
+            return
+        for c in self._extensions.thread_lifecycle:
+            await c.on_thread_stop(ThreadStopInput(session_id=session_id, thread_store=store))
+
+    async def _fire_turn_end(
+        self,
+        ext: "ExtensionRegistry | None",
+        *,
+        session_id: str,
+        agent_name: str,
+        run_id: str,
+        thread_store: ExtensionData | None,
+        turn_store: ExtensionData | None,
+        status: str | None,
+        abort_reason: str | None = None,
+    ) -> None:
+        if ext is None:
+            return
+        assert thread_store is not None and turn_store is not None
+        if abort_reason is not None:
+            for c in ext.turn_lifecycle:
+                await c.on_turn_abort(TurnAbortInput(
+                    session_id=session_id, agent_name=agent_name, run_id=run_id,
+                    reason=abort_reason, thread_store=thread_store, turn_store=turn_store))
+            return
+        for c in ext.turn_lifecycle:
+            await c.on_turn_stop(TurnStopInput(
+                session_id=session_id, agent_name=agent_name, run_id=run_id,
+                status=status or "final", thread_store=thread_store, turn_store=turn_store))
 
     def invoke(self, request: HarnessRequest, context: HarnessContext) -> AsyncIterator[HarnessEvent]:
         return self._invoke(request, context)
@@ -58,6 +107,28 @@ class DefaultHarness(Harness):
             await context.state_repository.runs().create(
                 RunRecord(run_id=run_id, session_id=session_id, agent_name=agent_name, status="running")
             )
+
+        ext = self._extensions
+        thread_store: ExtensionData | None = None
+        turn_store: ExtensionData | None = None
+        if ext is not None:
+            is_new_thread = session_id not in self._thread_stores
+            thread_store = self._thread_stores.setdefault(session_id, ExtensionData(session_id))
+            turn_store = ExtensionData(run_id)
+            if is_new_thread:
+                for c in ext.thread_lifecycle:
+                    await c.on_thread_start(ThreadStartInput(session_id=session_id, thread_store=thread_store))
+            previous_cfg = self._config_snapshots.get(session_id)
+            new_cfg = dict(context.config_snapshot)
+            if previous_cfg is not None and previous_cfg != new_cfg:
+                for c in ext.config:
+                    await c.on_config_changed(previous_cfg, new_cfg, thread_store)
+            self._config_snapshots[session_id] = new_cfg
+            for c in ext.turn_lifecycle:
+                await c.on_turn_start(TurnStartInput(
+                    session_id=session_id, agent_name=agent_name, run_id=run_id,
+                    thread_store=thread_store, turn_store=turn_store,
+                ))
 
         assert context.active_context_store is not None, "ActiveContextStore required"
         assert context.history_mirror is not None, "HistoryMirror required"
@@ -98,8 +169,22 @@ class DefaultHarness(Harness):
             for skill in skills:
                 contribution = await skill.activate(activation)
                 skill_blocks.extend(contribution.prompt_blocks)
-        system_parts = injected_head + skill_blocks + injected_tail
-        system_content = "\n\n".join(p for p in system_parts if p)
+        extension_tail: list[str] = []
+        if ext is not None and ext.turn_input:
+            tic = TurnInputContext(
+                session_id=session_id, agent_name=agent_name, run_id=run_id,
+                user_input=request.user_input, cwd=context.cwd or None,
+            )
+            for c in ext.turn_input:
+                for frag in await c.contribute_turn_input(tic, thread_store, turn_store):
+                    extension_tail.append(frag.content)
+        base_parts = injected_head + skill_blocks + injected_tail + extension_tail
+        if ext is not None and ext.context:
+            system_content = await PromptAssembler(ext).assemble(
+                thread_store=thread_store, turn_store=turn_store, base_parts=base_parts,
+            )
+        else:
+            system_content = "\n\n".join(p for p in base_parts if p)
 
         provider = str(context.config_snapshot.get("provider", _DEFAULT_PROVIDER))
         if context.model_registry is None:
@@ -123,6 +208,11 @@ class DefaultHarness(Harness):
 
         for turn_index in range(_MAX_TURNS):
             if context.abort.aborted:
+                await self._fire_turn_end(
+                    ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                    thread_store=thread_store, turn_store=turn_store, status=None,
+                    abort_reason=context.abort.reason or "aborted",
+                )
                 yield HarnessEvent(kind="cancelled", session_id=session_id, run_id=run_id,
                                    payload={"reason": context.abort.reason or "cancelled"})
                 return
@@ -176,11 +266,19 @@ class DefaultHarness(Harness):
                         stream_error_yielded = True
                         break
             except Exception as exc:
+                await self._fire_turn_end(
+                    ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                    thread_store=thread_store, turn_store=turn_store, status="error",
+                )
                 yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
                                    payload={"error": str(exc)})
                 return
 
             if stream_error_yielded:
+                await self._fire_turn_end(
+                    ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                    thread_store=thread_store, turn_store=turn_store, status="error",
+                )
                 return
 
             turn_text = "".join(iter_text)
@@ -239,6 +337,10 @@ class DefaultHarness(Harness):
                     },
                 )
         else:
+            await self._fire_turn_end(
+                ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                thread_store=thread_store, turn_store=turn_store, status="error",
+            )
             yield HarnessEvent(
                 kind="error",
                 session_id=session_id,
@@ -251,6 +353,10 @@ class DefaultHarness(Harness):
         if context.state_repository is not None:
             await context.state_repository.runs().update_usage(run_id, usage)
             await context.state_repository.runs().update_status(run_id, "completed")
+        await self._fire_turn_end(
+            ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+            thread_store=thread_store, turn_store=turn_store, status="final",
+        )
         yield HarnessEvent(
             kind="final",
             session_id=session_id,
