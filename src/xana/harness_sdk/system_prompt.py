@@ -97,7 +97,7 @@ STATIC_TAIL = (USING_TOOLS, TONE, OUTPUT)
 
 
 def env_section(*, cwd: str | None, model: str, model_display: str | None = None) -> str:
-    """# 环境 段,模板逐字 AGENT_LOOP_PROMPT.md:123-130;每 turn 由 harness 拼。"""
+    """# 环境 段,模板逐字 AGENT_LOOP_PROMPT.md:123-130;harness 每次 invoke 拼一次。"""
     cwd_str = cwd or "(unknown)"
     is_git = bool(cwd) and (Path(cwd) / ".git").exists()
     display = model_display or model
