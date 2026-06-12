@@ -107,6 +107,31 @@ def _xana_home() -> Path:
     return Path.home() / ".xana"
 
 
+_WORKSPACE_SEED = """# xana 助手
+
+你是 xana,一个通过聊天渠道服务用户的个人助手。
+"""
+
+
+def _resolve_project_root(argv_project: Path | None) -> Path:
+    """Resolve the memory/project root for serve.
+
+    Explicit --project wins unchanged. Without it, default to
+    <xana_home>/workspace (NOT cwd — running serve from the xana source repo
+    must not mount the dev repo's README_ai.md as the bot's memory). The
+    workspace dir is created on demand and seeded with a minimal
+    README_ai.md if absent (never overwritten).
+    """
+    if argv_project is not None:
+        return Path(argv_project).resolve()
+    workspace = _xana_home() / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    readme = workspace / "README_ai.md"
+    if not readme.exists():
+        readme.write_text(_WORKSPACE_SEED, encoding="utf-8")
+    return workspace.resolve()
+
+
 def _write_pidfile(home: Path) -> Path:
     """Record this process pid in <home>/run/serve.pid so `xana sync` can restart us."""
     pidfile = home / "run" / "serve.pid"
@@ -134,7 +159,8 @@ async def _run(argv: argparse.Namespace) -> int:
 
 
 async def _run_inner(argv: argparse.Namespace) -> int:
-    project_root = (argv.project or Path.cwd()).resolve()
+    project_root = _resolve_project_root(argv.project)
+    print(f"[xana serve] workspace {project_root}")
     from xana.cli.commands.pair import pairings_path
     cp = DefaultConfigProvider()
     boot_result = await boot(project_root=project_root, config_provider=cp)
