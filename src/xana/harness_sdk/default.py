@@ -27,9 +27,12 @@ from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.extension_api.assembler import PromptAssembler
 from xana.extension_api.contracts import (
+    ApprovalReviewInput,
     ExtensionData,
     ThreadStartInput,
     ThreadStopInput,
+    ToolFinishInput,
+    ToolStartInput,
     TurnAbortInput,
     TurnInputContext,
     TurnStartInput,
@@ -45,6 +48,7 @@ from xana.policy.contracts import PermissionContext, PermissionResult
 from xana.skills.contracts import SkillActivation
 from xana.state.contracts import RunRecord, UsageSnapshot
 from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult
+from xana.tools.interfaces import Tool
 
 
 _logger = logging.getLogger(__name__)
@@ -118,6 +122,125 @@ class DefaultHarness(Harness):
                     status=status or "final", thread_store=thread_store, turn_store=turn_store)),
                 "on_turn_stop",
             )
+
+    async def _dispatch_tool(
+        self,
+        tc: dict[str, Any],
+        context: HarnessContext,
+        session_id: str,
+        agent_name: str,
+        run_id: str,
+        *,
+        ext_tools: dict[str, Tool],
+        ext: "ExtensionRegistry | None",
+        thread_store: ExtensionData | None,
+        turn_store: ExtensionData | None,
+    ) -> tuple[ToolResult, str]:
+        """Run one tool through the validate→permission→pre→execute→post
+        pipeline, wrapped by extension tool-lifecycle hooks.
+
+        Extension-contributed tools take precedence in lookup and dispatch
+        even when the shared ToolRegistry is missing. Returns
+        (result, rendered_text); any exception becomes a synthetic failure
+        ToolResult so the loop keeps going and the model can react."""
+        tool_name = tc["tool_name"]
+        call_id = tc["call_id"]
+
+        async def _fire_tool_start() -> None:
+            if ext is None or not ext.tool_lifecycle:
+                return
+            assert thread_store is not None and turn_store is not None
+            for c in ext.tool_lifecycle:
+                await self._safe_hook(
+                    c.on_tool_start(ToolStartInput(
+                        session_id=session_id, run_id=run_id, tool_name=tool_name,
+                        call_id=call_id, arguments=dict(tc["input"]),
+                        thread_store=thread_store, turn_store=turn_store,
+                    )),
+                    "on_tool_start",
+                )
+
+        async def _fire_tool_finish(result: ToolResult, rendered: str) -> None:
+            if ext is None or not ext.tool_lifecycle:
+                return
+            assert thread_store is not None and turn_store is not None
+            for c in ext.tool_lifecycle:
+                await self._safe_hook(
+                    c.on_tool_finish(ToolFinishInput(
+                        session_id=session_id, run_id=run_id, tool_name=tool_name,
+                        call_id=call_id, ok=result.ok, error=result.error,
+                        rendered=rendered,
+                        thread_store=thread_store, turn_store=turn_store,
+                    )),
+                    "on_tool_finish",
+                )
+
+        await _fire_tool_start()
+
+        # Extension tools first; fall back to the shared registry. The
+        # "registry missing / unknown tool" failures only apply when the
+        # extension map also misses.
+        tool: Tool | None = ext_tools.get(tool_name)
+        if tool is None:
+            if context.tool_registry is None:
+                result = ToolResult(ok=False, content=None, error="tool_registry missing",
+                                    failure_kind="unsupported", rendered="[tool_registry missing]")
+                await _fire_tool_finish(result, result.rendered or "")
+                return result, result.rendered or ""
+            tool = await context.tool_registry.get(tool_name)
+        if tool is None:
+            result = ToolResult(ok=False, content=None, error=f"tool {tool_name!r} not registered",
+                                failure_kind="not_found", rendered=f"[tool {tool_name!r} not found]")
+            await _fire_tool_finish(result, result.rendered or "")
+            return result, result.rendered or ""
+
+        invocation = ToolInvocation(
+            tool_name=tool_name,
+            input=tc["input"],
+            call_id=call_id,
+            session_id=session_id,
+            run_id=run_id,
+        )
+        tool_ctx = ToolContext(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=context.cwd,
+            permission=context.permission or _default_permission(session_id),
+            run_id=run_id,
+        )
+        try:
+            await tool.validate(invocation)
+            perm = await tool.check_permission(invocation, tool_ctx)
+            if perm.decision != "allow" and ext is not None and ext.approval_review:
+                # review is a data contributor — fail-fast, NOT _safe_hook.
+                assert thread_store is not None and turn_store is not None
+                review_input = ApprovalReviewInput(
+                    invocation=invocation, result=perm,
+                    thread_store=thread_store, turn_store=turn_store,
+                )
+                for reviewer in ext.approval_review:
+                    override = await reviewer.review(review_input)
+                    if override is not None:
+                        perm = override
+                        break
+            if perm.decision != "allow":
+                result = _denied_result(perm)
+            else:
+                prepared = await tool.pre_tool_use(invocation, tool_ctx)
+                result = await tool.execute(prepared, tool_ctx)
+                result = await tool.post_tool_use(prepared, tool_ctx, result)
+            rendered = await tool.render_result(result)
+        except Exception as exc:
+            result = ToolResult(
+                ok=False,
+                content=None,
+                error=str(exc),
+                failure_kind="execution",
+                rendered=f"[tool failed: {exc}]",
+            )
+            rendered = result.rendered or ""
+        await _fire_tool_finish(result, rendered)
+        return result, rendered
 
     def invoke(self, request: HarnessRequest, context: HarnessContext) -> AsyncIterator[HarnessEvent]:
         return self._invoke(request, context)
@@ -242,6 +365,15 @@ class DefaultHarness(Harness):
         if context.tool_registry is not None:
             specs = await context.tool_registry.list_specs()
             tools_schema = tuple(_to_anthropic_tool_schema(s) for s in specs)
+        ext_tools: dict[str, Tool] = {}
+        if ext is not None:
+            for contributor in ext.tools:
+                for tool in contributor.tools():
+                    ext_tools[tool.spec().component.name] = tool
+            tools_schema = tuple(
+                list(tools_schema)
+                + [_to_anthropic_tool_schema(t.spec()) for t in ext_tools.values()]
+            )
 
         usage = UsageSnapshot(model=context.model, provider=provider)
         cumulative_text: list[str] = []
@@ -345,8 +477,10 @@ class DefaultHarness(Harness):
                 break
 
             for call_idx, tc in enumerate(iter_tool_calls):
-                result, rendered = await _dispatch_tool(
-                    tc, context, session_id, agent_name, run_id
+                result, rendered = await self._dispatch_tool(
+                    tc, context, session_id, agent_name, run_id,
+                    ext_tools=ext_tools, ext=ext,
+                    thread_store=thread_store, turn_store=turn_store,
                 )
                 tool_msg = MemoryMessage(
                     role="tool",
@@ -417,64 +551,6 @@ def _assemble_for_model(system_content: str, history: tuple[MemoryMessage, ...])
         role = m.role if m.role in ("user", "assistant", "system", "tool") else "system"
         msgs.append(ModelMessage(role=role, content=m.content, metadata=dict(m.metadata)))
     return tuple(msgs)
-
-
-async def _dispatch_tool(
-    tc: dict[str, Any],
-    context: HarnessContext,
-    session_id: str,
-    agent_name: str,
-    run_id: str,
-) -> tuple[ToolResult, str]:
-    """Run one tool through the validate→permission→pre→execute→post pipeline.
-
-    Returns (result, rendered_text). On any exception, returns a synthetic
-    failure ToolResult so the loop can keep going and let the model react
-    to the failure on the next round."""
-    tool_name = tc["tool_name"]
-    if context.tool_registry is None:
-        result = ToolResult(ok=False, content=None, error="tool_registry missing",
-                            failure_kind="unsupported", rendered="[tool_registry missing]")
-        return result, result.rendered or ""
-    tool = await context.tool_registry.get(tool_name)
-    if tool is None:
-        result = ToolResult(ok=False, content=None, error=f"tool {tool_name!r} not registered",
-                            failure_kind="not_found", rendered=f"[tool {tool_name!r} not found]")
-        return result, result.rendered or ""
-    invocation = ToolInvocation(
-        tool_name=tool_name,
-        input=tc["input"],
-        call_id=tc["call_id"],
-        session_id=session_id,
-        run_id=run_id,
-    )
-    tool_ctx = ToolContext(
-        session_id=session_id,
-        agent_name=agent_name,
-        cwd=context.cwd,
-        permission=context.permission or _default_permission(session_id),
-        run_id=run_id,
-    )
-    try:
-        await tool.validate(invocation)
-        perm = await tool.check_permission(invocation, tool_ctx)
-        if perm.decision != "allow":
-            result = _denied_result(perm)
-        else:
-            prepared = await tool.pre_tool_use(invocation, tool_ctx)
-            result = await tool.execute(prepared, tool_ctx)
-            result = await tool.post_tool_use(prepared, tool_ctx, result)
-        rendered = await tool.render_result(result)
-    except Exception as exc:
-        result = ToolResult(
-            ok=False,
-            content=None,
-            error=str(exc),
-            failure_kind="execution",
-            rendered=f"[tool failed: {exc}]",
-        )
-        rendered = result.rendered or ""
-    return result, rendered
 
 
 def _default_permission(session_id: str) -> PermissionContext:
