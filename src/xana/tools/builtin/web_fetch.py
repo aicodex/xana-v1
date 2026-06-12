@@ -105,7 +105,7 @@ class WebFetchTool(Tool):
                               error=f"url 必须是 http/https 地址: {url!r}",
                               rendered=f"[web_fetch 失败: url 必须是 http/https 地址: {url!r}]")
         timeout = float(invocation.input.get("timeout", 10) or 10)
-        max_chars = int(invocation.input.get("max_chars", 20000) or 20000)
+        max_chars = max(2, int(invocation.input.get("max_chars", 20000) or 20000))
         extract = str(invocation.input.get("extract", "readable") or "readable").lower()
         if extract not in {"readable", "html", "both"}:
             return ToolResult(ok=False, content=None, failure_kind="validation",
@@ -114,9 +114,17 @@ class WebFetchTool(Tool):
         try:
             final_url, status, content_type, html = await self._fetch(url, timeout)
         except Exception as exc:
+            too_many = type(exc).__name__ == "TooManyRedirects"
             return ToolResult(ok=False, content=None, failure_kind="execution",
-                              error=f"{type(exc).__name__}: {exc}", retryable=True,
+                              error="too many redirects (>10)" if too_many
+                              else f"{type(exc).__name__}: {exc}",
+                              retryable=not too_many,
                               rendered=f"[web_fetch] 抓取失败: {exc}")
+        ct = content_type.lower()
+        if ct and "html" not in ct and "text" not in ct and "json" not in ct and "xml" not in ct:
+            return ToolResult(ok=False, content=None, failure_kind="unsupported",
+                              error=f"不支持的内容类型: {content_type}",
+                              rendered=f"[web_fetch] 不支持的内容类型: {content_type}")
         title = _extract_title(html)
         truncated = False
         content: dict[str, Any] = {"url": final_url, "status": status,
