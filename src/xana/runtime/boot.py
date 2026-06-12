@@ -64,6 +64,7 @@ from xana.tools.builtin.grep_tool import GrepTool
 from xana.tools.builtin.memory_search import MemorySearchTool
 from xana.tools.builtin.read import ReadTool
 from xana.tools.builtin.todo_write import TodoWriteTool
+from xana.tools.builtin.tool_search import ToolSearchTool
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import ToolRegistry
 from xana.tools.registry import InMemoryToolRegistry
@@ -120,6 +121,7 @@ async def boot(
     await tools.register(GlobTool())
     await tools.register(GrepTool())
     await tools.register(BashTool())
+    await tools.register(ToolSearchTool(tool_registry=tools))
 
     todo_root = Path.home() / ".xana" / "sessions"
     worktree_root = Path.home() / ".xana" / "worktrees"

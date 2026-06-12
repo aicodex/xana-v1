@@ -581,15 +581,14 @@ class DefaultHarness(Harness):
                     ext_tools=ext_tools, ext=ext,
                     thread_store=thread_store, turn_store=turn_store,
                 )
-                tool_msg = MemoryMessage(
-                    role="tool",
-                    content=rendered,
-                    metadata={
-                        "tool_use_id": tc["call_id"],
-                        "tool_name": tc["tool_name"],
-                        "ok": result.ok,
-                    },
-                )
+                tool_meta: dict[str, Any] = {
+                    "tool_use_id": tc["call_id"],
+                    "tool_name": tc["tool_name"],
+                    "ok": result.ok,
+                }
+                if result.metadata.get("revealed_tools"):
+                    tool_meta["revealed_tools"] = list(result.metadata["revealed_tools"])
+                tool_msg = MemoryMessage(role="tool", content=rendered, metadata=tool_meta)
                 await context.active_context_store.append_message(session_id, agent_name, tool_msg)
                 await context.history_mirror.append(
                     HistoryRow(
