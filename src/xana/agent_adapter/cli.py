@@ -40,10 +40,17 @@ from xana.agent_adapter.interfaces import Adapter
 from xana.agents.contracts import AgentEvent
 
 
-_TOOL_GLYPH = "●"
-_PREVIEW_LIMIT = 80
-_RESULT_PREVIEW_LIMIT = 120
-_ELLIPSIS = "…"
+from xana.agent_adapter._tool_titles import (
+    TOOL_GLYPH as _TOOL_GLYPH,
+    _PREVIEW_LIMIT,
+    _RESULT_PREVIEW_LIMIT,
+    _ELLIPSIS,
+    bash_comment_label as _bash_comment_label,
+    first_line_preview as _first_line_preview,
+    tool_header as _tool_header,
+    tool_preview as _tool_preview,
+    truncate as _truncate,
+)
 _FOOTER_DIVIDER = "―" * 20  # U+2015 × 20, matches yuxuc
 
 
@@ -178,12 +185,7 @@ class CliAdapter(Adapter):
         only. Failed tools append `— FAILED` to the header."""
         tool_name = str(event.payload.get("tool_name") or "?")
         ok = event.payload.get("ok", True)
-        preview = _tool_preview(event.payload.get("input") or {}, tool_name)
-        header = f"{_TOOL_GLYPH} {tool_name}"
-        if preview:
-            header += f"({preview})"
-        if ok is False:
-            header += " — FAILED"
+        header = _tool_header(tool_name, event.payload.get("input") or {}, ok=bool(ok))
         self.out.write("\n" + header + "\n")
         first = _first_line_preview(text)
         if first:
@@ -207,71 +209,3 @@ class CliAdapter(Adapter):
         return AdapterHealth(adapter_id=self.adapter_id, status=self._status)  # type: ignore[arg-type]
 
 
-def _tool_preview(tool_input: dict[str, Any], tool_name: str) -> str:
-    """Pick the most informative short label for a tool call.
-
-    Priority order mirrors cc's AssistantToolUseMessage:
-      1. model-supplied input["description"];
-      2. Bash `# label` comment on the command's first line;
-      3. tool-specific main field (file_path / pattern / query / command);
-      4. flat kv preview as a last resort.
-    """
-    desc = tool_input.get("description")
-    if isinstance(desc, str) and desc.strip():
-        return _truncate(desc.strip(), _PREVIEW_LIMIT)
-
-    if tool_name == "Bash":
-        command = str(tool_input.get("command") or "")
-        if command:
-            label = _bash_comment_label(command)
-            if label:
-                return _truncate(label, _PREVIEW_LIMIT)
-            return _truncate(command, _PREVIEW_LIMIT)
-
-    main_field_by_tool: dict[str, tuple[str, ...]] = {
-        "Read": ("file_path", "path"),
-        "Write": ("file_path", "path"),
-        "Edit": ("file_path", "path"),
-        "Glob": ("pattern",),
-        "Grep": ("pattern",),
-        "memory_search": ("query",),
-    }
-    for field in main_field_by_tool.get(tool_name, ()):
-        value = tool_input.get(field)
-        if isinstance(value, str) and value:
-            return _truncate(value, _PREVIEW_LIMIT)
-
-    if not tool_input:
-        return ""
-    if len(tool_input) == 1:
-        only = next(iter(tool_input.values()))
-        return _truncate(str(only), _PREVIEW_LIMIT)
-    return _truncate(" ".join(f"{k}={v}" for k, v in tool_input.items()), _PREVIEW_LIMIT)
-
-
-def _bash_comment_label(command: str) -> str | None:
-    """If the first line of a bash command is a `# comment` (not a shebang),
-    return its text. Mirrors cc's tools/BashTool/commentLabel.ts:8-13."""
-    first_line = command.split("\n", 1)[0].strip()
-    if not first_line.startswith("#") or first_line.startswith("#!"):
-        return None
-    label = first_line.lstrip("#").strip()
-    return label or None
-
-
-def _first_line_preview(text: str) -> str:
-    """First non-blank stripped line of `text`, collapsed + truncated."""
-    if not text:
-        return ""
-    for line in text.split("\n"):
-        stripped = line.strip()
-        if stripped:
-            return _truncate(stripped, _RESULT_PREVIEW_LIMIT)
-    return ""
-
-
-def _truncate(s: str, limit: int) -> str:
-    collapsed = " ".join(s.split())
-    if len(collapsed) <= limit:
-        return collapsed
-    return collapsed[: max(0, limit - 1)] + _ELLIPSIS
