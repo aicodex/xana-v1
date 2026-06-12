@@ -121,11 +121,16 @@ class DefaultCommandRouter(CommandRouter):
         live = messages_since_boundary(snapshot.messages) if snapshot else ()
         if not live:
             return CommandResult(ok=False, message="无可压缩内容")
+        model = self.model
+        if self.session_config_store is not None:
+            cfg = await self.session_config_store.get(inbound.session_id)
+            if cfg.model:
+                model = cfg.model
         client = await self.model_registry.get(self.provider)
         if client is None:
             return CommandResult(ok=False, message=f"provider {self.provider!r} 未注册")
         summary = await generate_summary(
-            client, provider=self.provider, model=self.model, messages=live)
+            client, provider=self.provider, model=model, messages=live)
         if summary is None:
             return CommandResult(ok=False, message="压缩失败:模型未返回 <summary>,请重试")
         recent = recent_user_messages(live)
