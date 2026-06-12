@@ -199,6 +199,11 @@ def _build_request_body(request: ModelRequest, config: AnthropicDeepSeekConfig) 
             tool_calls = (msg.metadata or {}).get("tool_calls") or []
             if tool_calls:
                 blocks: list[dict[str, Any]] = []
+                # DS 要求工具调用轮次回传 reasoning_content,否则后续请求 400;
+                # 线格式为 Anthropic thinking block,且必须在最前。
+                reasoning = (msg.metadata or {}).get("reasoning_content")
+                if reasoning:
+                    blocks.append({"type": "thinking", "thinking": reasoning})
                 if msg.content:
                     blocks.append({"type": "text", "text": msg.content})
                 for tc in tool_calls:

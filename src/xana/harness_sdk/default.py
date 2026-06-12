@@ -499,6 +499,7 @@ class DefaultHarness(Harness):
             )
 
             iter_text: list[str] = []
+            iter_thinking: list[str] = []
             iter_tool_calls: list[dict[str, Any]] = []
             stream_error_yielded = False
 
@@ -510,6 +511,10 @@ class DefaultHarness(Harness):
                         # events but never enter the final/persisted text.
                         if event.payload.get("channel") != "thinking":
                             iter_text.append(delta)
+                        else:
+                            # DS 工具轮次回放需要 reasoning_content —— 累积存
+                            # metadata,但不进 final/persisted content。
+                            iter_thinking.append(delta)
                         yield HarnessEvent(kind="model_delta", session_id=session_id,
                                            run_id=run_id, payload=dict(event.payload))
                     elif event.kind == "tool_call":
@@ -566,6 +571,8 @@ class DefaultHarness(Harness):
             if turn_text:
                 cumulative_text.append(turn_text)
             asst_metadata: dict[str, Any] = {"tool_calls": list(iter_tool_calls)} if iter_tool_calls else {}
+            if iter_thinking:
+                asst_metadata["reasoning_content"] = "".join(iter_thinking)
             asst_msg = MemoryMessage(role="assistant", content=turn_text, metadata=asst_metadata)
             await context.active_context_store.append_message(session_id, agent_name, asst_msg)
             await context.history_mirror.append(
