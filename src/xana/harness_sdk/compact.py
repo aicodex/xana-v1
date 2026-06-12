@@ -68,24 +68,30 @@ def _summary_window(text: str) -> str | None:
     return scan[start + len("<summary>"):]
 
 
-def summary_progress_bar(text: str) -> str:
-    """流式摘要文本 → 进度条。摘要格式固定为 9 个编号小节,
-    见到第 n 节标题即认为前 n-1 节完成。只扫真摘要窗口(_summary_window)。"""
+def summary_progress(text: str) -> tuple[str, str]:
+    """流式摘要文本 → (进度条正文, 当前小节状态文字)。
+    摘要格式固定为 9 个编号小节,见到第 n 节标题即认为前 n-1 节完成。
+    只扫真摘要窗口(_summary_window)。状态文字由调用方放进折叠块标题。"""
+    total = len(SUMMARY_SECTIONS)
     seg = _summary_window(text)
-    if seg is None:
-        return ("🗜 正在压缩上下文\n"
-                + "▱" * len(SUMMARY_SECTIONS) + f" 0/{len(SUMMARY_SECTIONS)} · 分析对话")
     done = 0
     current = "分析对话"
-    for i, title in enumerate(SUMMARY_SECTIONS):
-        if title in seg:
-            done = i  # 第 i+1 节开始 → 前 i 节完成
-            current = title
-    if "</summary>" in seg:
-        done = len(SUMMARY_SECTIONS)
-        current = "完成"
-    bar = "▰" * done + "▱" * (len(SUMMARY_SECTIONS) - done)
-    return f"🗜 正在压缩上下文\n{bar} {done}/{len(SUMMARY_SECTIONS)} · {current}"
+    if seg is not None:
+        for i, title in enumerate(SUMMARY_SECTIONS):
+            if title in seg:
+                done = i  # 第 i+1 节开始 → 前 i 节完成
+                current = title
+        if "</summary>" in seg:
+            done = total
+            current = "完成"
+    bar = "▰" * done + "▱" * (total - done)
+    return f"🗜 正在压缩上下文\n{bar} {done}/{total}", current
+
+
+def summary_progress_bar(text: str) -> str:
+    """兼容入口:进度条 + 状态合并为一段文本(harness 侧/旧测试仍用)。"""
+    body, current = summary_progress(text)
+    return f"{body} · {current}"
 
 
 async def generate_summary(
