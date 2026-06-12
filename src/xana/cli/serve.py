@@ -100,7 +100,40 @@ async def _run_inbound_pump(adapter: Adapter, gateway) -> None:
             pass  # gateway already called adapter.render(); nothing more to do
 
 
+def _xana_home() -> Path:
+    override = os.environ.get("XANA_HOME")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".xana"
+
+
+def _write_pidfile(home: Path) -> Path:
+    """Record this process pid in <home>/run/serve.pid so `xana sync` can restart us."""
+    pidfile = home / "run" / "serve.pid"
+    pidfile.parent.mkdir(parents=True, exist_ok=True)
+    pidfile.write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    return pidfile
+
+
+def _remove_pidfile(home: Path) -> None:
+    pidfile = home / "run" / "serve.pid"
+    try:
+        if pidfile.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            pidfile.unlink()
+    except OSError:
+        pass
+
+
 async def _run(argv: argparse.Namespace) -> int:
+    home = _xana_home()
+    _write_pidfile(home)
+    try:
+        return await _run_inner(argv)
+    finally:
+        _remove_pidfile(home)
+
+
+async def _run_inner(argv: argparse.Namespace) -> int:
     project_root = (argv.project or Path.cwd()).resolve()
     from xana.cli.commands.pair import pairings_path
     cp = DefaultConfigProvider()

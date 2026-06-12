@@ -25,6 +25,9 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import signal
+import subprocess
+import time
 from pathlib import Path
 from typing import TextIO
 
@@ -45,6 +48,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=None,
         help="xana package dir or repo root (default: sidecar from last sync, then xana.__file__)",
+    )
+    parser.add_argument(
+        "--no-restart",
+        action="store_true",
+        default=False,
+        help="do not restart a running `xana serve` after sync",
     )
 
 
@@ -82,7 +91,82 @@ def run(args: argparse.Namespace, *, out: TextIO) -> int:
 
     home.mkdir(parents=True, exist_ok=True)
     sidecar.write_text(str(code_source) + "\n", encoding="utf-8")
+
+    if not getattr(args, "no_restart", False):
+        _restart_serve_if_running(home, out)
     return 0
+
+
+def serve_pid_path(home: Path) -> Path:
+    return home / "run" / "serve.pid"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _cmdline_looks_like_serve(pid: int) -> bool:
+    """Best-effort check that <pid> is a xana serve process (Linux /proc only)."""
+    proc = Path(f"/proc/{pid}/cmdline")
+    try:
+        data = proc.read_bytes()
+    except OSError:
+        return True  # non-Linux or unreadable: skip the check gracefully
+    return b"serve" in data
+
+
+def _terminate(pid: int, *, timeout: float = 5.0, poll: float = 0.2) -> None:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return
+        time.sleep(poll)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _restart_serve_if_running(xana_home: Path, out: TextIO) -> None:
+    """After a sync, restart `xana serve` if a live one is recorded in the pidfile."""
+    pidfile = serve_pid_path(xana_home)
+    if not pidfile.exists():
+        return
+    try:
+        pid = int(pidfile.read_text(encoding="utf-8").strip())
+    except ValueError:
+        pidfile.unlink(missing_ok=True)
+        return
+    if not _pid_alive(pid) or not _cmdline_looks_like_serve(pid):
+        pidfile.unlink(missing_ok=True)
+        print("[xana sync] serve not running — skipped restart", file=out)
+        return
+
+    _terminate(pid)
+    pidfile.unlink(missing_ok=True)
+
+    log_path = xana_home / "logs" / "serve.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "ab") as logfile:
+        proc = subprocess.Popen(
+            [str(xana_home / "bin" / "xana"), "serve"],
+            stdout=logfile,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    print(f"[xana sync] serve restarted (pid {proc.pid}, log {log_path})", file=out)
 
 
 def xana_home() -> Path:
