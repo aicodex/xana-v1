@@ -16,8 +16,6 @@ import os
 from pathlib import Path
 from typing import Callable, Optional, TextIO
 
-from xana.agent_adapter.channels._pairing import PairingStore
-from xana.cli.commands.pair import pairings_path
 from xana.config.loader import ensure_user_system_json, user_config_dir
 from xana.config.system_model import SystemConfig
 
@@ -183,12 +181,8 @@ def _do_feishu(
     })
     channels["feishu"] = fs
     data["channels"] = channels
-    if creds.get("open_id"):
-        PairingStore(path=pairings_path()).allow(
-            "feishu", creds["open_id"], note="admin self-pair (setup)"
-        )
-        print(f"[xana setup] v 管理员 {creds['open_id']} 已自动配对。", file=out)
     print(f"[xana setup] v 飞书应用 {creds['app_id']} 已配置 (bot: {creds.get('bot_name')})。", file=out)
+    print("  所有用户(含你自己)首次发消息都需 `xana pair approve feishu <open_id>` 审批。", file=out)
     return 0, True
 
 
