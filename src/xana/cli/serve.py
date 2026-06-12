@@ -53,7 +53,10 @@ def build_adapters(
             env.get("FEISHU_CONNECTION_MODE")
             or str(fs_extra.get("connection_mode") or "")
             or "ws"
-        )
+        ).strip().lower()
+        if connection_mode not in ("ws", "webhook"):
+            print(f"[feishu] unknown connection_mode '{connection_mode}' — falling back to ws")
+            connection_mode = "ws"
         cfg = FeishuConfig(
             app_id=app_id,
             app_secret=app_secret,
