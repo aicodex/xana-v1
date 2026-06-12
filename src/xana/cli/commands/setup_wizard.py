@@ -4,9 +4,10 @@ Mirrors yuxu_backup setup_wizard.py but minimal for xana v1:
   * model step  — one ModelEntry + default_model.chat/.agent
   * channel step — 1) Feishu scan-to-create  2) Telegram bot token  3) skip
 
-Idempotent: sections that already have config are skipped, so re-running
-`xana setup` only asks for what's missing. All answers flow through the
-injected `ask` callable; tests drive it with canned answers.
+Re-running `xana setup` always enters both steps; for an already-configured
+section, pressing Enter at the first prompt skips it and keeps the existing
+config (nothing is cleared). All answers flow through the injected `ask`
+callable; tests drive it with canned answers.
 """
 from __future__ import annotations
 
@@ -52,58 +53,27 @@ def run_wizard(
     ask: AskFn,
     out: TextIO,
     feishu_register: FeishuRegisterFn = _default_feishu_register,
-    force: bool = False,
 ) -> int:
     data = _load_raw()
     changed = False
 
     existing_models = data.get("models") or []
     if not existing_models:
-        # First-time: always enter model step
+        # First-time: fields are required
         rc, did = _do_models(data, ask=ask, out=out)
-        if rc != 0:
-            return rc
-        changed = changed or did
-    elif force:
-        # Force: enter model step without asking
-        rc, did = _do_models_reconfigure(data, ask=ask, out=out)
-        if rc != 0:
-            return rc
-        changed = changed or did
     else:
-        # Already configured: ask user
+        # Already configured: enter directly; Enter at first prompt skips
         names = ", ".join(m.get("name", "") for m in existing_models)
-        ans = ask(f"  模型已配置 ({names}),是否重新配置? [y/N]: ").strip().lower()
-        if ans in ("y", "yes"):
-            rc, did = _do_models_reconfigure(data, ask=ask, out=out)
-            if rc != 0:
-                return rc
-            changed = changed or did
+        print(f"[xana setup] 已配置模型: {names}", file=out)
+        rc, did = _do_models_reconfigure(data, ask=ask, out=out)
+    if rc != 0:
+        return rc
+    changed = changed or did
 
-    channels = data.get("channels") or {}
-    has_channel = bool(
-        (channels.get("telegram") or {}).get("bot_token")
-        or (channels.get("feishu") or {}).get("app_id")
-    )
-    if not has_channel:
-        rc, did = _do_channels(data, ask=ask, out=out, feishu_register=feishu_register)
-        if rc != 0:
-            return rc
-        changed = changed or did
-    elif force:
-        # Force: enter channel step without asking
-        rc, did = _do_channels(data, ask=ask, out=out, feishu_register=feishu_register)
-        if rc != 0:
-            return rc
-        changed = changed or did
-    else:
-        # Already configured: ask user
-        ans = ask("  渠道已配置,是否重新配置? [y/N]: ").strip().lower()
-        if ans in ("y", "yes"):
-            rc, did = _do_channels(data, ask=ask, out=out, feishu_register=feishu_register)
-            if rc != 0:
-                return rc
-            changed = changed or did
+    rc, did = _do_channels(data, ask=ask, out=out, feishu_register=feishu_register)
+    if rc != 0:
+        return rc
+    changed = changed or did
 
     if changed:
         path = _save_raw(data)
@@ -138,9 +108,13 @@ def _do_models(data: dict, *, ask: AskFn, out: TextIO) -> tuple[int, bool]:
 
 def _do_models_reconfigure(data: dict, *, ask: AskFn, out: TextIO) -> tuple[int, bool]:
     """Reconfigure path: gather a new model entry, replace if same name, else append.
+    Enter at the first prompt skips the step (existing config untouched).
     Then ask whether to set it as default chat/agent."""
     print("[xana setup] 配置模型(写入 system.json models[]):", file=out)
-    mtype = ask("  provider type (如 anthropic_deepseek): ").strip()
+    mtype = ask("  provider type (如 anthropic_deepseek, 回车跳过): ").strip()
+    if not mtype:
+        print("[xana setup] 跳过模型配置(保留现有)。", file=out)
+        return 0, False
     name = ask("  模型名称 (自定, 如 ds-main): ").strip()
     api_key = ask("  api key: ").strip()
     base_url = ask("  base url (可选, 回车跳过): ").strip()
@@ -178,7 +152,7 @@ def _do_channels(
     print("  1) 飞书 (扫码自动创建应用)", file=out)
     print("  2) Telegram (bot token)", file=out)
     print("  3) 跳过", file=out)
-    choice = ask("  选择 [1/2/3]: ").strip()
+    choice = ask("  选择 [1/2/3, 回车跳过]: ").strip()
     if choice == "1":
         return _do_feishu(data, out=out, feishu_register=feishu_register)
     if choice == "2":

@@ -36,11 +36,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="skip the interactive model/channel wizard",
     )
-    parser.add_argument(
-        "--reconfigure",
-        action="store_true",
-        help="re-run wizard even for already-configured sections",
-    )
 
 
 def run(args: argparse.Namespace, *, out: TextIO) -> int:
@@ -74,7 +69,7 @@ def run(args: argparse.Namespace, *, out: TextIO) -> int:
     if not getattr(args, "no_wizard", False) and sys.stdin.isatty():
         from xana.cli.commands.setup_wizard import run_wizard
         print(file=out)
-        return run_wizard(ask=input, out=out, force=getattr(args, "reconfigure", False))
+        return run_wizard(ask=input, out=out)
     return 0
 
 
