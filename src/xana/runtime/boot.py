@@ -48,7 +48,6 @@ from xana.memory.markdown import (
     SQLiteMemorySearchEngine,
     SearchMemoryInjector,
 )
-from xana.skills.builtin.identity import IdentitySkill
 from xana.skills.interfaces import SkillRegistry
 from xana.skills.registry import InMemorySkillRegistry
 from xana.state.in_memory import InMemoryStateRepository
@@ -131,7 +130,6 @@ async def boot(
     await tools.register(EnterWorktreeTool(session_config_store=session_config_store, worktree_root=worktree_root))
 
     skills = InMemorySkillRegistry()
-    await skills.register(IdentitySkill())
 
     cp = config_provider or DefaultConfigProvider()
     runtime_config = await cp.load(project_root)
