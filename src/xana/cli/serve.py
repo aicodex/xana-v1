@@ -3,7 +3,13 @@
 Config source: ~/.xana/config/system.json channels section.
 Env vars override system.json values:
   FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFICATION_TOKEN /
-    FEISHU_ENCRYPT_KEY (optional) / FEISHU_WEBHOOK_PORT (default 8765)
+    FEISHU_ENCRYPT_KEY (optional) / FEISHU_CONNECTION_MODE ("ws" default |
+    "webhook") / FEISHU_WEBHOOK_PORT (default 8765, webhook mode only)
+
+Feishu inbound defaults to WebSocket long-connection mode (lark-oapi WS
+client; no public HTTPS URL needed). The aiohttp webhook server is only
+started when connection_mode == "webhook" (env FEISHU_CONNECTION_MODE or
+system.json channels.feishu.connection_mode).
   TELEGRAM_BOT_TOKEN / TELEGRAM_ALLOWED_USER_IDS (csv)
 
 A shared PairingStore (backed by pairings.json) is wired into both adapters
@@ -43,12 +49,18 @@ def build_adapters(
     )
     if app_id and app_secret:
         api_base = "https://open.larksuite.com" if fs.domain == "lark" else "https://open.feishu.cn"
+        connection_mode = (
+            env.get("FEISHU_CONNECTION_MODE")
+            or str(fs_extra.get("connection_mode") or "")
+            or "ws"
+        )
         cfg = FeishuConfig(
             app_id=app_id,
             app_secret=app_secret,
             verification_token=verification_token,
             encrypt_key=env.get("FEISHU_ENCRYPT_KEY") or None,
             api_base=api_base,
+            connection_mode=connection_mode,
         )
         bindings = BindingStore(path=bindings_root / "feishu.bindings.json")
         adapters.append(FeishuAdapter(config=cfg, bindings=bindings, pairing=pairing))
@@ -106,15 +118,18 @@ async def _run(argv: argparse.Namespace) -> int:
         pumps.append(asyncio.create_task(_run_inbound_pump(adapter, boot_result.gateway)))
 
         if isinstance(adapter, FeishuAdapter):
-            from aiohttp import web
-            from xana.agent_adapter.channels.feishu_webhook import build_webhook_app
-            app = build_webhook_app(config=adapter._config, on_event=adapter._on_event)
-            webhook_runner = web.AppRunner(app)
-            await webhook_runner.setup()
-            port = int(os.environ.get("FEISHU_WEBHOOK_PORT", "8765"))
-            site = web.TCPSite(webhook_runner, "0.0.0.0", port)
-            await site.start()
-            print(f"[feishu] webhook listening on :{port}/feishu/webhook")
+            if adapter._config.connection_mode == "webhook":
+                from aiohttp import web
+                from xana.agent_adapter.channels.feishu_webhook import build_webhook_app
+                app = build_webhook_app(config=adapter._config, on_event=adapter._on_event)
+                webhook_runner = web.AppRunner(app)
+                await webhook_runner.setup()
+                port = int(os.environ.get("FEISHU_WEBHOOK_PORT", "8765"))
+                site = web.TCPSite(webhook_runner, "0.0.0.0", port)
+                await site.start()
+                print(f"[feishu] webhook listening on :{port}/feishu/webhook")
+            else:
+                print("[feishu] websocket long-connection mode (no public URL needed)")
 
     print(f"[xana serve] running adapters: {', '.join(a.adapter_id for a in adapters)}")
     try:
