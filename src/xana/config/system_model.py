@@ -31,6 +31,7 @@ class ModelEntry(BaseModel):
     budget_rmb: Optional[float] = None
     budget_kind: Optional[str] = None
     compact_override: Optional[int] = None
+    context_window: Optional[int] = None
     fallback_to: Optional[str] = None
 
 

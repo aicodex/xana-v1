@@ -30,6 +30,9 @@ from xana.config.system_model import SystemConfig
 
 
 _FALLBACK_PROVIDER = "fake"
+_DEFAULT_CONTEXT_WINDOW = 128_000  # DeepSeek 缺省;entry.context_window 可覆盖
+_DEFAULT_MAX_OUTPUT = 8_000
+_COMPACT_HEADROOM = 13_000  # CC 风格: force_compact = ctx - max_output - 13K
 _FALLBACK_MODEL = "fake-model"
 _SYSTEM_JSON_NAME = "system.json"
 _SEED_RESOURCE_PACKAGE = "xana.config.defaults"
@@ -117,5 +120,10 @@ def _resolve_default_model(system: SystemConfig) -> ModelConfig:
     if chat_name is not None:
         entry = system.model(chat_name)
         if entry is not None:
-            return ModelConfig(provider=entry.type, model=entry.name)
+            ctx_win = entry.context_window or _DEFAULT_CONTEXT_WINDOW
+            force_at = entry.compact_override or (ctx_win - _DEFAULT_MAX_OUTPUT - _COMPACT_HEADROOM)
+            return ModelConfig(
+                provider=entry.type, model=entry.name,
+                context_window=ctx_win, force_compact=force_at,
+            )
     return ModelConfig(provider=_FALLBACK_PROVIDER, model=_FALLBACK_MODEL)

@@ -30,6 +30,8 @@ class ModelConfig:
     model: str
     effort: str | int | None = None
     max_tokens: int | None = None
+    context_window: int | None = None
+    force_compact: int | None = None
 
 
 @dataclass(frozen=True)
