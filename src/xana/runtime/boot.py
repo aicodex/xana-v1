@@ -55,7 +55,9 @@ from xana.state.interfaces import StateRepository
 from xana.session_config.file_store import FileSessionConfigStore
 from xana.session_config.interfaces import SessionConfigStore
 from xana.tools.builtin._todo_store import TodoStore
+from xana.runtime.scheduler import FileSchedulerService
 from xana.tools.builtin.bash import BashTool
+from xana.tools.builtin.cron import CronCreateTool, CronDeleteTool, CronListTool
 from xana.tools.builtin.edit import EditTool
 from xana.tools.builtin.enter_plan_mode import EnterPlanModeTool
 from xana.tools.builtin.enter_worktree import EnterWorktreeTool
@@ -92,6 +94,7 @@ class BootResult:
     progress_sink: ProgressSink
     provider: str
     model: str
+    scheduler: FileSchedulerService | None = None
 
 
 async def boot(
@@ -122,6 +125,11 @@ async def boot(
     await tools.register(GrepTool())
     await tools.register(BashTool())
     await tools.register(ToolSearchTool(tool_registry=tools))
+    scheduler = FileSchedulerService(
+        path=Path.home() / ".xana" / "scheduled_tasks.json", session_id="default")
+    await tools.register(CronCreateTool(scheduler))
+    await tools.register(CronListTool(scheduler))
+    await tools.register(CronDeleteTool(scheduler))
 
     todo_root = Path.home() / ".xana" / "sessions"
     worktree_root = Path.home() / ".xana" / "worktrees"
@@ -203,6 +211,7 @@ async def boot(
         progress_sink=progress_sink,
         provider=provider,
         model=model,
+        scheduler=scheduler,
     )
 
 
