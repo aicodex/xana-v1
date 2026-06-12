@@ -212,7 +212,8 @@ class DefaultHarness(Harness):
             await tool.validate(invocation)
             perm = await tool.check_permission(invocation, tool_ctx)
             if perm.decision != "allow" and ext is not None and ext.approval_review:
-                # review is a data contributor — fail-fast, NOT _safe_hook.
+                # reviewer sits inside the catch-all try, so exceptions become
+                # a synthetic execution-failure ToolResult (first non-None override wins).
                 assert thread_store is not None and turn_store is not None
                 review_input = ApprovalReviewInput(
                     invocation=invocation, result=perm,
@@ -370,8 +371,9 @@ class DefaultHarness(Harness):
             for contributor in ext.tools:
                 for tool in contributor.tools():
                     ext_tools[tool.spec().component.name] = tool
+            ext_tool_names = {name for name in ext_tools}
             tools_schema = tuple(
-                list(tools_schema)
+                [s for s in tools_schema if s["name"] not in ext_tool_names]
                 + [_to_anthropic_tool_schema(t.spec()) for t in ext_tools.values()]
             )
 
