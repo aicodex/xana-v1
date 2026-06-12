@@ -19,6 +19,7 @@ for durable log, RunStore (via StateRepository) for run metadata.
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -46,6 +47,8 @@ from xana.state.contracts import RunRecord, UsageSnapshot
 from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult
 
 
+_logger = logging.getLogger(__name__)
+
 _DEFAULT_PROVIDER = "fake"
 _ANON_RUN_ID = "run-anon"
 _ANON_CALL_ID = "call-anon"
@@ -67,7 +70,22 @@ class DefaultHarness(Harness):
         if self._extensions is None or store is None:
             return
         for c in self._extensions.thread_lifecycle:
-            await c.on_thread_stop(ThreadStopInput(session_id=session_id, thread_store=store))
+            await self._safe_hook(
+                c.on_thread_stop(ThreadStopInput(session_id=session_id, thread_store=store)),
+                "on_thread_stop",
+            )
+
+    async def _safe_hook(self, coro, hook_name: str) -> None:
+        # Policy: lifecycle *observer* hooks (on_thread_start/stop,
+        # on_turn_start/stop/abort, on_config_changed) are guarded — an
+        # exception is logged and skipped so a misbehaving extension cannot
+        # kill the turn. Data-producing contributors (contribute_prompt,
+        # contribute_turn_input, tools, review) stay fail-fast because their
+        # output shapes the run.
+        try:
+            await coro
+        except Exception:
+            _logger.exception("extension hook %s failed", hook_name)
 
     async def _fire_turn_end(
         self,
@@ -86,14 +104,20 @@ class DefaultHarness(Harness):
         assert thread_store is not None and turn_store is not None
         if abort_reason is not None:
             for c in ext.turn_lifecycle:
-                await c.on_turn_abort(TurnAbortInput(
-                    session_id=session_id, agent_name=agent_name, run_id=run_id,
-                    reason=abort_reason, thread_store=thread_store, turn_store=turn_store))
+                await self._safe_hook(
+                    c.on_turn_abort(TurnAbortInput(
+                        session_id=session_id, agent_name=agent_name, run_id=run_id,
+                        reason=abort_reason, thread_store=thread_store, turn_store=turn_store)),
+                    "on_turn_abort",
+                )
             return
         for c in ext.turn_lifecycle:
-            await c.on_turn_stop(TurnStopInput(
-                session_id=session_id, agent_name=agent_name, run_id=run_id,
-                status=status or "final", thread_store=thread_store, turn_store=turn_store))
+            await self._safe_hook(
+                c.on_turn_stop(TurnStopInput(
+                    session_id=session_id, agent_name=agent_name, run_id=run_id,
+                    status=status or "final", thread_store=thread_store, turn_store=turn_store)),
+                "on_turn_stop",
+            )
 
     def invoke(self, request: HarnessRequest, context: HarnessContext) -> AsyncIterator[HarnessEvent]:
         return self._invoke(request, context)
@@ -117,18 +141,27 @@ class DefaultHarness(Harness):
             turn_store = ExtensionData(run_id)
             if is_new_thread:
                 for c in ext.thread_lifecycle:
-                    await c.on_thread_start(ThreadStartInput(session_id=session_id, thread_store=thread_store))
+                    await self._safe_hook(
+                        c.on_thread_start(ThreadStartInput(session_id=session_id, thread_store=thread_store)),
+                        "on_thread_start",
+                    )
             previous_cfg = self._config_snapshots.get(session_id)
             new_cfg = dict(context.config_snapshot)
             if previous_cfg is not None and previous_cfg != new_cfg:
                 for c in ext.config:
-                    await c.on_config_changed(previous_cfg, new_cfg, thread_store)
+                    await self._safe_hook(
+                        c.on_config_changed(previous_cfg, new_cfg, thread_store),
+                        "on_config_changed",
+                    )
             self._config_snapshots[session_id] = new_cfg
             for c in ext.turn_lifecycle:
-                await c.on_turn_start(TurnStartInput(
-                    session_id=session_id, agent_name=agent_name, run_id=run_id,
-                    thread_store=thread_store, turn_store=turn_store,
-                ))
+                await self._safe_hook(
+                    c.on_turn_start(TurnStartInput(
+                        session_id=session_id, agent_name=agent_name, run_id=run_id,
+                        thread_store=thread_store, turn_store=turn_store,
+                    )),
+                    "on_turn_start",
+                )
 
         assert context.active_context_store is not None, "ActiveContextStore required"
         assert context.history_mirror is not None, "HistoryMirror required"
@@ -269,6 +302,12 @@ class DefaultHarness(Harness):
                     elif event.kind == "done":
                         break
                     elif event.kind == "error" and event.error is not None:
+                        # Fire turn-end BEFORE yielding so extensions see the
+                        # error even if the consumer never resumes the generator.
+                        await self._fire_turn_end(
+                            ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                            thread_store=thread_store, turn_store=turn_store, status="error",
+                        )
                         yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
                                            payload={"error": event.error.message})
                         stream_error_yielded = True
@@ -283,11 +322,7 @@ class DefaultHarness(Harness):
                 return
 
             if stream_error_yielded:
-                await self._fire_turn_end(
-                    ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
-                    thread_store=thread_store, turn_store=turn_store, status="error",
-                )
-                return
+                return  # turn-end already fired before the error yield
 
             turn_text = "".join(iter_text)
             if turn_text:
