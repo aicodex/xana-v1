@@ -227,6 +227,11 @@ def _build_request_body(request: ModelRequest, config: AnthropicDeepSeekConfig) 
         body["system"] = "\n\n".join(system_parts)
     if request.tools_schema:
         body["tools"] = [dict(t) for t in request.tools_schema]
+    # request.metadata["thinking"] = "disabled"/"enabled" → Anthropic 方言 thinking 开关
+    # (compact 摘要调用必须关思考;缺省不发,保持原行为)
+    thinking = (request.metadata or {}).get("thinking")
+    if thinking in ("disabled", "enabled"):
+        body["thinking"] = {"type": thinking}
     return body
 
 

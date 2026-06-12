@@ -5,7 +5,6 @@ boundary/summary/保留消息全部是普通 MemoryMessage,summary 字段不再�
 """
 from __future__ import annotations
 
-import re
 from typing import Awaitable, Callable, Sequence
 
 from xana.harness_sdk.compact_prompt import (
@@ -20,7 +19,6 @@ _CHARS_PER_TOKEN = 4  # 与 DefaultUsageAccumulator 同源启发式
 RECENT_KEEP_TOKENS = 20_000  # Codex 风格: 最近 user 消息逐字保留预算
 BLOCKING_HEADROOM = 3_000    # blocking 线 = context_window - 3K
 _COMPACT_RETRIES = 3
-_SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.DOTALL)
 _TRANSCRIPT_PLACEHOLDER = "(转录不可用)"
 
 
@@ -94,12 +92,17 @@ async def generate_summary(
 
     model_msgs = tuple(_plain(m) for m in messages) + (
         ModelMessage(role="user", content=get_compact_prompt()),)
-    req = ModelRequest(provider=provider, model=model, messages=model_msgs, tools_schema=())
+    req = ModelRequest(provider=provider, model=model, messages=model_msgs, tools_schema=(),
+                       metadata={"thinking": "disabled"})  # CC: compact 调用关思考
     for _ in range(_COMPACT_RETRIES):
         parts: list[str] = []
         try:
             async for event in client.stream(req):
                 if event.kind == "text_delta":
+                    # CC 的 compact 调用 thinking=disabled;provider 暂无请求级开关,
+                    # 等价处理:reasoning 通道不进摘要缓冲(否则思考过程混进结果)。
+                    if event.payload.get("channel") == "thinking":
+                        continue
                     parts.append(event.payload.get("text", ""))
                     if on_progress is not None:
                         await on_progress("".join(parts))
@@ -107,13 +110,25 @@ async def generate_summary(
                     break
         except Exception:
             continue  # 传输层异常 = 一次失败重试,与缺 <summary> 同等对待
-        # 模型可能在 <analysis> 里复述格式时写出占位的 <summary>…</summary>,
-        # 第一个匹配会是 "…" — 取最长的非空匹配才是真摘要。
-        candidates = [c.strip() for c in _SUMMARY_RE.findall("".join(parts))]
-        candidates = [c for c in candidates if c]
-        if candidates:
-            return max(candidates, key=len)
+        extracted = _extract_summary("".join(parts))
+        if extracted:
+            return extracted
     return None
+
+
+def _extract_summary(text: str) -> str | None:
+    """取最后一个 <summary> 起、到其后 </summary>(缺失则到结尾)的内容。
+    analysis 文本里复述 "<summary>" 字样会让 first-match 正则吞掉混合体,
+    真摘要总在最后 — rfind 是 CC 同语义的稳健做法。"""
+    start = text.rfind("<summary>")
+    if start == -1:
+        return None
+    seg = text[start + len("<summary>"):]
+    end = seg.find("</summary>")
+    if end != -1:
+        seg = seg[:end]
+    seg = seg.strip()
+    return seg or None
 
 
 def build_post_compact_context(
