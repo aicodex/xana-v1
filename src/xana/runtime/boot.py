@@ -22,7 +22,8 @@ from xana.agent_adapter.router import DefaultAgentRequestRouter
 from xana.agents.chat_agent import ChatAgent, build_chat_agent_spec
 from xana.agents.interfaces import Agent
 from xana.config.loader import DefaultConfigProvider, derive_compact_thresholds
-from xana.extension_api.registry import ExtensionRegistry
+from xana.extension_api.builtin.skills_listing import SkillsListingContributor
+from xana.extension_api.registry import ExtensionRegistry, ExtensionRegistryBuilder
 from xana.harness_sdk.default import DefaultHarness
 from xana.harness_sdk.interfaces import ProgressSink
 from xana.llm_driver.fake_client import FakeModelClient, InMemoryModelRegistry, ScriptedTurn
@@ -48,6 +49,9 @@ from xana.memory.markdown import (
     SQLiteMemorySearchEngine,
     SearchMemoryInjector,
 )
+from xana.skills.bundled.loop import LoopSkill
+from xana.skills.bundled.schedule import ScheduleSkill
+from xana.skills.bundled.skill_creator import SkillCreatorSkill
 from xana.skills.interfaces import SkillRegistry
 from xana.skills.registry import InMemorySkillRegistry
 from xana.state.in_memory import InMemoryStateRepository
@@ -65,6 +69,7 @@ from xana.tools.builtin.glob_tool import GlobTool
 from xana.tools.builtin.grep_tool import GrepTool
 from xana.tools.builtin.memory_search import MemorySearchTool
 from xana.tools.builtin.read import ReadTool
+from xana.tools.builtin.skill_load import SkillLoadTool
 from xana.tools.builtin.todo_write import TodoWriteTool
 from xana.tools.builtin.tool_search import ToolSearchTool
 from xana.tools.builtin.web_fetch import WebFetchTool
@@ -142,6 +147,17 @@ async def boot(
     await tools.register(EnterWorktreeTool(session_config_store=session_config_store, worktree_root=worktree_root))
 
     skills = InMemorySkillRegistry()
+
+    # bundled skills:独立 registry,零每轮注入;全文经 skill_load 按需取,
+    # 列表段由 SkillsListingContributor 注入(仅当调用方未传 extension_registry)。
+    bundled_skills = InMemorySkillRegistry()
+    for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill()):
+        await bundled_skills.register(bundled)
+    await tools.register(SkillLoadTool(skills=bundled_skills))
+    if extension_registry is None:
+        extension_registry = (ExtensionRegistryBuilder()
+                              .add(SkillsListingContributor(skills=bundled_skills))
+                              .build())
 
     cp = config_provider or DefaultConfigProvider()
     runtime_config = await cp.load(project_root)
