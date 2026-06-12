@@ -31,7 +31,9 @@ _DEFAULT_TOOL_TOP_K = 3
 
 @dataclass(frozen=True)
 class ScriptedTurn:
-    text_deltas: tuple[str, ...] = ()
+    # Each delta is either a plain string (payload {"text": s}) or a dict
+    # payload with extra keys (e.g. {"text": "…", "channel": "thinking"}).
+    text_deltas: tuple[str | dict[str, Any], ...] = ()
     tool_call: tuple[str, dict[str, Any], str] | None = None  # (tool_name, input, call_id)
     usage_input_tokens: int = 0
     usage_output_tokens: int = 0
@@ -100,7 +102,8 @@ class FakeModelClient(ModelClient):
             return
 
         for delta in turn.text_deltas:
-            yield ModelEvent(kind="text_delta", payload={"text": delta})
+            payload = dict(delta) if isinstance(delta, dict) else {"text": delta}
+            yield ModelEvent(kind="text_delta", payload=payload)
         if turn.tool_call is not None:
             name, input_, call_id = turn.tool_call
             yield ModelEvent(

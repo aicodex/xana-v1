@@ -240,6 +240,28 @@ def _http_error_kind(status: int) -> ProviderErrorKind:
     return "unknown"
 
 
+def _delta_to_events(delta: dict[str, Any]) -> list[ModelEvent]:
+    """Map one stream delta dict to text_delta ModelEvents.
+
+    Accepts both the OpenAI-compatible spelling (``reasoning_content`` /
+    ``content``) and the Anthropic-dialect spelling (``thinking`` / ``text``).
+    Reasoning text rides the locked ModelEvent payload as
+    ``payload["channel"] == "thinking"`` (no new ModelEventKind values);
+    answer text carries no channel key. When both are present, the thinking
+    event comes first.
+    """
+    events: list[ModelEvent] = []
+    reasoning = delta.get("reasoning_content") or delta.get("thinking")
+    if reasoning:
+        events.append(
+            ModelEvent(kind="text_delta", payload={"text": reasoning, "channel": "thinking"})
+        )
+    content = delta.get("content") or delta.get("text")
+    if content:
+        events.append(ModelEvent(kind="text_delta", payload={"text": content}))
+    return events
+
+
 async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, None]:
     """Parse Anthropic-style SSE → ModelEvent sequence + DSML recovery on end.
 
@@ -339,7 +361,14 @@ async def _dispatch_sse_event(
         if dtype == "text_delta":
             text = delta.get("text") or ""
             text_buffer.append(text)
-            yield ModelEvent(kind="text_delta", payload={"text": text})
+            for ev in _delta_to_events({"content": text}):
+                yield ev
+        elif dtype in ("thinking_delta", "reasoning_content_delta"):
+            # Reasoning never enters text_buffer: it must not leak into the
+            # final answer text nor the post-stream DSML recovery scan.
+            reasoning = delta.get("thinking") or delta.get("reasoning_content") or ""
+            for ev in _delta_to_events({"reasoning_content": reasoning}):
+                yield ev
         elif dtype == "input_json_delta":
             partial = delta.get("partial_json") or ""
             block = blocks.setdefault(idx, {"partial_json": ""})

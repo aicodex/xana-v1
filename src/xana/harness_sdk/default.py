@@ -415,9 +415,12 @@ class DefaultHarness(Harness):
                 async for event in client.stream(model_request):
                     if event.kind == "text_delta":
                         delta = event.payload.get("text", "")
-                        iter_text.append(delta)
+                        # thinking-channel deltas stream out as model_delta
+                        # events but never enter the final/persisted text.
+                        if event.payload.get("channel") != "thinking":
+                            iter_text.append(delta)
                         yield HarnessEvent(kind="model_delta", session_id=session_id,
-                                           run_id=run_id, payload={"text": delta})
+                                           run_id=run_id, payload=dict(event.payload))
                     elif event.kind == "tool_call":
                         iter_tool_calls.append({
                             "tool_name": event.payload.get("tool_name", ""),
