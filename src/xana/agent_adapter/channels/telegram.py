@@ -16,7 +16,7 @@ from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.channels._bindings import BindingStore
 from xana.agent_adapter.channels._pairing import PairingStore
-from xana.agent_adapter.channels._throttle import Throttle
+from xana.agent_adapter.channels._throttle import DraftCoalescer
 from xana.agent_adapter.contracts import (
     AdapterHealth,
     InboundMessage,
@@ -83,7 +83,7 @@ class TelegramApiClient:
 class _SessionBuffer:
     cumulative_text: str = ""
     message_id: int | None = None
-    throttle: Throttle = field(default_factory=lambda: Throttle(min_interval_s=0.25))
+    coalescer: DraftCoalescer = field(default_factory=lambda: DraftCoalescer(min_interval_s=0.25))
     chat_id: str | None = None
 
 
@@ -266,7 +266,8 @@ class TelegramAdapter(Adapter):
 
         if kind == "draft":
             buf.cumulative_text += text
-            await self._send_or_edit(buf, finalize=False)
+            # Non-blocking: latest cumulative_text wins when the send fires.
+            buf.coalescer.flush(lambda: self._send_or_edit_now(buf))
         elif kind == "final":
             if text:
                 buf.cumulative_text = text
@@ -276,10 +277,10 @@ class TelegramAdapter(Adapter):
                 buf.cumulative_text += f"{divider}\n_{footer}_"
             else:
                 buf.cumulative_text += divider
-            await self._send_or_edit(buf, finalize=True)
+            await buf.coalescer.finalize(lambda: self._send_or_edit_now(buf))
         elif kind == "error":
             buf.cumulative_text += f"\n[error] {text}" if text else "\n[error]"
-            await self._send_or_edit(buf, finalize=True)
+            await buf.coalescer.finalize(lambda: self._send_or_edit_now(buf))
 
         return RenderedMessage(
             adapter_id=self.adapter_id,
@@ -301,10 +302,10 @@ class TelegramAdapter(Adapter):
             parts.append(f"tokens: {tin or 0} in / {tout or 0} out")
         return " | ".join(parts)
 
-    async def _send_or_edit(self, buf: _SessionBuffer, *, finalize: bool) -> None:  # noqa: ARG002
+    async def _send_or_edit_now(self, buf: _SessionBuffer) -> None:
+        """Raw API call: first message is a send, later ones edit in place."""
         if buf.chat_id is None or self._api_client is None:
             return
-        await buf.throttle.wait()
         display_text = buf.cumulative_text or "…"
         if buf.message_id is None:
             mid = await self._api_client.send_message(

@@ -15,7 +15,7 @@ from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.channels._bindings import BindingStore
 from xana.agent_adapter.channels._pairing import PairingStore
-from xana.agent_adapter.channels._throttle import Throttle
+from xana.agent_adapter.channels._throttle import DraftCoalescer
 from xana.agent_adapter.channels.feishu_events import parse_message_event
 from xana.agent_adapter.contracts import (
     AdapterHealth,
@@ -67,7 +67,7 @@ class FeishuApiSender:
 class _SessionBuffer:
     cumulative_text: str = ""
     last_message_id: str | None = None
-    throttle: Throttle = field(default_factory=lambda: Throttle(min_interval_s=0.25))
+    coalescer: DraftCoalescer = field(default_factory=lambda: DraftCoalescer(min_interval_s=0.25))
     chat_id: str | None = None
 
 
@@ -223,17 +223,24 @@ class FeishuAdapter(Adapter):
 
         if kind == "draft":
             buf.cumulative_text += text
-            await self._patch_or_send(buf, event.session_id, finalize=False, footer_meta=[])
+            # Non-blocking: latest cumulative_text wins when the send fires.
+            buf.coalescer.flush(
+                lambda: self._patch_or_send_now(buf, finalize=False, footer_meta=[])
+            )
         elif kind == "final":
             if text:
                 # final payload["text"] is the full cumulative text joined by "\n"
                 # (set by harness_sdk/default.py final_text = "\n".join(cumulative_text))
                 buf.cumulative_text = text
             footer_meta = self._collect_footer_meta(event)
-            await self._patch_or_send(buf, event.session_id, finalize=True, footer_meta=footer_meta)
+            await buf.coalescer.finalize(
+                lambda: self._patch_or_send_now(buf, finalize=True, footer_meta=footer_meta)
+            )
         elif kind == "error":
             buf.cumulative_text += f"\n[error] {text}" if text else "\n[error]"
-            await self._patch_or_send(buf, event.session_id, finalize=True, footer_meta=[])
+            await buf.coalescer.finalize(
+                lambda: self._patch_or_send_now(buf, finalize=True, footer_meta=[])
+            )
 
         return RenderedMessage(
             adapter_id=self.adapter_id,
@@ -254,17 +261,16 @@ class FeishuAdapter(Adapter):
                 pairs.append(("tokens", f"{tin or 0} in / {tout or 0} out"))
         return pairs
 
-    async def _patch_or_send(
+    async def _patch_or_send_now(
         self,
         buf: _SessionBuffer,
-        session_id: str,
         *,
         finalize: bool,
         footer_meta: list[tuple[str, str]],
     ) -> None:
+        """Raw API call: first message is a send, later ones patch in place."""
         if buf.chat_id is None or self._api_sender is None:
             return
-        await buf.throttle.wait()
         card = _build_card(buf.cumulative_text, footer_meta, finalize)
         if buf.last_message_id is None:
             mid = await self._api_sender.send_card(receive_id=buf.chat_id, card=card)
