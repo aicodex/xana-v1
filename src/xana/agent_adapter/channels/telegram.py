@@ -128,6 +128,7 @@ class _TurnState:
     tool_started_ts: dict = field(default_factory=dict)
     last_buttons: list[list[dict]] = field(default_factory=list)
     finalized: bool = False
+    last_progress: dict | None = None
 
 
 @dataclass
@@ -422,7 +423,11 @@ class TelegramAdapter(Adapter):
             ts.draft.content, ts.draft.buttons = extract_buttons(ts.draft.content)
             ts.last_buttons = ts.draft.buttons
             usage = event.harness_event.usage if event.harness_event else None
-            ts.draft.footer_meta = build_footer_meta(usage)
+            ts.draft.footer_meta = (
+                footer_from_progress(ts.last_progress)
+                if ts.last_progress and ts.last_progress.get("kind") == "usage_progress"
+                else build_footer_meta(usage)
+            )
             ts.finalized = True
             await ts.coalescer.finalize(self._make_finalize_send(buf, ts))
         elif hkind == "error":
@@ -476,6 +481,8 @@ class TelegramAdapter(Adapter):
         ts = buf.turns[next(reversed(buf.turns))]
         if ts.finalized:
             return
+        if payload.get("kind") == "usage_progress":
+            ts.last_progress = dict(payload)
         ts.draft.footer_meta = footer_from_progress(payload)
         ts.coalescer.flush(self._make_stream_send(buf, ts))
 

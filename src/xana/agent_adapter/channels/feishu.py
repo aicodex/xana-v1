@@ -83,6 +83,7 @@ class _TurnState:
     coalescer: DraftCoalescer = field(default_factory=lambda: DraftCoalescer(min_interval_s=0.25))
     tool_started_ts: dict = field(default_factory=dict)
     finalized: bool = False
+    last_progress: dict | None = None
 
 
 @dataclass
@@ -285,7 +286,11 @@ class FeishuAdapter(Adapter):
                 ts.draft.content = text
             ts.draft.content, ts.draft.buttons = extract_buttons(ts.draft.content)
             usage = event.harness_event.usage if event.harness_event else None
-            ts.draft.footer_meta = build_footer_meta(usage)
+            ts.draft.footer_meta = (
+                footer_from_progress(ts.last_progress)
+                if ts.last_progress and ts.last_progress.get("kind") == "usage_progress"
+                else build_footer_meta(usage)
+            )
             ts.finalized = True
             await ts.coalescer.finalize(self._make_send(buf, ts, finalize=True))
         elif hkind == "error":
@@ -338,6 +343,8 @@ class FeishuAdapter(Adapter):
         ts = buf.turns[next(reversed(buf.turns))]
         if ts.finalized:
             return
+        if payload.get("kind") == "usage_progress":
+            ts.last_progress = dict(payload)
         ts.draft.footer_meta = footer_from_progress(payload)
         ts.coalescer.flush(self._make_send(buf, ts, finalize=False))
 

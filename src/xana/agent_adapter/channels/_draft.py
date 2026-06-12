@@ -12,8 +12,7 @@ from dataclasses import dataclass, field
 
 from xana.agent_adapter._tool_titles import tool_header
 
-# TODO(compact): Phase 2 接 ModelConfig.context_window 后由配置驱动
-CONTEXT_BUDGET_TOKENS = 967_000
+CONTEXT_BUDGET_TOKENS = 128_000  # fallback;真实预算来自 usage_progress payload 的 context_window
 
 _BODY_LIMIT = 3000  # 折叠块内 args/result 各自的截断上限
 
@@ -137,12 +136,13 @@ def _fmt_k(n: int) -> str:
 STOP_BUTTON_ROWS = [[{"text": "⏹ 停止", "send": "/cancel"}]]
 
 
-def _context_pair(tin: int) -> tuple[str, str]:
-    pct = round(tin * 100 / CONTEXT_BUDGET_TOKENS)
-    return ("context", f"{_fmt_k(tin)}/{CONTEXT_BUDGET_TOKENS // 1000}k ({pct}%)")
+def _context_pair(tin: int, budget: int | None = None) -> tuple[str, str]:
+    b = budget or CONTEXT_BUDGET_TOKENS
+    pct = round(tin * 100 / b)
+    return ("context", f"{_fmt_k(tin)}/{b // 1000}k ({pct}%)")
 
 
-def build_footer_meta(usage) -> list[tuple[str, str]]:
+def build_footer_meta(usage, context_window: int | None = None) -> list[tuple[str, str]]:
     """脚标: model | context used/budget (pct%)。tokens in/out 不展示(不重要)。
     usage 为 UsageSnapshot 或 None(鸭子类型,避免依赖 state contracts)。"""
     if usage is None:
@@ -152,7 +152,7 @@ def build_footer_meta(usage) -> list[tuple[str, str]]:
         pairs.append(("model", str(usage.model)))
     tin = getattr(usage, "exact_input_tokens", None)
     if tin:
-        pairs.append(_context_pair(tin))
+        pairs.append(_context_pair(tin, context_window))
     return pairs
 
 
@@ -163,7 +163,11 @@ def footer_from_progress(payload: dict, *, model: str | None = None) -> list[tup
     m = model or payload.get("model")
     if m:
         pairs.append(("model", str(m)))
+    if payload.get("kind") == "compact_progress":
+        if payload.get("phase") in ("start", None):
+            pairs.append(("context", "压缩中…"))
+        return pairs
     tin = int(payload.get("tokens_in") or 0)
     if tin:
-        pairs.append(_context_pair(tin))
+        pairs.append(_context_pair(tin, payload.get("context_window")))
     return pairs
