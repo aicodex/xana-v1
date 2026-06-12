@@ -4,18 +4,23 @@ Receives im.message.receive_v1 events via a webhook (or direct _on_event
 injection in tests), allocates session bindings, and renders AgentEvents
 back as interactive card messages that are patched in-place while streaming.
 
-Footer meta on finalize mirrors CliAdapter's _collect_footer_meta: pulls
-from harness_event.usage when present.
+渲染侧是 per-run 卡片状态机:每个 run_id 一份 _TurnState(TurnDraft + 自己的
+message_id + 自己的 DraftCoalescer),事件按 harness_event.run_id 路由到自己
+的气泡;新轮开新卡,交错/晚到的旧轮事件 patch 旧卡,互不覆盖。
 """
 from __future__ import annotations
 
 import asyncio
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.channels._bindings import BindingStore
+from xana.agent_adapter.channels._draft import TurnDraft, build_footer_meta, extract_buttons
 from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels._throttle import DraftCoalescer
+from xana.agent_adapter.channels.feishu_card import build_card
 from xana.agent_adapter.channels.feishu_events import parse_message_event
 from xana.agent_adapter.contracts import (
     AdapterHealth,
@@ -25,6 +30,8 @@ from xana.agent_adapter.contracts import (
 )
 from xana.agent_adapter.interfaces import Adapter
 from xana.agents.contracts import AgentEvent
+
+_MAX_TURNS_KEPT = 4
 
 
 # ---------------------------------------------------------------------------
@@ -59,43 +66,22 @@ class FeishuApiSender:
 
 
 # ---------------------------------------------------------------------------
-# Per-session state
+# Per-session / per-run state
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class _SessionBuffer:
-    cumulative_text: str = ""
-    last_message_id: str | None = None
+class _TurnState:
+    draft: TurnDraft
+    message_id: str | None = None
     coalescer: DraftCoalescer = field(default_factory=lambda: DraftCoalescer(min_interval_s=0.25))
+    tool_started_ts: dict = field(default_factory=dict)
+
+
+@dataclass
+class _SessionBuffer:
     chat_id: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# Card builder
-# ---------------------------------------------------------------------------
-
-
-def _build_card(text: str, footer_meta: list[tuple[str, str]], finalize: bool) -> dict:
-    """Build a Feishu interactive card (schema 2.0) with optional footer.
-
-    On finalize we always emit a divider (hr) so the test and UI both get a
-    clear visual end-of-turn marker, even when there is no usage metadata.
-    """
-    elements: list[dict] = [{"tag": "markdown", "content": text}]
-    if finalize:
-        elements.append({"tag": "hr"})
-        if footer_meta:
-            meta_line = " | ".join(f"{k}: {v}" for k, v in footer_meta)
-            elements.append({
-                "tag": "markdown",
-                "content": f"<font color='grey'>{meta_line}</font>",
-            })
-    return {
-        "schema": "2.0",
-        "config": {"width_mode": "fill"},
-        "body": {"elements": elements},
-    }
+    turns: "OrderedDict[str, _TurnState]" = field(default_factory=OrderedDict)
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +168,7 @@ class FeishuAdapter(Adapter):
                     "您尚未配对。请管理员运行: "
                     f"`xana pair approve feishu {sender_id}`"
                 )
-                card = _build_card(hint, [], True)
+                card = build_card(TurnDraft(run_id="?", content=hint), finalize=True)
                 await self._api_sender.send_card(receive_id=parsed.chat_id, card=card)
             return
         session_id = self._bindings.allocate(parsed.chat_id, prefix="feishu")
@@ -217,66 +203,101 @@ class FeishuAdapter(Adapter):
     # ------------------------------------------------------------------
 
     async def render(self, event: AgentEvent) -> RenderedMessage:
-        kind = event.kind
-        text = str(event.payload.get("text", ""))
         buf = self._get_or_create_buffer(event.session_id)
+        ts = self._turn_for(buf, event)
+        hkind = self._harness_kind(event)
+        payload = event.payload
+        text = str(payload.get("text", "") or "")
 
-        if kind == "draft":
-            buf.cumulative_text += text
-            # Non-blocking: latest cumulative_text wins when the send fires.
-            buf.coalescer.flush(
-                lambda: self._patch_or_send_now(buf, finalize=False, footer_meta=[])
+        if hkind == "model_delta":
+            if payload.get("channel") == "thinking":
+                ts.draft.append_thinking(text)
+            else:
+                ts.draft.append_content(text)
+            ts.coalescer.flush(self._make_send(buf, ts, finalize=False))
+        elif hkind == "tool_started":
+            call_id = str(payload.get("call_id", ""))
+            ts.draft.start_tool(
+                call_id=call_id,
+                name=str(payload.get("tool_name", "")),
+                args=payload.get("input", {}) or {},
             )
-        elif kind == "final":
+            ts.tool_started_ts[call_id] = time.monotonic()
+            ts.coalescer.flush(self._make_send(buf, ts, finalize=False))
+        elif hkind == "tool_finished":
+            call_id = str(payload.get("call_id", ""))
+            if not call_id:
+                # default.py 的 tool_finished payload 目前没有 call_id:
+                # 容错地匹配最后一个同名 running 块。
+                name = str(payload.get("tool_name", ""))
+                for blk in reversed(ts.draft.tool_blocks):
+                    if blk.running and blk.name == name:
+                        call_id = blk.call_id
+                        break
+            started = ts.tool_started_ts.pop(call_id, None)
+            elapsed_ms = int((time.monotonic() - started) * 1000) if started is not None else None
+            ts.draft.finish_tool(
+                call_id=call_id,
+                ok=bool(payload.get("ok", True)),
+                result=str(payload.get("text", "")),
+                elapsed_ms=elapsed_ms,
+            )
+            ts.coalescer.flush(self._make_send(buf, ts, finalize=False))
+        elif hkind == "final":
             if text:
-                # final payload["text"] is the full cumulative text joined by "\n"
-                # (set by harness_sdk/default.py final_text = "\n".join(cumulative_text))
-                buf.cumulative_text = text
-            footer_meta = self._collect_footer_meta(event)
-            await buf.coalescer.finalize(
-                lambda: self._patch_or_send_now(buf, finalize=True, footer_meta=footer_meta)
-            )
-        elif kind == "error":
-            buf.cumulative_text += f"\n[error] {text}" if text else "\n[error]"
-            await buf.coalescer.finalize(
-                lambda: self._patch_or_send_now(buf, finalize=True, footer_meta=[])
-            )
+                ts.draft.content = text
+            ts.draft.content, ts.draft.buttons = extract_buttons(ts.draft.content)
+            usage = event.harness_event.usage if event.harness_event else None
+            ts.draft.footer_meta = build_footer_meta(usage)
+            await ts.coalescer.finalize(self._make_send(buf, ts, finalize=True))
+        elif hkind == "error":
+            err = text or str(payload.get("error", "") or "")
+            ts.draft.content += f"\n[error] {err}" if err else "\n[error]"
+            await ts.coalescer.finalize(self._make_send(buf, ts, finalize=True))
+        # 其他 harness kind(turn_started/paused/cancelled 等):不渲染。
 
         return RenderedMessage(
             adapter_id=self.adapter_id,
             session_id=event.session_id,
-            text=buf.cumulative_text,
-            metadata={"event_kind": kind},
+            text=ts.draft.content,
+            metadata={"event_kind": event.kind},
         )
 
-    def _collect_footer_meta(self, event: AgentEvent) -> list[tuple[str, str]]:
-        pairs: list[tuple[str, str]] = []
-        usage = getattr(event.harness_event, "usage", None) if event.harness_event else None
-        if usage is not None:
-            if usage.model:
-                pairs.append(("model", str(usage.model)))
-            tin = usage.exact_input_tokens
-            tout = usage.exact_output_tokens
-            if tin is not None or tout is not None:
-                pairs.append(("tokens", f"{tin or 0} in / {tout or 0} out"))
-        return pairs
+    @staticmethod
+    def _harness_kind(event: AgentEvent) -> str:
+        if event.harness_event is not None:
+            return event.harness_event.kind
+        # 无 harness_event 时由 AgentEvent.kind 推断
+        return {"draft": "model_delta", "tool": "tool_finished",
+                "final": "final", "error": "error"}.get(event.kind, event.kind)
 
-    async def _patch_or_send_now(
-        self,
-        buf: _SessionBuffer,
-        *,
-        finalize: bool,
-        footer_meta: list[tuple[str, str]],
-    ) -> None:
-        """Raw API call: first message is a send, later ones patch in place."""
-        if buf.chat_id is None or self._api_sender is None:
-            return
-        card = _build_card(buf.cumulative_text, footer_meta, finalize)
-        if buf.last_message_id is None:
-            mid = await self._api_sender.send_card(receive_id=buf.chat_id, card=card)
-            buf.last_message_id = mid
+    def _turn_for(self, buf: _SessionBuffer, event: AgentEvent) -> _TurnState:
+        if event.harness_event is not None and event.harness_event.run_id:
+            run_id = event.harness_event.run_id
+        elif buf.turns:
+            run_id = next(reversed(buf.turns))
         else:
-            await self._api_sender.patch_card(message_id=buf.last_message_id, card=card)
+            run_id = "?"
+        ts = buf.turns.get(run_id)
+        if ts is None:
+            ts = _TurnState(draft=TurnDraft(run_id=run_id))
+            buf.turns[run_id] = ts
+            while len(buf.turns) > _MAX_TURNS_KEPT:
+                buf.turns.popitem(last=False)
+        return ts
+
+    def _make_send(self, buf: _SessionBuffer, ts: _TurnState, *, finalize: bool):
+        async def _send() -> None:
+            if buf.chat_id is None or self._api_sender is None:
+                return
+            card = build_card(ts.draft, finalize=finalize)
+            if ts.message_id is None:
+                ts.message_id = await self._api_sender.send_card(
+                    receive_id=buf.chat_id, card=card
+                )
+            else:
+                await self._api_sender.patch_card(message_id=ts.message_id, card=card)
+        return _send
 
     # ------------------------------------------------------------------
     # Health
