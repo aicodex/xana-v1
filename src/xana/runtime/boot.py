@@ -22,6 +22,7 @@ from xana.agent_adapter.router import DefaultAgentRequestRouter
 from xana.agents.chat_agent import ChatAgent, build_chat_agent_spec
 from xana.agents.interfaces import Agent
 from xana.config.loader import DefaultConfigProvider
+from xana.extension_api.registry import ExtensionRegistry
 from xana.harness_sdk.default import DefaultHarness
 from xana.harness_sdk.interfaces import ProgressSink
 from xana.llm_driver.fake_client import FakeModelClient, InMemoryModelRegistry, ScriptedTurn
@@ -97,6 +98,7 @@ async def boot(
     *,
     project_root: Path,
     config_provider: DefaultConfigProvider | None = None,
+    extension_registry: ExtensionRegistry | None = None,
 ) -> BootResult:
     project_root = Path(project_root).resolve()
 
@@ -150,7 +152,7 @@ async def boot(
 
     chat_agent = ChatAgent(
         spec=build_chat_agent_spec(),
-        harness=DefaultHarness(),
+        harness=DefaultHarness(extension_registry=extension_registry),
         active_context_store=active_ctx,
         history_mirror=mirror,
         memory_injector_registry=injector_registry,
