@@ -65,11 +65,14 @@ async def generate_summary(
     req = ModelRequest(provider=provider, model=model, messages=model_msgs, tools_schema=())
     for _ in range(_COMPACT_RETRIES):
         parts: list[str] = []
-        async for event in client.stream(req):
-            if event.kind == "text_delta":
-                parts.append(event.payload.get("text", ""))
-            elif event.kind in ("done", "error"):
-                break
+        try:
+            async for event in client.stream(req):
+                if event.kind == "text_delta":
+                    parts.append(event.payload.get("text", ""))
+                elif event.kind in ("done", "error"):
+                    break
+        except Exception:
+            continue  # 传输层异常 = 一次失败重试,与缺 <summary> 同等对待
         match = _SUMMARY_RE.search("".join(parts))
         if match and match.group(1).strip():
             return match.group(1).strip()
