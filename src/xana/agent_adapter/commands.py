@@ -116,7 +116,7 @@ class DefaultCommandRouter(CommandRouter):
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
         from xana.harness_sdk.compact import (
             SUMMARY_SECTIONS, build_post_compact_context, generate_summary,
-            messages_since_boundary, partial_summary, recent_user_messages,
+            messages_since_boundary, partial_summary, post_compact_message,
             summary_progress,
         )
         from xana.harness_sdk.contracts import ProgressEvent
@@ -163,15 +163,13 @@ class DefaultCommandRouter(CommandRouter):
             on_progress=_emit)
         if summary is None:
             return CommandResult(ok=False, message="压缩失败:模型未返回 <summary>,请重试")
-        recent = recent_user_messages(live)
         await self.active_context_store.set(build_post_compact_context(
-            session_id=inbound.session_id, agent_name="chat",
-            summary=summary, recent=recent))
-        # 最终卡:正文只有满格进度条;数量/状态信息都在折叠块标题里
+            session_id=inbound.session_id, agent_name="chat", summary=summary))
+        # 最终卡:正文只有满格进度条;折叠块 = 上下文里那条 post-compact 消息全文(开头+摘要+结尾)
         return CommandResult(
             ok=True,
             message="▰" * len(SUMMARY_SECTIONS),
-            payload={"thinking": summary,
+            payload={"thinking": post_compact_message(summary),
                      "thinking_title": f"已压缩 {len(live)} 条消息"},
         )
 

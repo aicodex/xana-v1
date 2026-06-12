@@ -41,7 +41,7 @@ from xana.extension_api.contracts import (
 from xana.extension_api.registry import ExtensionRegistry
 from xana.harness_sdk.compact import (
     BLOCKING_HEADROOM, build_post_compact_context, estimate_tokens,
-    generate_summary, messages_since_boundary, recent_user_messages,
+    generate_summary, messages_since_boundary,
 )
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest, ProgressEvent
 from xana.harness_sdk.interfaces import Harness
@@ -436,7 +436,7 @@ class DefaultHarness(Harness):
                     else:
                         await context.active_context_store.set(build_post_compact_context(
                             session_id=session_id, agent_name=agent_name,
-                            summary=summary, recent=recent_user_messages(live)))
+                            summary=summary))
                         self._session_prompt_tokens.pop(key, None)
                         await self._report_compact(context, session_id, run_id, "done")
                         snapshot = await context.active_context_store.get(session_id, agent_name)

@@ -16,7 +16,6 @@ from xana.llm_driver.contracts import ModelMessage, ModelRequest
 from xana.memory.contracts import ActiveContext, MemoryMessage
 
 _CHARS_PER_TOKEN = 4  # 与 DefaultUsageAccumulator 同源启发式
-RECENT_KEEP_TOKENS = 20_000  # Codex 风格: 最近 user 消息逐字保留预算
 BLOCKING_HEADROOM = 3_000    # blocking 线 = context_window - 3K
 _COMPACT_RETRIES = 3
 _TRANSCRIPT_PLACEHOLDER = "(转录不可用)"
@@ -31,22 +30,6 @@ def messages_since_boundary(messages: tuple[MemoryMessage, ...]) -> tuple[Memory
         if messages[i].metadata.get("compact_boundary"):
             return messages[i + 1:]
     return messages
-
-
-def recent_user_messages(
-    messages: Sequence[MemoryMessage], budget_tokens: int = RECENT_KEEP_TOKENS
-) -> tuple[MemoryMessage, ...]:
-    kept: list[MemoryMessage] = []
-    used = 0
-    for m in reversed(messages):
-        if m.role != "user":
-            continue
-        cost = max(1, len(m.content or "") // _CHARS_PER_TOKEN)
-        if used + cost > budget_tokens:
-            break
-        kept.append(m)
-        used += cost
-    return tuple(reversed(kept))
 
 
 SUMMARY_SECTIONS = (
@@ -151,17 +134,21 @@ def _extract_summary(text: str) -> str | None:
 partial_summary = _extract_summary
 
 
+def post_compact_message(summary: str) -> str:
+    """compact 后留在上下文里的唯一一条消息全文(CC 结构: 开头说明 + 摘要: + 转录指引 + 继续指令)。
+    卡片折叠块显示的也是这条全文 — 上下文与展示一致。"""
+    return POST_COMPACT_TEMPLATE.format(summary=summary, transcript=_TRANSCRIPT_PLACEHOLDER)
+
+
 def build_post_compact_context(
-    *, session_id: str, agent_name: str, summary: str, recent: tuple[MemoryMessage, ...]
+    *, session_id: str, agent_name: str, summary: str
 ) -> ActiveContext:
+    """compact 后上下文清空,只留 boundary + 一条 post-compact 消息(CC 行为,不逐字保留近期消息)。"""
     boundary = MemoryMessage(
         role="system", content=COMPACT_BOUNDARY_MARKER, metadata={"compact_boundary": True}
     )
-    summary_msg = MemoryMessage(
-        role="user",
-        content=POST_COMPACT_TEMPLATE.format(summary=summary, transcript=_TRANSCRIPT_PLACEHOLDER),
-    )
+    summary_msg = MemoryMessage(role="user", content=post_compact_message(summary))
     return ActiveContext(
         session_id=session_id, agent_name=agent_name,
-        messages=(boundary, summary_msg) + recent,
+        messages=(boundary, summary_msg),
     )
