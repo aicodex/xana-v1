@@ -45,7 +45,7 @@ from xana.harness_sdk.compact import (
 )
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest, ProgressEvent
 from xana.harness_sdk.interfaces import Harness
-from xana.harness_sdk.system_prompt import build_system_prompt, env_section
+from xana.harness_sdk.system_prompt import build_system_prompt, deferred_tools_section, env_section
 from xana.harness_sdk.usage import DefaultUsageAccumulator
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
 from xana.memory.contracts import HistoryRow, MemoryMessage
@@ -365,12 +365,8 @@ class DefaultHarness(Harness):
         # TODO(claude_md): CC 把 CLAUDE.md 包 <system-reminder> 作为 messages[0]
         # prepend(PROMPT_ASSEMBLY_ORDER.md),不进 system prompt;xana 实现
         # 项目级规则文件加载后在这里 prepend 首条 user message。
-        system_content = build_system_prompt(
-            identity=str(context.config_snapshot.get("agent_identity", "") or ""),
-            override=context.config_snapshot.get("agent_system_prompt") or None,
-            env=env_section(cwd=context.cwd or None, model=context.model),
-            dynamic_middle=(dynamic_middle_text,),
-        )
+        # system prompt 与 tools_schema 在每轮 turn 循环内组装(deferred 揭示
+        # 后下一轮即生效),这里只准备不变的输入。
 
         provider = str(context.config_snapshot.get("provider", _DEFAULT_PROVIDER))
         if context.model_registry is None:
@@ -391,20 +387,14 @@ class DefaultHarness(Harness):
                                payload={"error": f"provider {provider!r} not registered"})
             return
 
-        tools_schema: tuple[dict, ...] = ()
+        specs: tuple = ()
         if context.tool_registry is not None:
-            specs = await context.tool_registry.list_specs()
-            tools_schema = tuple(_to_anthropic_tool_schema(s) for s in specs)
+            specs = tuple(await context.tool_registry.list_specs())
         ext_tools: dict[str, Tool] = {}
         if ext is not None:
             for contributor in ext.tools:
                 for tool in contributor.tools():
                     ext_tools[tool.spec().component.name] = tool
-            ext_tool_names = set(ext_tools)
-            tools_schema = tuple(
-                [s for s in tools_schema if s["name"] not in ext_tool_names]
-                + [_to_anthropic_tool_schema(t.spec()) for t in ext_tools.values()]
-            )
 
         usage = UsageSnapshot(model=context.model, provider=provider)
         cumulative_text: list[str] = []
@@ -458,6 +448,28 @@ class DefaultHarness(Harness):
                     yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
                                        payload={"error": "上下文已满且压缩未能降低占用,请 /clear 或更换模型"})
                     return
+
+            # ---- per-turn tools_schema + system prompt(deferred 揭示后下轮生效)----
+            revealed = _revealed_tools(history_msgs)
+            schemas, deferred_names = _split_tool_schemas(specs, revealed)
+            if ext_tools:
+                # extension 工具不参与 defer:永远全量 schema,且覆盖同名内置工具
+                ext_tool_names = set(ext_tools)
+                schemas = (
+                    [s for s in schemas if s["name"] not in ext_tool_names]
+                    + [_to_anthropic_tool_schema(t.spec()) for t in ext_tools.values()]
+                )
+                deferred_names = [d for d in deferred_names if d[0] not in ext_tool_names]
+            tools_schema: tuple[dict, ...] = tuple(schemas)
+            system_content = build_system_prompt(
+                identity=str(context.config_snapshot.get("agent_identity", "") or ""),
+                override=context.config_snapshot.get("agent_system_prompt") or None,
+                env=env_section(cwd=context.cwd or None, model=context.model),
+                dynamic_middle=(
+                    deferred_tools_section(tuple(deferred_names)),
+                    dynamic_middle_text,
+                ),
+            )
 
             assembled = _assemble_for_model(system_content, history_msgs)
             self.last_assembled_messages = assembled
@@ -653,6 +665,31 @@ def _to_anthropic_tool_schema(spec) -> dict:
         "description": spec.component.description or "",
         "input_schema": dict(spec.input_schema),
     }
+
+
+def _split_tool_schemas(
+    specs, revealed: set[str],
+) -> tuple[list[dict], list[tuple[str, str]]]:
+    """defer 且未揭示 → 只给 (名字, 描述);其余给完整 schema。"""
+    schemas: list[dict] = []
+    deferred: list[tuple[str, str]] = []
+    for s in specs:
+        if getattr(s, "defer", False) and s.component.name not in revealed:
+            deferred.append((s.component.name, s.component.description or ""))
+        else:
+            schemas.append(_to_anthropic_tool_schema(s))
+    return schemas, deferred
+
+
+def _revealed_tools(messages) -> set[str]:
+    """从消息历史恢复已揭示工具(tool_search 结果的 metadata.revealed_tools)。
+    CC 同款思路:揭示状态存在历史里,不是单独状态变量。"""
+    out: set[str] = set()
+    for m in messages:
+        names = m.metadata.get("revealed_tools")
+        if names:
+            out.update(names)
+    return out
 
 
 def _denied_result(perm: PermissionResult) -> ToolResult:

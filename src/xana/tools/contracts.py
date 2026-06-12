@@ -61,6 +61,7 @@ class ToolSpec:
     timeout_s: float | None = None
     max_result_chars: int = 50_000
     user_facing_name: str | None = None
+    defer: bool = False  # True = 隐藏工具:模型只见名字,经 tool_search 揭示后才发完整 schema
 
 
 @dataclass(frozen=True)

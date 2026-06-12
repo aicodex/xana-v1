@@ -118,11 +118,13 @@ def tools_section() -> str:
     return ""
 
 
-# TODO(deferred_tools): 隐藏工具机制(ToolSpec.defer + tool_search)实现后,
-# 这里返回「# 按需工具」列表(模板 AGENT_LOOP_PROMPT.md:166-170)。
-# 当前返回空字符串,不影响已有功能。
-def deferred_tools_section() -> str:
-    return ""
+def deferred_tools_section(deferred: tuple[tuple[str, str], ...] = ()) -> str:
+    """# 按需工具 段(模板 AGENT_LOOP_PROMPT.md:166-170)。deferred = (名字, 描述) 列表。"""
+    if not deferred:
+        return ""
+    lines = "\n".join(f"- {name}: {desc}" for name, desc in deferred)
+    return ("# 按需工具\n\n"
+            "以下工具默认隐藏。使用 tool_search 查看完整 schema 并按需加载：\n\n" + lines)
 
 
 def build_system_prompt(
