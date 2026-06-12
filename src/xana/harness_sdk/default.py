@@ -45,6 +45,7 @@ from xana.harness_sdk.compact import (
 )
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest, ProgressEvent
 from xana.harness_sdk.interfaces import Harness
+from xana.harness_sdk.system_prompt import build_system_prompt, env_section
 from xana.harness_sdk.usage import DefaultUsageAccumulator
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
 from xana.memory.contracts import HistoryRow, MemoryMessage
@@ -356,11 +357,20 @@ class DefaultHarness(Harness):
                     extension_tail.append(frag.content)
         base_parts = injected_head + skill_blocks + injected_tail + extension_tail
         if ext is not None and ext.context:
-            system_content = await ExtensionPromptAssembler(ext).assemble(
+            dynamic_middle_text = await ExtensionPromptAssembler(ext).assemble(
                 thread_store=thread_store, turn_store=turn_store, base_parts=base_parts,
             )
         else:
-            system_content = "\n\n".join(p for p in base_parts if p)
+            dynamic_middle_text = "\n\n".join(p for p in base_parts if p)
+        # TODO(claude_md): CC 把 CLAUDE.md 包 <system-reminder> 作为 messages[0]
+        # prepend(PROMPT_ASSEMBLY_ORDER.md),不进 system prompt;xana 实现
+        # 项目级规则文件加载后在这里 prepend 首条 user message。
+        system_content = build_system_prompt(
+            identity=str(context.config_snapshot.get("agent_identity", "") or ""),
+            override=context.config_snapshot.get("agent_system_prompt") or None,
+            env=env_section(cwd=context.cwd or None, model=context.model),
+            dynamic_middle=(dynamic_middle_text,),
+        )
 
         provider = str(context.config_snapshot.get("provider", _DEFAULT_PROVIDER))
         if context.model_registry is None:
