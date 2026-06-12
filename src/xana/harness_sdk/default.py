@@ -39,6 +39,10 @@ from xana.extension_api.contracts import (
     TurnStopInput,
 )
 from xana.extension_api.registry import ExtensionRegistry
+from xana.harness_sdk.compact import (
+    BLOCKING_HEADROOM, build_post_compact_context, estimate_tokens,
+    generate_summary, messages_since_boundary, recent_user_messages,
+)
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest, ProgressEvent
 from xana.harness_sdk.interfaces import Harness
 from xana.harness_sdk.usage import DefaultUsageAccumulator
@@ -66,6 +70,7 @@ class DefaultHarness(Harness):
         self._extensions = extension_registry
         self._thread_stores: dict[str, ExtensionData] = {}
         self._config_snapshots: dict[str, dict] = {}
+        self._session_prompt_tokens: dict[tuple[str, str], int] = {}
 
     async def close_thread(self, session_id: str) -> None:
         """Fire on_thread_stop and drop the thread-scoped extension store.
@@ -126,6 +131,16 @@ class DefaultHarness(Harness):
                     status=status or "final", thread_store=thread_store, turn_store=turn_store)),
                 "on_turn_stop",
             )
+
+    async def _report_compact(self, context: HarnessContext, session_id: str,
+                              run_id: str, phase: str) -> None:
+        if context.progress_sink is None:
+            return
+        await context.progress_sink.report(ProgressEvent(
+            session_id=session_id, run_id=run_id, message="compact_progress",
+            payload={"kind": "compact_progress", "session_id": session_id,
+                     "model": context.model, "phase": phase},
+        ))
 
     async def _dispatch_tool(
         self,
@@ -384,6 +399,7 @@ class DefaultHarness(Harness):
         usage = UsageSnapshot(model=context.model, provider=provider)
         cumulative_text: list[str] = []
         turn_start = time.monotonic()
+        compact_attempted = False
 
         for turn_index in range(_MAX_TURNS):
             if context.abort.aborted:
@@ -397,6 +413,37 @@ class DefaultHarness(Harness):
                 return
             snapshot = await context.active_context_store.get(session_id, agent_name)
             history_msgs = snapshot.messages if snapshot is not None else ()
+
+            # ---- auto-compact: token 数 vs force_compact 线 ----
+            ctx_win = context.config_snapshot.get("context_window")
+            force_at = context.config_snapshot.get("force_compact")
+            if ctx_win and force_at and history_msgs:
+                key = (session_id, agent_name)
+                tokens = self._session_prompt_tokens.get(key) or estimate_tokens(history_msgs)
+                live = messages_since_boundary(history_msgs)
+                if tokens >= int(force_at) and live and not compact_attempted:
+                    compact_attempted = True
+                    await self._report_compact(context, session_id, run_id, "start")
+                    summary = await generate_summary(
+                        client, provider=provider, model=context.model, messages=live)
+                    if summary is None:
+                        await self._report_compact(context, session_id, run_id, "failed")
+                    else:
+                        await context.active_context_store.set(build_post_compact_context(
+                            session_id=session_id, agent_name=agent_name,
+                            summary=summary, recent=recent_user_messages(live)))
+                        self._session_prompt_tokens.pop(key, None)
+                        await self._report_compact(context, session_id, run_id, "done")
+                        snapshot = await context.active_context_store.get(session_id, agent_name)
+                        history_msgs = snapshot.messages if snapshot is not None else ()
+                elif tokens >= int(ctx_win) - BLOCKING_HEADROOM and compact_attempted:
+                    await self._fire_turn_end(
+                        ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                        thread_store=thread_store, turn_store=turn_store, status="error")
+                    yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
+                                       payload={"error": "上下文已满且压缩未能降低占用,请 /clear 或更换模型"})
+                    return
+
             assembled = _assemble_for_model(system_content, history_msgs)
             self.last_assembled_messages = assembled
 
@@ -429,6 +476,8 @@ class DefaultHarness(Harness):
                         })
                     elif event.kind == "usage":
                         usage = await self.usage_accumulator.apply_model_event(usage, event)
+                        if usage.exact_input_tokens:
+                            self._session_prompt_tokens[(session_id, agent_name)] = usage.exact_input_tokens
                         if context.progress_sink is not None:
                             await context.progress_sink.report(ProgressEvent(
                                 session_id=session_id, run_id=run_id,
@@ -440,6 +489,7 @@ class DefaultHarness(Harness):
                                     "tokens_in": usage.exact_input_tokens or 0,
                                     "tokens_out": usage.exact_output_tokens or 0,
                                     "elapsed_s": time.monotonic() - turn_start,
+                                    "context_window": context.config_snapshot.get("context_window"),
                                 },
                             ))
                     elif event.kind == "done":

@@ -60,7 +60,11 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         provider: str,
         session_config_store: SessionConfigStore | None = None,
         progress_sink: ProgressSink | None = None,
+        context_window: int | None = None,
+        force_compact: int | None = None,
     ) -> None:
+        self.context_window = context_window
+        self.force_compact = force_compact
         self.active_context_store = active_context_store
         self.history_mirror = history_mirror
         self.memory_injector_registry = memory_injector_registry
@@ -88,7 +92,11 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         run_id = f"{request.session_id}-{self._run_counter}"
         model = self.model
         effort: str | int | None = None
-        config_snapshot: dict[str, Any] = {"provider": self.provider}
+        config_snapshot: dict[str, Any] = {
+            "provider": self.provider,
+            "context_window": self.context_window,
+            "force_compact": self.force_compact,
+        }
         if self.session_config_store is not None:
             cfg = await self.session_config_store.get(request.session_id)
             if cfg.model:
@@ -156,6 +164,8 @@ class ChatAgent(Agent):
         provider: str,
         session_config_store: SessionConfigStore | None = None,
         progress_sink: ProgressSink | None = None,
+        context_window: int | None = None,
+        force_compact: int | None = None,
     ) -> None:
         self._spec = spec
         self.harness = harness
@@ -173,6 +183,8 @@ class ChatAgent(Agent):
             provider=provider,
             session_config_store=session_config_store,
             progress_sink=progress_sink,
+            context_window=context_window,
+            force_compact=force_compact,
         )
         self.event_mapper = DefaultAgentEventMapper()
         self._pending_cancel_sessions: set[str] = set()

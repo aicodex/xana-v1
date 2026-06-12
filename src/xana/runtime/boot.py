@@ -165,6 +165,8 @@ async def boot(
         provider=provider,
         session_config_store=session_config_store,
         progress_sink=progress_sink,
+        context_window=runtime_config.default_model.context_window,
+        force_compact=runtime_config.default_model.force_compact,
     )
 
     gateway.agents["chat"] = chat_agent
