@@ -180,6 +180,9 @@ async def boot(
         gateway=gateway,
         available_models=tuple(runtime_config.models.keys()) if hasattr(runtime_config, "models") else (model,),
         available_search_providers=("bm25",),
+        model_registry=model_registry,
+        provider=provider,
+        model=model,
     )
     await gateway.register_command_router(command_router)
 

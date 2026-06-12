@@ -31,17 +31,23 @@ class DefaultCommandRouter(CommandRouter):
         gateway: Any = None,
         available_models: tuple[str, ...] = (),
         available_search_providers: tuple[str, ...] = (),
+        model_registry: Any = None,
+        provider: str = "",
+        model: str = "",
     ) -> None:
         self.session_config_store = session_config_store
         self.active_context_store = active_context_store
         self.gateway = gateway
         self.available_models = available_models
         self.available_search_providers = available_search_providers
+        self.model_registry = model_registry
+        self.provider = provider
+        self.model = model
 
         self._specs: tuple[CommandSpec, ...] = (
             CommandSpec(name="/help",     description="显示命令菜单。用法 `/help` 或 `/help /命令`"),
             CommandSpec(name="/clear",    description="清空当前会话上下文"),
-            CommandSpec(name="/compact",  description="压缩本会话历史成一条 summary"),
+            CommandSpec(name="/compact",  description="用 LLM 把本会话历史压缩成摘要"),
             CommandSpec(name="/model",    description="切换本会话模型，无参列出可选"),
             CommandSpec(name="/effort",   description="推理强度 low/medium/high"),
             CommandSpec(name="/streaming", description="token 流开关 on/off"),
@@ -103,11 +109,31 @@ class DefaultCommandRouter(CommandRouter):
         return CommandResult(ok=True, message="[cleared] 上下文已清空")
 
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
+        from xana.harness_sdk.compact import (
+            build_post_compact_context, generate_summary,
+            messages_since_boundary, recent_user_messages,
+        )
         if self.active_context_store is None:
             return CommandResult(ok=False, message="active_context_store 未配置")
-        summary = args.strip() or "(用户触发的压缩 — 无具体摘要)"
-        await self.active_context_store.compact(inbound.session_id, "chat", summary)
-        return CommandResult(ok=True, message="[compacted] 历史已压缩")
+        if self.model_registry is None:
+            return CommandResult(ok=False, message="model_registry 未配置,无法压缩")
+        snapshot = await self.active_context_store.get(inbound.session_id, "chat")
+        live = messages_since_boundary(snapshot.messages) if snapshot else ()
+        if not live:
+            return CommandResult(ok=False, message="无可压缩内容")
+        client = await self.model_registry.get(self.provider)
+        if client is None:
+            return CommandResult(ok=False, message=f"provider {self.provider!r} 未注册")
+        summary = await generate_summary(
+            client, provider=self.provider, model=self.model, messages=live)
+        if summary is None:
+            return CommandResult(ok=False, message="压缩失败:模型未返回 <summary>,请重试")
+        recent = recent_user_messages(live)
+        await self.active_context_store.set(build_post_compact_context(
+            session_id=inbound.session_id, agent_name="chat",
+            summary=summary, recent=recent))
+        return CommandResult(
+            ok=True, message=f"[compacted] 历史已压缩,逐字保留最近 {len(recent)} 条消息")
 
     async def _persist_with(self, session_id: str, **changes) -> "SessionConfig":
         from xana.session_config.contracts import SessionConfig
