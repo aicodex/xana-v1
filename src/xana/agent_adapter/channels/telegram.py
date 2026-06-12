@@ -10,6 +10,7 @@ harness_sdk/default.py semantics), so final does assignment not append.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, AsyncIterator
 
@@ -24,6 +25,11 @@ from xana.agent_adapter.contracts import (
 )
 from xana.agent_adapter.interfaces import Adapter
 from xana.agents.contracts import AgentEvent
+
+_logger = logging.getLogger(__name__)
+
+# Backoff after a getUpdates failure. Module constant so tests can zero it.
+_POLL_BACKOFF_S = 3.0
 
 
 # ---------------------------------------------------------------------------
@@ -138,14 +144,40 @@ class TelegramAdapter(Adapter):
                 updates = await self._api_client.get_updates(  # type: ignore[union-attr]
                     offset=offset, timeout=self._config.poll_timeout_s
                 )
-            except Exception:
-                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Redact the bot token: it is embedded in the request URL,
+                # so str(exc) (httpx errors include the URL) may leak it.
+                # No .exception()/traceback either — tracebacks embed the URL.
+                _logger.warning(
+                    "telegram: getUpdates failed (%s): %s — retrying in %ss",
+                    type(exc).__name__,
+                    self._redact(str(exc)),
+                    _POLL_BACKOFF_S,
+                )
+                await asyncio.sleep(_POLL_BACKOFF_S)
                 continue
             for upd in updates:
-                await self._dispatch_update(upd)
+                try:
+                    await self._dispatch_update(upd)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # One bad update must not kill the poll loop.
+                    _logger.warning(
+                        "telegram: dispatch_update failed (%s): %s",
+                        type(exc).__name__,
+                        self._redact(str(exc)),
+                    )
             if updates:
                 batch_max = max(int(u.get("update_id", 0)) for u in updates)
                 offset = max(offset or 0, batch_max + 1)
+
+    def _redact(self, s: str) -> str:
+        """Replace the bot token with a placeholder before logging."""
+        token = self._config.bot_token
+        return s.replace(token, "<token>") if token else s
 
     # ------------------------------------------------------------------
     # Update dispatch
