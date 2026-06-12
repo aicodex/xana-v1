@@ -25,7 +25,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterator
 
-from xana.extension_api.assembler import PromptAssembler
+from xana.extension_api.assembler import PromptAssembler as ExtensionPromptAssembler
 from xana.extension_api.contracts import (
     ApprovalReviewInput,
     ExtensionData,
@@ -68,7 +68,11 @@ class DefaultHarness(Harness):
         self._config_snapshots: dict[str, dict] = {}
 
     async def close_thread(self, session_id: str) -> None:
-        """Fire on_thread_stop and drop the thread-scoped extension store."""
+        """Fire on_thread_stop and drop the thread-scoped extension store.
+
+        Phase 1 note: no production caller exists yet; runtime/adapters are
+        expected to call this on session teardown (Phase 2).
+        """
         store = self._thread_stores.pop(session_id, None)
         self._config_snapshots.pop(session_id, None)
         if self._extensions is None or store is None:
@@ -337,7 +341,7 @@ class DefaultHarness(Harness):
                     extension_tail.append(frag.content)
         base_parts = injected_head + skill_blocks + injected_tail + extension_tail
         if ext is not None and ext.context:
-            system_content = await PromptAssembler(ext).assemble(
+            system_content = await ExtensionPromptAssembler(ext).assemble(
                 thread_store=thread_store, turn_store=turn_store, base_parts=base_parts,
             )
         else:
@@ -371,7 +375,7 @@ class DefaultHarness(Harness):
             for contributor in ext.tools:
                 for tool in contributor.tools():
                     ext_tools[tool.spec().component.name] = tool
-            ext_tool_names = {name for name in ext_tools}
+            ext_tool_names = set(ext_tools)
             tools_schema = tuple(
                 [s for s in tools_schema if s["name"] not in ext_tool_names]
                 + [_to_anthropic_tool_schema(t.spec()) for t in ext_tools.values()]
