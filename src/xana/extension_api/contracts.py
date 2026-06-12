@@ -96,7 +96,7 @@ class TurnStopInput:
     session_id: str
     agent_name: str
     run_id: str
-    status: str  # "final" | "error"
+    status: Literal["final", "error"]
     thread_store: ExtensionData
     turn_store: ExtensionData
 
