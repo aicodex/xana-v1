@@ -58,6 +58,8 @@ class ToolContributor(ABC):
 
 
 class ToolLifecycleContributor(ABC):
+    """Observes tool dispatch: called before and after each tool call."""
+
     async def on_tool_start(self, input: ToolStartInput) -> None:
         return None
 
@@ -66,6 +68,8 @@ class ToolLifecycleContributor(ABC):
 
 
 class TurnLifecycleContributor(ABC):
+    """Observes turn lifecycle: start, stop (final/error), abort."""
+
     async def on_turn_start(self, input: TurnStartInput) -> None:
         return None
 
@@ -77,6 +81,8 @@ class TurnLifecycleContributor(ABC):
 
 
 class ThreadLifecycleContributor(ABC):
+    """Observes thread lifecycle: first run of a session and explicit close."""
+
     async def on_thread_start(self, input: ThreadStartInput) -> None:
         return None
 
@@ -85,6 +91,8 @@ class ThreadLifecycleContributor(ABC):
 
 
 class ConfigContributor(ABC):
+    """Notified when a session's config snapshot changes between runs."""
+
     async def on_config_changed(
         self, previous: dict, new: dict, thread_store: ExtensionData
     ) -> None:

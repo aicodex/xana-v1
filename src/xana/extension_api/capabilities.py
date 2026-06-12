@@ -32,4 +32,8 @@ class SandboxManager(ABC):
 class AgentSpawner(ABC):
     @abstractmethod
     async def spawn(self, *, agent_name: str, prompt: str, session_id: str) -> str:
-        """Returns the run_id of the spawned agent run."""
+        """Spawn a new agent run attached to session_id (the caller-provided session).
+
+        session_id is the existing session the spawned run joins; returns the
+        new run_id assigned to the spawned run.
+        """
