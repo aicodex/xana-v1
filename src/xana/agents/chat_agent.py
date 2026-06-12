@@ -108,6 +108,8 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             "provider": self.provider,
             "context_window": ctx_win,
             "force_compact": force_at,
+            "agent_identity": spec.identity,
+            "agent_system_prompt": spec.system_prompt,
         }
         if cfg is not None:
             config_snapshot.update({

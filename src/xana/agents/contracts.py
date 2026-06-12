@@ -35,6 +35,10 @@ class AgentSpec:
     background: bool = False
     parent_agent: str | None = None
     max_turns: int | None = None
+    # None → 完整默认 13 段系统提示;非空 → 替换全部静态段,动态段照常注入
+    system_prompt: str | None = None
+    # Agent 身份,追加在 INTRO 之后(仅 system_prompt=None 时生效)
+    identity: str = ""
 
 
 @dataclass(frozen=True)
