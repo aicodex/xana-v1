@@ -28,6 +28,7 @@ result message conversion (caller passes Anthropic-shape ``tools_schema``).
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, AsyncIterator
 
@@ -45,6 +46,8 @@ from xana.llm_driver.contracts import (
 from xana.llm_driver.interfaces import ModelClient
 from xana.llm_driver.providers.dsml_recovery import parse_dsml_tool_calls
 
+
+_logger = logging.getLogger(__name__)
 
 _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
@@ -246,6 +249,9 @@ def _build_request_body(request: ModelRequest, config: AnthropicDeepSeekConfig) 
     effort = _EFFORT_MAP.get(str(request.effort).lower()) if request.effort else None
     if effort:
         body["output_config"] = {"effort": effort}
+    elif request.effort:
+        # 旧配置可能残留映射外的值——静默丢弃会让 /effort 看似生效实则无效
+        _logger.warning("未知 effort %r,跳过 output_config", request.effort)
     return body
 
 
