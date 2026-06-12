@@ -64,7 +64,7 @@ class ToolSearchTool(Tool):
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         query = str(invocation.input.get("query", "")).strip()
-        max_results = int(invocation.input.get("max_results", 5) or 5)
+        max_results = max(1, int(invocation.input.get("max_results", 5) or 5))
         specs = [s for s in await self.tool_registry.list_specs() if getattr(s, "defer", False)]
         by_name = {s.component.name: s for s in specs}
         if query.startswith("select:"):
