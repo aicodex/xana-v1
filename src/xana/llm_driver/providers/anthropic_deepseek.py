@@ -153,6 +153,11 @@ class AnthropicDeepSeekClient(ModelClient):
             await self._http.aclose()
 
 
+SUPPORTED_EFFORTS = ("high", "max")  # DS API 实际支持;low/medium/xhigh 是兼容映射
+_EFFORT_MAP = {"low": "high", "medium": "high", "high": "high",
+               "xhigh": "max", "max": "max"}
+
+
 def _build_request_body(request: ModelRequest, config: AnthropicDeepSeekConfig) -> dict[str, Any]:
     """Translate ModelMessages into Anthropic /v1/messages wire shape.
 
@@ -237,6 +242,10 @@ def _build_request_body(request: ModelRequest, config: AnthropicDeepSeekConfig) 
     thinking = (request.metadata or {}).get("thinking")
     if thinking in ("disabled", "enabled"):
         body["thinking"] = {"type": thinking}
+    # DS API: {"output_config": {"effort": "high"|"max"}};兼容值就近映射
+    effort = _EFFORT_MAP.get(str(request.effort).lower()) if request.effort else None
+    if effort:
+        body["output_config"] = {"effort": effort}
     return body
 
 

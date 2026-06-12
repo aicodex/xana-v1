@@ -487,6 +487,7 @@ class DefaultHarness(Harness):
             model_request = ModelRequest(
                 provider=provider,
                 model=context.model,
+                effort=context.effort,
                 messages=assembled,
                 tools_schema=tools_schema,
                 metadata=request_metadata,

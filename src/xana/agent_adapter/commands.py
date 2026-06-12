@@ -31,6 +31,7 @@ class DefaultCommandRouter(CommandRouter):
         gateway: Any = None,
         available_models: tuple[str, ...] = (),
         available_search_providers: tuple[str, ...] = (),
+        available_efforts: tuple[str, ...] = ("high", "max"),
         model_registry: Any = None,
         provider: str = "",
         model: str = "",
@@ -41,6 +42,7 @@ class DefaultCommandRouter(CommandRouter):
         self.gateway = gateway
         self.available_models = available_models
         self.available_search_providers = available_search_providers
+        self.available_efforts = available_efforts
         self.model_registry = model_registry
         self.provider = provider
         self.model = model
@@ -52,7 +54,7 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/clear",    description="清空当前会话上下文"),
             CommandSpec(name="/compact",  description="用 LLM 把本会话历史压缩成摘要"),
             CommandSpec(name="/model",    description="切换本会话模型，无参列出可选"),
-            CommandSpec(name="/effort",   description="推理强度 low/medium/high"),
+            CommandSpec(name="/effort",   description="推理强度切换，无参列出可选"),
             CommandSpec(name="/streaming", description="token 流开关 on/off"),
             CommandSpec(name="/thinking", description="思考链开关 on/off"),
             CommandSpec(name="/attach",   description="切换 task 订阅"),
@@ -204,8 +206,11 @@ class DefaultCommandRouter(CommandRouter):
 
     async def _cmd_effort(self, inbound: InboundMessage, args: str) -> CommandResult:
         target = args.strip().lower()
-        if target not in {"low", "medium", "high", "max"}:
-            return CommandResult(ok=False, message="effort 必须为 low/medium/high/max")
+        opts = ", ".join(self.available_efforts)
+        if not target:
+            return CommandResult(ok=True, message=f"可选 effort: {opts}")
+        if target not in self.available_efforts:
+            return CommandResult(ok=False, message=f"effort 必须为 {opts}")
         new = await self._persist_with(inbound.session_id, effort=target)
         return CommandResult(ok=True, message=f"effort 切换为 {new.effort}")
 

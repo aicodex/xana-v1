@@ -29,6 +29,7 @@ from xana.harness_sdk.interfaces import ProgressSink
 from xana.llm_driver.fake_client import FakeModelClient, InMemoryModelRegistry, ScriptedTurn
 from xana.llm_driver.interfaces import ModelClient, ModelRegistry
 from xana.llm_driver.providers.anthropic_deepseek import (
+    SUPPORTED_EFFORTS,
     AnthropicDeepSeekClient,
     AnthropicDeepSeekConfig,
 )
@@ -211,6 +212,7 @@ async def boot(
         gateway=gateway,
         available_models=tuple(runtime_config.models.keys()) if hasattr(runtime_config, "models") else (model,),
         available_search_providers=("native", "brave", "duckduckgo"),
+        available_efforts=SUPPORTED_EFFORTS,
         model_registry=model_registry,
         provider=provider,
         model=model,
