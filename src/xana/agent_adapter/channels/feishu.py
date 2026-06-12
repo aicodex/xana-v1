@@ -323,6 +323,9 @@ class FeishuAdapter(Adapter):
             run_id = next(reversed(buf.turns))
         else:
             run_id = "?"
+        return self._ensure_turn(buf, run_id)
+
+    def _ensure_turn(self, buf: _SessionBuffer, run_id: str) -> _TurnState:
         ts = buf.turns.get(run_id)
         if ts is None:
             ts = _TurnState(draft=TurnDraft(run_id=run_id))
@@ -335,14 +338,22 @@ class FeishuAdapter(Adapter):
         return ts
 
     def note_progress(self, payload: dict) -> None:
-        """AdapterProgressSink hook(sync):usage_progress 实时刷新当前 turn 脚标。"""
-        self._last_progress = dict(payload)
+        """AdapterProgressSink hook(sync):usage_progress / compact_progress
+        实时刷新当前 turn 脚标。_last_progress 只存 usage_progress,
+        避免 compact_progress 把新 turn 的 model/context 种子冲掉。"""
+        if payload.get("kind") == "usage_progress":
+            self._last_progress = dict(payload)
         buf = self._buffers.get(str(payload.get("session_id") or ""))
-        if buf is None or not buf.turns:
+        if buf is None:
             return
-        ts = buf.turns[next(reversed(buf.turns))]
-        if ts.finalized:
-            return
+        ts = buf.turns[next(reversed(buf.turns))] if buf.turns else None
+        if ts is None or ts.finalized:
+            # auto-compact 先于新 run 的第一个 harness 事件触发:
+            # 用 payload.run_id 提前建 turn,让 压缩中… 立即出卡。
+            run_id = str(payload.get("run_id") or "")
+            if payload.get("kind") != "compact_progress" or not run_id:
+                return
+            ts = self._ensure_turn(buf, run_id)
         if payload.get("kind") == "usage_progress":
             ts.last_progress = dict(payload)
         ts.draft.footer_meta = footer_from_progress(payload)

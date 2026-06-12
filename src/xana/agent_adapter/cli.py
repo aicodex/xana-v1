@@ -187,7 +187,10 @@ class CliAdapter(Adapter):
 
     def note_progress(self, payload: dict[str, Any]) -> None:
         """Adapter hook for progress updates. Stores latest; REPL may register a
-        callback to repaint the footer in place."""
+        callback to repaint the footer in place. 仅处理 usage_progress;
+        compact_progress 等其它 kind 由各 channel adapter 自行消化。"""
+        if payload.get("kind") != "usage_progress":
+            return
         self.last_progress = dict(payload)
         if self._progress_callback is not None:
             self._progress_callback(payload)

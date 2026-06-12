@@ -139,7 +139,7 @@ class DefaultHarness(Harness):
         await context.progress_sink.report(ProgressEvent(
             session_id=session_id, run_id=run_id, message="compact_progress",
             payload={"kind": "compact_progress", "session_id": session_id,
-                     "model": context.model, "phase": phase},
+                     "run_id": run_id, "model": context.model, "phase": phase},
         ))
 
     async def _dispatch_tool(
