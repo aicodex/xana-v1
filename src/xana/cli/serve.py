@@ -191,7 +191,11 @@ async def _run_inner(argv: argparse.Namespace) -> int:
     print(f"[xana serve] workspace {project_root}")
     from xana.cli.commands.pair import pairings_path
     cp = DefaultConfigProvider()
-    boot_result = await boot(project_root=project_root, config_provider=cp)
+    boot_result = await boot(
+        project_root=project_root,
+        config_provider=cp,
+        history_root=_xana_home() / "sessions",
+    )
     system = cp.load_system_config()  # boot() already called cp.load()
     bindings_root = pairings_path().parent
     adapters = build_adapters(bindings_root=bindings_root, env=dict(os.environ), system=system)
