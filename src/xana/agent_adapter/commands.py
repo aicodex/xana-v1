@@ -235,13 +235,20 @@ class DefaultCommandRouter(CommandRouter):
         await self.session_config_store.save(new)
         return new
 
+    async def _current_config(self, session_id: str) -> "SessionConfig | None":
+        if self.session_config_store is None:
+            return None
+        return await self.session_config_store.get(session_id)
+
     async def _cmd_model(self, inbound: InboundMessage, args: str) -> CommandResult:
         target = args.strip()
         if not target:
             if not self.available_models:
                 return CommandResult(ok=True, message="未配置可选模型")
+            cfg = await self._current_config(inbound.session_id)
+            cur = (cfg.model if cfg and cfg.model else None) or self.model or "(默认)"
             return CommandResult(
-                ok=True, message="可选模型: " + ", ".join(self.available_models),
+                ok=True, message=f"当前模型: {cur}",
                 payload={"buttons": _option_buttons("/model", self.available_models)})
         if self.available_models and target not in self.available_models:
             return CommandResult(ok=False, message=f"未知模型 {target}; 可选: " + ", ".join(self.available_models))
@@ -252,8 +259,10 @@ class DefaultCommandRouter(CommandRouter):
         target = args.strip().lower()
         opts = ", ".join(self.available_efforts)
         if not target:
+            cfg = await self._current_config(inbound.session_id)
+            cur = (cfg.effort if cfg and cfg.effort else None) or "(默认)"
             return CommandResult(
-                ok=True, message=f"可选 effort: {opts}",
+                ok=True, message=f"当前 effort: {cur}",
                 payload={"buttons": _option_buttons("/effort", self.available_efforts)})
         if target not in self.available_efforts:
             return CommandResult(ok=False, message=f"effort 必须为 {opts}")
@@ -293,8 +302,10 @@ class DefaultCommandRouter(CommandRouter):
         if not target:
             if not self.available_search_providers:
                 return CommandResult(ok=True, message="未配置可选搜索引擎")
+            cfg = await self._current_config(inbound.session_id)
+            cur = (cfg.search_provider if cfg and cfg.search_provider else None) or "native"
             return CommandResult(
-                ok=True, message="可选搜索引擎: " + ", ".join(self.available_search_providers),
+                ok=True, message=f"当前搜索引擎: {cur}",
                 payload={"buttons": _option_buttons("/search_provider", self.available_search_providers)})
         if self.available_search_providers and target not in self.available_search_providers:
             return CommandResult(ok=False, message=f"未知搜索引擎 {target}")
