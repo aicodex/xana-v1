@@ -25,8 +25,13 @@ from xana.agent_adapter.channels._draft import (
     footer_from_progress,
 )
 from xana.agent_adapter.channels._pairing import PairingStore
+from xana.agent_adapter.channels._render_state import RunRenderState, SessionRenderState
 from xana.agent_adapter.channels._throttle import DraftCoalescer
-from xana.agent_adapter.channels.feishu_card import build_card, build_pure_answer_card
+from xana.agent_adapter.channels.feishu_card import (
+    build_card,
+    build_frozen_ph_card,
+    build_pure_answer_card,
+)
 from xana.agent_adapter.channels.feishu_events import parse_message_event
 from xana.agent_adapter.contracts import (
     AdapterHealth,
@@ -89,9 +94,12 @@ class _TurnState:
 @dataclass
 class _SessionBuffer:
     chat_id: str | None = None
+    session_id: str = ""
     turns: "OrderedDict[str, _TurnState]" = field(default_factory=OrderedDict)
     # Phase 4 Task 6: run_id → 该 run 是否曾被切到后台(收到过 run_detached)。
     # finalize 时若为 True,渲染纯回答卡(不抢焦点),否则用常规 finalize 卡。
+    # Phase 4 / Task 4: 新 PH 状态机已不再设置此字段(由 SessionRenderState 取代);
+    # 保留以维持 build_pure_answer_card 现有兼容路径,Task 9 一并清理。
     started_as_detached: dict[str, bool] = field(default_factory=dict)
 
 
@@ -120,6 +128,24 @@ class FeishuAdapter(Adapter):
         self._buffers: dict[str, _SessionBuffer] = {}
         self._ws_client: Any | None = None
         self._last_progress: dict[str, Any] | None = None
+        # Phase 4 / Task 4: PH-driven per-session render state.
+        self._render_states: dict[str, SessionRenderState] = {}
+        self._pending_tasks: list[asyncio.Task] = []
+        # Optional gateway hook for switch_foreground button callbacks (Task 4).
+        self._gateway: Any | None = None
+
+    def set_gateway(self, gateway: Any) -> None:
+        """Inject a gateway reference so card-action buttons can call
+        switch_foreground. Optional; if unset, switch_foreground buttons
+        silently no-op on click."""
+        self._gateway = gateway
+
+    async def _drain_pending(self) -> None:
+        """Test helper: await all scheduled state-machine actions."""
+        while self._pending_tasks:
+            pending = self._pending_tasks
+            self._pending_tasks = []
+            await asyncio.gather(*pending, return_exceptions=True)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -206,10 +232,24 @@ class FeishuAdapter(Adapter):
 
     async def _on_card_action(self, event: dict[str, Any]) -> None:
         """Handle a converted `card.action.trigger` dict: a button click
-        re-enters the gateway as a normal user message."""
-        send_text = str((event.get("action") or {}).get("value", {}).get("send_text", "") or "")
-        open_id = str((event.get("operator") or {}).get("open_id", "") or "")
+        re-enters the gateway as a normal user message. Also handles the
+        Phase 4 / Task 4 ``switch_foreground`` action which routes to
+        gateway.switch_foreground() instead of the inbound queue."""
+        value = (event.get("action") or {}).get("value", {}) or {}
         chat_id = str((event.get("context") or {}).get("open_chat_id", "") or "")
+        # PH switch-foreground action
+        if str(value.get("action", "")) == "switch_foreground":
+            target_run_id = str(value.get("run_id", "") or "")
+            if not target_run_id or not chat_id or self._gateway is None:
+                return
+            session_id = self._bindings.allocate(chat_id, prefix="feishu")
+            try:
+                await self._gateway.switch_foreground(session_id, target_run_id)
+            except Exception:
+                pass
+            return
+        send_text = str(value.get("send_text", "") or "")
+        open_id = str((event.get("operator") or {}).get("open_id", "") or "")
         if not send_text or not chat_id:
             return
         if self._pairing is not None and not await self._gate_pairing(
@@ -251,6 +291,15 @@ class FeishuAdapter(Adapter):
     async def render(self, event: AgentEvent) -> RenderedMessage:
         buf = self._get_or_create_buffer(event.session_id)
         ts = self._turn_for(buf, event)
+        # Phase 4 / Task 4: 冻结的后台 run 仍要在 draft 上累积事件
+        # (ph_replaced 时一次性出全卡),但不发任何 patch。
+        state = self._render_states.get(event.session_id)
+        rid_hkind = event.payload.get("run_id") or (
+            event.harness_event.run_id if event.harness_event else ""
+        )
+        if state is not None and rid_hkind and rid_hkind in state.runs and state.runs[rid_hkind].is_frozen:
+            # 直接走 draft 累积分支,绕过 coalescer.flush(避免 patch)
+            return await self._render_into_draft_only(event, ts)
         hkind = self._harness_kind(event)
         payload = event.payload
         text = str(payload.get("text", "") or "")
@@ -361,16 +410,20 @@ class FeishuAdapter(Adapter):
     def note_progress(self, payload: dict) -> None:
         """AdapterProgressSink hook(sync):usage_progress / compact_progress /
         command_progress 实时刷新当前 turn。_last_progress 只存 usage_progress,
-        避免 compact_progress 把新 turn 的 model/context 种子冲掉。"""
-        if payload.get("kind") == "usage_progress":
+        避免 compact_progress 把新 turn 的 model/context 种子冲掉。
+
+        Phase 4 / Task 4: PH 状态机分支(run_started / run_detached /
+        foreground_changed / ph_replaced / run_completed_bg)优先;命中即返回。"""
+        kind = payload.get("kind")
+        if kind == "usage_progress":
             self._last_progress = dict(payload)
-        buf = self._buffers.get(str(payload.get("session_id") or ""))
-        if buf is None:
+        sid = str(payload.get("session_id") or "")
+        if kind in ("run_started", "run_detached", "foreground_changed",
+                    "ph_replaced", "run_completed_bg"):
+            self._handle_ph_event(sid, payload)
             return
-        if payload.get("kind") == "run_detached":
-            run_id = str(payload.get("run_id") or "")
-            if run_id:
-                buf.started_as_detached[run_id] = True
+        buf = self._buffers.get(sid)
+        if buf is None:
             return
         if payload.get("kind") == "command_progress":
             # 命令卡始终按 payload.run_id 取/建,绝不落到当前活跃 harness turn(避免冲掉流式正文)
@@ -410,12 +463,18 @@ class FeishuAdapter(Adapter):
                 return
             # 流式期间无模型按钮 → 合成 ⏹ 停止;finalize 用 extract_buttons 结果
             rows = ts.draft.buttons or ([] if finalize else STOP_BUTTON_ROWS)
-            # Phase 4 Task 6: detached run finalize → 纯回答卡(不抢焦点)
+            # Phase 4 / Task 4: 全卡带 "切回 <label>" 按钮(若该 session 有后台 run)
             rid = ts.draft.run_id
+            state = self._render_states.get(buf.session_id)
+            bg = state.bg_runs() if state is not None else None
+            # Task 6 旧逻辑:detached run finalize → 纯回答卡(Task 9 计划清理)。
+            # 新 PH 状态机的 ph_replaced 分支会单独处理 finalize,这里保持向后兼容。
             if finalize and rid and buf.started_as_detached.get(rid, False):
                 card = build_pure_answer_card(ts.draft)
             else:
-                card = build_card(ts.draft, finalize=finalize, buttons=rows)
+                card = build_card(
+                    ts.draft, finalize=finalize, buttons=rows, bg_runs=bg or None,
+                )
             if ts.message_id is None:
                 ts.message_id = await self._api_sender.send_card(
                     receive_id=buf.chat_id, card=card
@@ -423,6 +482,124 @@ class FeishuAdapter(Adapter):
             else:
                 await self._api_sender.patch_card(message_id=ts.message_id, card=card)
         return _send
+
+    # ------------------------------------------------------------------
+    # Phase 4 / Task 4: PH state machine
+    # ------------------------------------------------------------------
+
+    async def _render_into_draft_only(
+        self, event: AgentEvent, ts: "_TurnState"
+    ) -> RenderedMessage:
+        """Accumulate event into draft WITHOUT triggering any patch/send.
+
+        Used while a run is frozen (background). The next ph_replaced will
+        emit a single full-card patch with the accumulated draft."""
+        hkind = self._harness_kind(event)
+        payload = event.payload
+        text = str(payload.get("text", "") or "")
+        if hkind == "model_delta":
+            if payload.get("channel") == "thinking":
+                ts.draft.append_thinking(text)
+            else:
+                ts.draft.append_content(text)
+        elif hkind == "tool_started":
+            ts.draft.start_tool(
+                call_id=str(payload.get("call_id", "")),
+                name=str(payload.get("tool_name", "")),
+                args=payload.get("input", {}) or {},
+            )
+        elif hkind == "tool_finished":
+            ts.draft.finish_tool(
+                call_id=str(payload.get("call_id", "")),
+                name=str(payload.get("tool_name", "")),
+                ok=bool(payload.get("ok", True)),
+                result=str(payload.get("text", "")),
+                elapsed_ms=None,
+            )
+        elif hkind in ("final", "error"):
+            ts.draft.close_running_tools()
+            if text:
+                ts.draft.content = text
+            ts.finalized = True
+        return RenderedMessage(
+            adapter_id=self.adapter_id,
+            session_id=event.session_id,
+            text=ts.draft.content,
+            metadata={"event_kind": event.kind, "frozen": True},
+        )
+
+    def _handle_ph_event(self, sid: str, payload: dict) -> None:
+        kind = payload.get("kind")
+        rid = str(payload.get("run_id") or "")
+        state = self._render_states.setdefault(sid, SessionRenderState())
+        if kind == "run_started":
+            label = str(payload.get("label") or rid or "")
+            state.start_run(rid, label)
+            return
+        if kind == "run_detached":
+            run = state.runs.get(rid)
+            state.detach(rid)
+            if run is not None:
+                self._schedule(self._patch_frozen(sid, rid, run.label))
+            return
+        if kind == "foreground_changed":
+            prev_fg = state.foreground_run_id
+            if rid not in state.runs:
+                return
+            state.switch_foreground(rid)
+            if prev_fg and prev_fg != rid and prev_fg in state.runs:
+                prev_run = state.runs[prev_fg]
+                self._schedule(self._patch_frozen(sid, prev_fg, prev_run.label))
+            self._schedule(self._send_full_card(sid, rid, is_new_message=True))
+            return
+        if kind == "ph_replaced":
+            if rid in state.runs:
+                self._schedule(self._send_full_card(sid, rid, is_new_message=False))
+            return
+        if kind == "run_completed_bg":
+            # ph_replaced already finalized; nothing to do.
+            return
+
+    def _schedule(self, coro) -> None:
+        try:
+            task = asyncio.create_task(coro)
+        except RuntimeError:
+            # no running loop (shouldn't happen in production); drop quietly
+            coro.close()
+            return
+        self._pending_tasks.append(task)
+
+    async def _patch_frozen(self, sid: str, rid: str, label: str) -> None:
+        buf = self._buffers.get(sid)
+        if buf is None or buf.chat_id is None or self._api_sender is None:
+            return
+        ts = buf.turns.get(rid)
+        if ts is None or ts.message_id is None:
+            return
+        card = build_frozen_ph_card(ts.draft, label)
+        await self._api_sender.patch_card(message_id=ts.message_id, card=card)
+
+    async def _send_full_card(
+        self, sid: str, rid: str, *, is_new_message: bool
+    ) -> None:
+        buf = self._buffers.get(sid)
+        if buf is None or buf.chat_id is None or self._api_sender is None:
+            return
+        ts = self._ensure_turn(buf, rid)
+        state = self._render_states.get(sid)
+        bg = state.bg_runs() if state is not None else None
+        # filter out self from bg_runs (foreground should not be in bg list)
+        if bg is not None:
+            bg = [r for r in bg if r.run_id != rid]
+        card = build_card(ts.draft, finalize=False, bg_runs=bg or None)
+        if is_new_message or ts.message_id is None:
+            ts.message_id = await self._api_sender.send_card(
+                receive_id=buf.chat_id, card=card
+            )
+        else:
+            await self._api_sender.patch_card(
+                message_id=ts.message_id, card=card
+            )
 
     # ------------------------------------------------------------------
     # Health
@@ -444,5 +621,5 @@ class FeishuAdapter(Adapter):
 
     def _get_or_create_buffer(self, session_id: str) -> _SessionBuffer:
         if session_id not in self._buffers:
-            self._buffers[session_id] = _SessionBuffer()
+            self._buffers[session_id] = _SessionBuffer(session_id=session_id)
         return self._buffers[session_id]

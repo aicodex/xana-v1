@@ -52,9 +52,17 @@ def _tool_panel(blk: ToolBlock) -> dict:
 
 
 def build_card(
-    draft: TurnDraft, *, finalize: bool, buttons: list[list[dict]] | None = None
+    draft: TurnDraft,
+    *,
+    finalize: bool = False,
+    buttons: list[list[dict]] | None = None,
+    bg_runs: list | None = None,
 ) -> dict:
-    """buttons=None → 用 draft.buttons;显式传入(如流式停止按钮)则覆盖。"""
+    """buttons=None → 用 draft.buttons;显式传入(如流式停止按钮)则覆盖。
+
+    bg_runs:非 foreground 的 run 列表(RunRenderState 鸭子类型,需要 .run_id/.label)。
+    非空时在卡片末尾追加一行 "切回 <label>" 按钮(最多 3 个,回调
+    携带 {"action":"switch_foreground","run_id":...})。"""
     elements: list[dict] = []
     if draft.thinking or draft.thinking_title:
         # thinking_title 非空时即使正文为空也出面板(/compact 卡片布局从第一帧起不跳变)
@@ -70,7 +78,40 @@ def build_card(
         meta = " | ".join(f"{k}: {v}" for k, v in draft.footer_meta)
         elements.append({"tag": "markdown", "content": f"<font color='grey'>{meta}</font>"})
     elements.extend(_buttons_elements(draft.buttons if buttons is None else buttons))
+    if bg_runs:
+        switch_actions = []
+        for r in list(bg_runs)[:3]:
+            label = str(getattr(r, "label", "") or "")[:8]
+            rid = str(getattr(r, "run_id", "") or "")
+            if not rid:
+                continue
+            switch_actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": f"切回 {label}"},
+                "type": "default",
+                "size": "medium",
+                "value": {"action": "switch_foreground", "run_id": rid},
+            })
+        if switch_actions:
+            elements.append({"tag": "action", "actions": switch_actions})
     return {"schema": "2.0", "config": {"width_mode": "fill"}, "body": {"elements": elements}}
+
+
+def build_frozen_ph_card(draft: TurnDraft, label: str) -> dict:
+    """PH frozen 卡:header 黄灯 chip + 既有 thinking/tool/content 折叠;无按钮。
+
+    detach / 切走前景时对该 run 的最后一次编辑;此后不再 patch 这张消息。"""
+    card = build_card(draft, finalize=False)
+    card["header"] = {
+        "title": {
+            "tag": "plain_text",
+            "content": f"🟡 后台运行中 · {label}",
+        }
+    }
+    card["body"]["elements"] = [
+        el for el in card["body"]["elements"] if el.get("tag") != "action"
+    ]
+    return card
 
 
 def build_pure_answer_card(draft: TurnDraft) -> dict:
