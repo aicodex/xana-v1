@@ -10,3 +10,6 @@ __pycache__/
 .vscode/
 build/
 dist/
+
+# 测试由独立 git 仓管理,不随主项目 push
+/tests/
