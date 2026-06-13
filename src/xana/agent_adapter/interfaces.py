@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator
+from typing import TYPE_CHECKING, AsyncIterator
 
 from xana.agent_adapter.contracts import AdapterHealth, CommandResult, CommandSpec, DraftHandle, InboundMessage, RenderedMessage, SessionBinding
 from xana.agents.contracts import AgentEvent, AgentRequest
+
+if TYPE_CHECKING:
+    from xana.agent_adapter.channels._draft import TurnDraft
 
 
 class InboundParser(ABC):
@@ -75,3 +78,31 @@ class AgentGateway(ABC):
 
     @abstractmethod
     async def cancel(self, session_id: str, run_id: str | None = None) -> None: ...
+
+
+class CliRenderer(ABC):
+    """CLI renderer for PH-driven card pipeline (stdout / Textual)."""
+
+    @abstractmethod
+    async def on_run_started(self, run_id: str, label: str) -> None: ...
+
+    @abstractmethod
+    async def on_event(self, run_id: str, event: AgentEvent) -> None: ...
+
+    @abstractmethod
+    async def on_run_detached(self, run_id: str) -> None: ...
+
+    @abstractmethod
+    async def on_foreground_changed(self, run_id: str) -> None: ...
+
+    @abstractmethod
+    async def on_ph_replaced(self, run_id: str, draft: "TurnDraft") -> None: ...
+
+    @abstractmethod
+    async def on_run_completed_bg(self, run_id: str, draft: "TurnDraft") -> None: ...
+
+    @abstractmethod
+    async def on_compact_started(self, run_id: str, fork_point: int) -> None: ...
+
+    @abstractmethod
+    async def on_compact_finalized(self, run_id: str, summary: str) -> None: ...
