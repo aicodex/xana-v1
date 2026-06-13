@@ -767,23 +767,35 @@ class TelegramAdapter(Adapter):
                 reply_markup=markup,
             )
             return
+        await self._edit_or_resend(
+            ts, buf.chat_id, html, parse_mode="HTML", reply_markup=markup,
+        )
+
+    async def _edit_or_resend(
+        self, ts: "_TurnState", chat_id: int, text: str, *,
+        parse_mode: str | None = "HTML", reply_markup=None,
+    ) -> None:
+        """Edit anchor; on benign 'not modified' swallow silently; on any
+        other exception fall back to a fresh send_message and rebind anchor."""
+        if self._api_client is None or ts.message_id is None:
+            return
         try:
             await self._api_client.edit_message_text(
-                chat_id=buf.chat_id, message_id=ts.message_id,
-                text=html, parse_mode="HTML", reply_markup=markup,
+                chat_id=chat_id, message_id=ts.message_id, text=text,
+                parse_mode=parse_mode, reply_markup=reply_markup,
             )
         except Exception as exc:
             msg = str(exc).lower()
-            if ("can't be edited" in msg or "message to edit not found" in msg
-                    or "message is not modified" not in msg):
-                _logger.warning(
-                    "telegram: edit_message_text failed (%s): %s — sending new anchor",
-                    type(exc).__name__, self._redact(str(exc)),
-                )
-                ts.message_id = await self._api_client.send_message(
-                    chat_id=buf.chat_id, text=html, parse_mode="HTML",
-                    reply_markup=markup,
-                )
+            if "message is not modified" in msg:
+                return
+            _logger.warning(
+                "telegram: edit_message_text failed (%s): %s — sending new anchor",
+                type(exc).__name__, self._redact(str(exc)),
+            )
+            ts.message_id = await self._api_client.send_message(
+                chat_id=chat_id, text=text,
+                parse_mode=parse_mode, reply_markup=reply_markup,
+            )
 
     def _merge_switch_back(
         self, base_markup: dict | None, buf: _SessionBuffer, current_rid: str
@@ -859,9 +871,9 @@ class TelegramAdapter(Adapter):
                 combined = render_thinking(ts.draft.thinking, ts.draft.thinking_title) \
                     + ("\n" + answer if has_answer else "")
                 if ts.message_id is not None:
-                    await self._api_client.edit_message_text(
-                        chat_id=buf.chat_id, message_id=ts.message_id,
-                        text=combined, parse_mode="HTML", reply_markup=markup,
+                    await self._edit_or_resend(
+                        ts, buf.chat_id, combined,
+                        parse_mode="HTML", reply_markup=markup,
                     )
                 else:
                     ts.message_id = await self._api_client.send_message(
@@ -871,9 +883,8 @@ class TelegramAdapter(Adapter):
             elif ts.draft.thinking:
                 thinking_html = render_thinking(ts.draft.thinking)
                 if ts.message_id is not None:
-                    await self._api_client.edit_message_text(
-                        chat_id=buf.chat_id, message_id=ts.message_id,
-                        text=thinking_html, parse_mode="HTML",
+                    await self._edit_or_resend(
+                        ts, buf.chat_id, thinking_html, parse_mode="HTML",
                     )
                 else:
                     ts.message_id = await self._api_client.send_message(
@@ -886,9 +897,9 @@ class TelegramAdapter(Adapter):
                     )
             else:
                 if has_answer and ts.message_id is not None:
-                    await self._api_client.edit_message_text(
-                        chat_id=buf.chat_id, message_id=ts.message_id,
-                        text=answer, parse_mode="HTML", reply_markup=markup,
+                    await self._edit_or_resend(
+                        ts, buf.chat_id, answer,
+                        parse_mode="HTML", reply_markup=markup,
                     )
                 elif has_answer:
                     ts.message_id = await self._api_client.send_message(
@@ -897,9 +908,8 @@ class TelegramAdapter(Adapter):
                     )
                 elif ts.message_id is not None:
                     # 没东西可展示但留着流式殻 → 清殻。
-                    await self._api_client.edit_message_text(
-                        chat_id=buf.chat_id, message_id=ts.message_id,
-                        text=" ", parse_mode="HTML",
+                    await self._edit_or_resend(
+                        ts, buf.chat_id, " ", parse_mode="HTML",
                     )
         return _send
 
