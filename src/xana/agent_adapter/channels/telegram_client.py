@@ -97,6 +97,33 @@ class HttpxTelegramClient(TelegramApiClient):
                 "telegram: answerCallbackQuery failed (%s)", type(exc).__name__
             )
 
+    async def set_my_commands(self, commands: list[dict]) -> bool:
+        """setMyCommands:把命令清单推给 Telegram,显示在输入框左侧「/」菜单。
+        每项 {command(无前导/,1-32 字符 [a-z0-9_]), description(1-256)};
+        Telegram 上限 100。失败只记日志返回 False(菜单缺失不影响功能)。"""
+        cleaned: list[dict] = []
+        seen: set[str] = set()
+        for c in commands[:100]:
+            name = str(c.get("command", "")).lstrip("/").strip().lower()
+            desc = str(c.get("description", "")).strip() or name
+            if not name or name in seen or len(name) > 32:
+                continue
+            if not all(ch.isalnum() or ch == "_" for ch in name):
+                continue
+            seen.add(name)
+            cleaned.append({"command": name, "description": desc[:256]})
+        try:
+            resp = await self._client.post("/setMyCommands", json={"commands": cleaned})
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            _logger.warning("telegram: setMyCommands 失败: %s", exc)
+            return False
+        if not data.get("ok"):
+            _logger.warning("telegram: setMyCommands not ok: %s", data.get("description"))
+            return False
+        return True
+
     async def get_updates(self, *, offset: int | None, timeout: int) -> list[dict]:
         params: dict = {"timeout": timeout}
         if offset is not None:

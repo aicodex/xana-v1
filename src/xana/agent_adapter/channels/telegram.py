@@ -113,6 +113,9 @@ class TelegramApiClient:
     ) -> list[dict[str, Any]]:  # pragma: no cover
         raise NotImplementedError
 
+    async def set_my_commands(self, commands: list[dict]) -> bool:  # pragma: no cover
+        raise NotImplementedError
+
 
 # ---------------------------------------------------------------------------
 # Per-session / per-run state
@@ -173,6 +176,12 @@ class TelegramAdapter(Adapter):
             self._api_client = HttpxTelegramClient(self._config)
         self._poll_task = asyncio.create_task(self._poll_loop())
         self._status = "healthy"
+
+    async def sync_command_menu(self, commands: list[dict]) -> bool:
+        """把命令清单推到 Telegram 的「/」菜单(输入框左侧)。serve 在注册后调一次。"""
+        if self._api_client is None:
+            return False
+        return await self._api_client.set_my_commands(commands)
 
     async def stop(self) -> None:
         if self._poll_task is not None:
