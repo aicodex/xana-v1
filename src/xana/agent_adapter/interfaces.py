@@ -81,7 +81,12 @@ class AgentGateway(ABC):
 
 
 class CliRenderer(ABC):
-    """CLI renderer for PH-driven card pipeline (stdout / Textual)."""
+    """Receives lifecycle callbacks for runs on a session and renders them to a CLI surface.
+
+    Implementations bind to a session and react to per-run events emitted by the gateway:
+    run lifecycle (started/detached/foreground_changed/completed_bg), incremental harness
+    events, PH replacement (finalize to full card), and compact lifecycle.
+    """
 
     @abstractmethod
     async def on_run_started(self, run_id: str, label: str) -> None: ...
