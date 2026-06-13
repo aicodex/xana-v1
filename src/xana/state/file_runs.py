@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import Literal
 
+from xana.memory.contracts import HistoryRow
+from xana.memory.file_history import _row_to_json
 from xana.state.contracts import Checkpoint, RunRecord, RunStatus, UsageSnapshot
 from xana.state.interfaces import RunStore
 
@@ -112,3 +116,29 @@ class FileRunStore(RunStore):
 
     async def list_by_session(self, session_id: str) -> tuple[RunRecord, ...]:
         return tuple(r for r in await self._iter() if r.session_id == session_id)
+
+
+RunTerminalStatus = Literal["completed", "cancelled", "failed"]
+
+
+class RunJsonlWriter:
+    """每个 run 写一个 {sessions_root}/runs/{run_id}.jsonl；finalize 写终止 marker。"""
+
+    def __init__(self, sessions_root: Path) -> None:
+        self._dir = Path(sessions_root) / "runs"
+        self._dir.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, run_id: str) -> Path:
+        return self._dir / f"{run_id}.jsonl"
+
+    async def append(self, run_id: str, row: HistoryRow) -> None:
+        with self._path(run_id).open("a", encoding="utf-8") as f:
+            f.write(_row_to_json(row) + "\n")
+
+    async def finalize(self, run_id: str, status: RunTerminalStatus) -> None:
+        marker = json.dumps(
+            {"marker": "run_completed", "status": status, "ts": time.time()},
+            ensure_ascii=False,
+        )
+        with self._path(run_id).open("a", encoding="utf-8") as f:
+            f.write(marker + "\n")
