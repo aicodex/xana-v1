@@ -64,7 +64,10 @@ class DefaultAgentGateway(AgentGateway):
             is_command = inbound.text.strip().startswith("/")
             run_id = ""
             enriched = inbound
-            if is_command:
+            # /compact_cancel 是隐藏命令,只置取消事件,不该自成一张卡 →
+            # 跳过预建(预建发生在路由前,故按命令名提前 gate)。
+            silent_cmd = inbound.text.strip().startswith("/compact_cancel")
+            if is_command and not silent_cmd:
                 self._cmd_seq += 1
                 run_id = f"cmd-{inbound.session_id}-{self._cmd_seq}"
                 self._notify_command_card(adapter, inbound, run_id)
@@ -73,6 +76,9 @@ class DefaultAgentGateway(AgentGateway):
                 )
             cmd_result = await self.command_router.route_command(enriched)
             if cmd_result.ok or not cmd_result.payload.get("pass_through", False):
+                # silent 结果(/compact_cancel)不渲染卡片,直接结束。
+                if cmd_result.payload.get("silent"):
+                    return
                 event = AgentEvent(
                     kind="final" if cmd_result.ok else "error",
                     session_id=inbound.session_id,

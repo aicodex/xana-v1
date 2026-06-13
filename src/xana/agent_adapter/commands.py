@@ -13,6 +13,7 @@ Adapters must:
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Awaitable, Callable
 
 from xana.agent_adapter.contracts import CommandResult, CommandSpec, InboundMessage
@@ -54,6 +55,7 @@ class DefaultCommandRouter(CommandRouter):
         self.model = model
         self.progress_sink = progress_sink
         self._compact_seq = 0
+        self._compact_cancels: dict[str, asyncio.Event] = {}
 
         self._specs: tuple[CommandSpec, ...] = (
             CommandSpec(name="/help",     description="显示命令菜单。用法 `/help` 或 `/help /命令`"),
@@ -82,6 +84,8 @@ class DefaultCommandRouter(CommandRouter):
             "/cancel":          DefaultCommandRouter._cmd_cancel,
             "/attach":          DefaultCommandRouter._cmd_attach,
             "/project":         DefaultCommandRouter._cmd_project,
+            # 隐藏命令:卡片取消按钮触发,不进 _specs(/help 不显示)。
+            "/compact_cancel":  DefaultCommandRouter._cmd_compact_cancel,
         }
 
     async def list_commands(self) -> tuple[CommandSpec, ...]:
@@ -128,9 +132,9 @@ class DefaultCommandRouter(CommandRouter):
 
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
         from xana.harness_sdk.compact import (
-            SUMMARY_SECTIONS, build_post_compact_context, generate_summary,
-            messages_since_boundary, partial_summary, post_compact_message,
-            revealed_tools_from_messages, summary_progress,
+            SUMMARY_SECTIONS, _CompactCancelled, build_post_compact_context,
+            generate_summary, messages_since_boundary, partial_summary,
+            post_compact_message, revealed_tools_from_messages, summary_progress,
         )
         from xana.harness_sdk.contracts import ProgressEvent
         if self.active_context_store is None:
@@ -155,8 +159,13 @@ class DefaultCommandRouter(CommandRouter):
         run_id = inbound.metadata.get("command_run_id") \
             or f"compactcmd-{inbound.session_id}-{self._compact_seq}"
         last_emitted: list[tuple[str, str, str]] = [("", "", "")]
+        cancel_event = asyncio.Event()
+        self._compact_cancels[run_id] = cancel_event
+        cancel_button = [[{"text": "取消", "send": f"/compact_cancel {run_id}"}]]
 
         async def _emit(text_so_far: str = "", phase: str = "running") -> None:
+            if cancel_event.is_set():
+                raise _CompactCancelled()
             if self.progress_sink is None:
                 return
             bar, status = summary_progress(text_so_far)
@@ -170,26 +179,43 @@ class DefaultCommandRouter(CommandRouter):
                 payload={"kind": "compact_progress", "session_id": inbound.session_id,
                          "run_id": run_id, "model": model, "phase": phase, "text": bar,
                          "thinking": partial,
-                         "thinking_title": f"🗜 正在压缩 · {status}"},
+                         "thinking_title": f"🗜 正在压缩 · {status}",
+                         "buttons": cancel_button},
             ))
 
-        await _emit("")  # 立即出卡:空进度条
-        summary = await generate_summary(
-            client, provider=self.provider, model=model, messages=live,
-            on_progress=_emit)
-        if summary is None:
-            return CommandResult(ok=False, message="压缩失败:模型未返回 <summary>,请重试")
-        revealed = revealed_tools_from_messages(snapshot.messages) if snapshot else set()
-        await self.active_context_store.set(build_post_compact_context(
-            session_id=inbound.session_id, agent_name="chat", summary=summary,
-            revealed_tools=sorted(revealed)))
-        # 最终卡:正文只有满格进度条;折叠块 = 上下文里那条 post-compact 消息全文(开头+摘要+结尾)
-        return CommandResult(
-            ok=True,
-            message="▰" * len(SUMMARY_SECTIONS),
-            payload={"thinking": post_compact_message(summary),
-                     "thinking_title": f"已压缩 {len(live)} 条消息"},
-        )
+        try:
+            await _emit("")  # 立即出卡:空进度条 + 取消按钮
+            try:
+                summary = await generate_summary(
+                    client, provider=self.provider, model=model, messages=live,
+                    on_progress=_emit)
+            except _CompactCancelled:
+                # 用户取消:停流、不写回。
+                return CommandResult(
+                    ok=False, message="🛑 压缩已取消", payload={"run_id": run_id})
+            if summary is None:
+                return CommandResult(ok=False, message="压缩失败:模型未返回 <summary>,请重试")
+            revealed = revealed_tools_from_messages(snapshot.messages) if snapshot else set()
+            await self.active_context_store.set(build_post_compact_context(
+                session_id=inbound.session_id, agent_name="chat", summary=summary,
+                revealed_tools=sorted(revealed)))
+            # 最终卡:正文只有满格进度条;折叠块 = 上下文里那条 post-compact 消息全文(开头+摘要+结尾)
+            return CommandResult(
+                ok=True,
+                message="▰" * len(SUMMARY_SECTIONS),
+                payload={"thinking": post_compact_message(summary),
+                         "thinking_title": f"已压缩 {len(live)} 条消息"},
+            )
+        finally:
+            self._compact_cancels.pop(run_id, None)
+
+    async def _cmd_compact_cancel(self, inbound: InboundMessage, args: str) -> CommandResult:
+        """隐藏命令 /compact_cancel <run_id>:置取消事件,静默(不渲染卡片)。"""
+        run_id = args.strip()
+        event = self._compact_cancels.get(run_id)
+        if event is not None:
+            event.set()
+        return CommandResult(ok=True, message="", payload={"silent": True})
 
     async def _persist_with(self, session_id: str, **changes) -> "SessionConfig":
         from xana.session_config.contracts import SessionConfig

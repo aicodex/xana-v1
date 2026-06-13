@@ -15,6 +15,11 @@ from xana.harness_sdk.compact_prompt import (
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
 from xana.memory.contracts import ActiveContext, MemoryMessage
 
+class _CompactCancelled(Exception):
+    """on_progress 回调里检测到用户取消 → 中止流。
+    必须穿透 generate_summary 的重试循环(否则会被当成传输异常吞掉重试)。"""
+
+
 _CHARS_PER_TOKEN = 4  # 与 DefaultUsageAccumulator 同源启发式
 BLOCKING_HEADROOM = 3_000    # blocking 线 = context_window - 3K
 _COMPACT_RETRIES = 3
@@ -109,6 +114,8 @@ async def generate_summary(
                         await on_progress("".join(parts))
                 elif event.kind in ("done", "error"):
                     break
+        except _CompactCancelled:
+            raise  # 用户取消 → 不重试,直接穿透给调用方
         except Exception:
             continue  # 传输层异常 = 一次失败重试,与缺 <summary> 同等对待
         extracted = _extract_summary("".join(parts))
