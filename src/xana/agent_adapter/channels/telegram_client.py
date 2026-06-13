@@ -36,6 +36,7 @@ class HttpxTelegramClient(TelegramApiClient):
             json={
                 "chat_id": chat_id,
                 "text": text,
+                "link_preview_options": {"is_disabled": True},
                 **({"parse_mode": parse_mode} if parse_mode else {}),
                 **({"reply_markup": reply_markup} if reply_markup else {}),
             },
@@ -61,6 +62,7 @@ class HttpxTelegramClient(TelegramApiClient):
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "text": text,
+                "link_preview_options": {"is_disabled": True},
                 **({"parse_mode": parse_mode} if parse_mode else {}),
                 **({"reply_markup": reply_markup} if reply_markup else {}),
             },

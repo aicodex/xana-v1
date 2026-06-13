@@ -36,16 +36,22 @@ def render_thinking(thinking: str, title: str | None = None) -> str:
 
 
 def render_tool_block(blk: ToolBlock) -> str:
+    """单折叠工具块(与 yuxu _render_one_tool_block_html 同构)。
+
+    头行: `<b>● Tool(preview) — FAILED/⏳/Nms</b>`(header 已含运行/失败/耗时后缀)。
+    折叠体: `escape(args_json)` + `\n────────\n` + `escape(result)`,单个
+    `<blockquote expandable>`。**不嵌 `<pre>`、不对 result 跑 md_to_html**——
+    否则 result 里的 markdown 会再生成 `<pre>`/`<a>` 标签,Telegram 会把折叠块
+    拆成多块。running 时折叠体只有 args(运行状态由头行的 ⏳ 表达)。"""
     head = _html.escape(blk.header())
-    body_parts: list[str] = []
+    body_segments: list[str] = []
     if blk.args:
-        body_parts.append("<pre>" + _html.escape(
-            clip_body(json.dumps(blk.args, ensure_ascii=False, indent=2))) + "</pre>")
-    if blk.running:
-        body_parts.append("⏳ 执行中…")
-    elif blk.result:
-        body_parts.append(md_to_html(clip_body(blk.result)))
-    return clip_html(f"<b>{head}</b>\n<blockquote expandable>" + "\n".join(body_parts) + "</blockquote>")
+        body_segments.append(_html.escape(
+            clip_body(json.dumps(blk.args, ensure_ascii=False, indent=2))))
+    if not blk.running and blk.result:
+        body_segments.append(_html.escape(clip_body(blk.result)))
+    body = "\n────────\n".join(body_segments)
+    return clip_html(f"<b>{head}</b>\n<blockquote expandable>{body}</blockquote>")
 
 
 def render_streaming(draft: TurnDraft) -> str:
