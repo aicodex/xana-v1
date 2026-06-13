@@ -113,3 +113,38 @@ class FileMemoryReplayer(MemoryReplayer):
                 )
             )
         return ReplayResult(loaded_sessions=len(grouped), loaded_rows=len(rows))
+
+
+CONTINUE_TEXT = "Continue from where you left off."
+
+
+def needs_continue(messages: tuple[MemoryMessage, ...]) -> bool:
+    """最后一条是 user 或 tool（上次回合未收尾）→ 需要注入 Continue。"""
+    if not messages:
+        return False
+    return messages[-1].role in ("user", "tool")
+
+
+async def replay_and_detect_interrupts(
+    mirror: HistoryMirror,
+    store: ActiveContextStore,
+    replayer: MemoryReplayer,
+) -> ReplayResult:
+    """启动恢复：replay 重建 ActiveContext，再对每个被中断的 session 注入 Continue。
+
+    用 read_rows() 拿到 (session_id, agent_name) 全集（replayer 只回计数），
+    逐个检查重建后的尾部，需要时 append 一条 Continue user 消息。
+    """
+    result = await replayer.rebuild_active_context(mirror, store)
+    read_rows = getattr(mirror, "read_rows", None)
+    if read_rows is None:
+        return result
+    keys = {(r.session_id, r.agent_name) for r in await read_rows()}
+    for session_id, agent_name in keys:
+        ctx = await store.get(session_id, agent_name)
+        if ctx is not None and needs_continue(ctx.messages):
+            await store.append_message(
+                session_id, agent_name,
+                MemoryMessage(role="user", content=CONTINUE_TEXT),
+            )
+    return result
