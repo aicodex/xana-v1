@@ -13,6 +13,7 @@ from pathlib import Path
 
 from xana.agent_adapter.cli import CliAdapter
 from xana.agent_adapter.contracts import InboundMessage
+from xana.cli.serve import _xana_home
 from xana.runtime.boot import boot
 
 
@@ -28,7 +29,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 async def _run(args: argparse.Namespace) -> int:
     project_root = (args.project or Path.cwd()).resolve()
-    boot_result = await boot(project_root=project_root)
+    boot_result = await boot(
+        project_root=project_root,
+        history_root=_xana_home() / "sessions",
+    )
     adapter = CliAdapter(adapter_id="cli", session_id=args.session)
     await adapter.start()
     await boot_result.gateway.register_adapter("cli", adapter)
