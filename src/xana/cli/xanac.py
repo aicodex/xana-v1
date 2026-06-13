@@ -33,27 +33,31 @@ async def _run(args: argparse.Namespace) -> int:
         project_root=project_root,
         history_root=_xana_home() / "sessions",
     )
-    adapter = CliAdapter(adapter_id="cli", session_id=args.session)
-    await adapter.start()
-    await boot_result.gateway.register_adapter("cli", adapter)
+    try:
+        adapter = CliAdapter(adapter_id="cli", session_id=args.session)
+        await adapter.start()
+        await boot_result.gateway.register_adapter("cli", adapter)
 
-    text = " ".join(args.text).strip()
-    if not text and not args.interactive:
-        # Default to interactive when no text supplied (cc-style).
-        args.interactive = True
+        text = " ".join(args.text).strip()
+        if not text and not args.interactive:
+            # Default to interactive when no text supplied (cc-style).
+            args.interactive = True
 
-    if args.interactive:
-        print(f"xanac · interactive · session={args.session}")
-        print(f"model={boot_result.model}  provider={boot_result.provider}  cwd={project_root}")
-        print("输入 /help 查看命令；Ctrl-C 取消当前 turn；Ctrl-D 退出。\n")
-        return await _repl_loop(boot_result.gateway, adapter=adapter, session_id=args.session)
+        if args.interactive:
+            print(f"xanac · interactive · session={args.session}")
+            print(f"model={boot_result.model}  provider={boot_result.provider}  cwd={project_root}")
+            print("输入 /help 查看命令；Ctrl-C 取消当前 turn；Ctrl-D 退出。\n")
+            return await _repl_loop(boot_result.gateway, adapter=adapter, session_id=args.session)
 
-    inbound = InboundMessage(adapter_id="cli", session_id=args.session, text=text)
-    exit_code = 0
-    async for rendered in boot_result.gateway.submit(inbound):
-        if rendered.metadata.get("event_kind") == "error":
-            exit_code = 1
-    return exit_code
+        inbound = InboundMessage(adapter_id="cli", session_id=args.session, text=text)
+        exit_code = 0
+        async for rendered in boot_result.gateway.submit(inbound):
+            if rendered.metadata.get("event_kind") == "error":
+                exit_code = 1
+        return exit_code
+    finally:
+        if boot_result.main_writer is not None:
+            await boot_result.main_writer.aclose()
 
 
 from typing import Callable, Protocol

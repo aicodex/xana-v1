@@ -255,6 +255,8 @@ async def _run_inner(argv: argparse.Namespace) -> int:
             await webhook_runner.cleanup()
         for adapter in adapters:
             await adapter.stop()
+        if boot_result.main_writer is not None:
+            await boot_result.main_writer.aclose()
     return 0
 
 
