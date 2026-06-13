@@ -97,15 +97,35 @@ async def _repl_loop(
         def _bottom_toolbar() -> str:
             if adapter is None:
                 return "ready"
+            tabs = adapter.format_tabs()
             p = adapter.last_progress
-            if not p:
-                return "ready"
-            return (
-                f"tokens: {p.get('tokens_in', 0)} in / {p.get('tokens_out', 0)} out · "
-                f"elapsed: {p.get('elapsed_s', 0):.1f}s"
-            )
+            if p:
+                base = (
+                    f"tokens: {p.get('tokens_in', 0)} in / {p.get('tokens_out', 0)} out · "
+                    f"elapsed: {p.get('elapsed_s', 0):.1f}s"
+                )
+            else:
+                base = "ready"
+            return f"{base}  ||  {tabs}" if tabs else base
 
-        prompt = PromptSession("> ", bottom_toolbar=_bottom_toolbar)
+        from prompt_toolkit.key_binding import KeyBindings
+        kb = KeyBindings()
+
+        @kb.add("tab", eager=True)
+        def _switch_run(event) -> None:
+            if adapter is None or not adapter.bg_runs:
+                return
+            target_rid, target_lbl = next(iter(adapter.bg_runs.items()))
+            cur_rid = adapter.foreground_run_id
+            adapter.set_foreground(target_rid)
+            if cur_rid:
+                adapter.bg_runs[cur_rid] = cur_rid
+            switch = getattr(gateway, "switch_foreground", None)
+            if switch is not None:
+                import asyncio as _a
+                _a.create_task(switch(session_id, target_rid))
+
+        prompt = PromptSession("> ", bottom_toolbar=_bottom_toolbar, key_bindings=kb)
         prompt_ctx = patch_stdout()
     else:
         prompt = prompt_factory()
