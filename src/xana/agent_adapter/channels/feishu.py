@@ -358,14 +358,6 @@ class FeishuAdapter(Adapter):
                 buf.turns.popitem(last=False)
         return ts
 
-    def note_run_detached(self, session_id: str, run_id: str) -> None:
-        """Phase 4 Task 6: mark a run as detached so its finalize renders
-        the pure-answer (non-attention-grabbing) card."""
-        buf = self._buffers.get(session_id)
-        if buf is None or not run_id:
-            return
-        buf.started_as_detached[run_id] = True
-
     def note_progress(self, payload: dict) -> None:
         """AdapterProgressSink hook(sync):usage_progress / compact_progress /
         command_progress 实时刷新当前 turn。_last_progress 只存 usage_progress,
