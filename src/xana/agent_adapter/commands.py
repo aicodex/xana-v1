@@ -66,6 +66,7 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/effort",   description="推理强度切换，无参列出可选"),
             CommandSpec(name="/streaming", description="token 流开关 on/off(无参数切换)"),
             CommandSpec(name="/thinking", description="思考链开关 on/off(无参数切换)"),
+            CommandSpec(name="/async",    description="异步模式开关 on/off(无参数切换)"),
             CommandSpec(name="/attach",   description="切换 task 订阅"),
             CommandSpec(name="/cancel",   description="取消当前 turn"),
             CommandSpec(name="/project",  description="项目管理"),
@@ -80,6 +81,7 @@ class DefaultCommandRouter(CommandRouter):
             "/effort":          DefaultCommandRouter._cmd_effort,
             "/streaming":       DefaultCommandRouter._cmd_streaming,
             "/thinking":        DefaultCommandRouter._cmd_thinking,
+            "/async":           DefaultCommandRouter._cmd_async,
             "/search_provider": DefaultCommandRouter._cmd_search_provider,
             "/cancel":          DefaultCommandRouter._cmd_cancel,
             "/attach":          DefaultCommandRouter._cmd_attach,
@@ -232,6 +234,7 @@ class DefaultCommandRouter(CommandRouter):
             thinking=changes.get("thinking", current.thinking),
             search_provider=changes.get("search_provider", current.search_provider),
             project_root=changes.get("project_root", current.project_root),
+            async_mode=changes.get("async_mode", current.async_mode),
             metadata=current.metadata,
         )
         await self.session_config_store.save(new)
@@ -299,6 +302,28 @@ class DefaultCommandRouter(CommandRouter):
         new = await self._persist_with(inbound.session_id, thinking=new_val)
         return CommandResult(ok=True, message=f"thinking={new.thinking}")
 
+    async def _cmd_async(self, inbound: InboundMessage, args: str) -> CommandResult:
+        val = args.strip().lower()
+        if val and val not in {"on", "off"}:
+            return CommandResult(ok=False, message="async 用法: /async [on|off](无参数=切换)")
+        if self.session_config_store is None:
+            return CommandResult(ok=False, message="session_config_store 未配置")
+        current = await self.session_config_store.get(inbound.session_id)
+        if val:
+            new_val = val == "on"
+        else:
+            new_val = not current.async_mode
+        # on→off guard: 若仍有 running placeholder,拒绝
+        if current.async_mode and not new_val and self.active_context_store is not None:
+            from xana.memory.contracts import Placeholder
+            snap = await self.active_context_store.snapshot(inbound.session_id, "chat")
+            for item in snap:
+                if isinstance(item, Placeholder) and item.status == "running":
+                    return CommandResult(
+                        ok=False, message="有后台 run 在跑,请等完成或 /cancel")
+        new = await self._persist_with(inbound.session_id, async_mode=new_val)
+        return CommandResult(ok=True, message=f"async={new.async_mode}")
+
     async def _cmd_search_provider(self, inbound: InboundMessage, args: str) -> CommandResult:
         target = args.strip()
         if not target:
@@ -332,6 +357,7 @@ class DefaultCommandRouter(CommandRouter):
             session_id=current.session_id, model=current.model, effort=current.effort,
             streaming=current.streaming, thinking=current.thinking,
             search_provider=current.search_provider, project_root=current.project_root,
+            async_mode=current.async_mode,
             metadata=new_metadata,
         )
         await self.session_config_store.save(new)
