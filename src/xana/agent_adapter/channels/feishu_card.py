@@ -80,8 +80,10 @@ def _buttons_elements(rows: list[list[dict]]) -> list[dict]:
     for row in rows or []:
         cols = []
         for btn in row or []:
-            text = str(btn.get("text") or btn.get("send") or "").strip()
-            send = str(btn.get("send") or btn.get("text") or "").strip()
+            # copy 型:飞书 card 2.0 button.behaviors 只有 open_url/callback/form_action,
+            # 无原生「复制到剪贴板」行为 → 回退为 callback send_text(点击 = 把文本发回输入)。
+            text = str(btn.get("text") or btn.get("send") or btn.get("copy") or "").strip()
+            send = str(btn.get("send") or btn.get("copy") or btn.get("text") or "").strip()
             if not text or not send:
                 continue
             cols.append({

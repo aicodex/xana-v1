@@ -289,7 +289,10 @@ class FeishuAdapter(Adapter):
                     and payload.get("thinking_title"):
                 ts.draft.thinking = str(payload["thinking"])
                 ts.draft.thinking_title = str(payload["thinking_title"])
-            ts.draft.content, ts.draft.buttons = extract_buttons(ts.draft.content)
+            ts.draft.content, extracted = extract_buttons(ts.draft.content)
+            # payload 行优先,与正文标记解析的结果并存(payload 在前)
+            payload_rows = payload.get("buttons")
+            ts.draft.buttons = (list(payload_rows) if isinstance(payload_rows, list) else []) + extracted
             usage = event.harness_event.usage if event.harness_event else None
             footer = (
                 footer_from_progress(ts.last_progress)
@@ -306,6 +309,9 @@ class FeishuAdapter(Adapter):
             ts.draft.close_running_tools()
             err = text or str(payload.get("error", "") or "")
             ts.draft.content += f"\n[error] {err}" if err else "\n[error]"
+            payload_rows = payload.get("buttons")
+            if isinstance(payload_rows, list) and payload_rows:
+                ts.draft.buttons = list(payload_rows)
             ts.finalized = True
             await ts.coalescer.finalize(self._make_send(buf, ts, finalize=True))
         # 其他 harness kind(turn_started/paused/cancelled 等):不渲染。
@@ -383,6 +389,10 @@ class FeishuAdapter(Adapter):
             ts.draft.thinking = str(payload.get("thinking") or "")
             if "thinking_title" in payload:
                 ts.draft.thinking_title = payload.get("thinking_title")
+        # 进度卡也可带按钮(如 compact 取消按钮);payload 行写进 draft.buttons
+        payload_rows = payload.get("buttons")
+        if isinstance(payload_rows, list):
+            ts.draft.buttons = list(payload_rows)
         ts.draft.footer_meta = footer_from_progress(payload)
         ts.coalescer.flush(self._make_send(buf, ts, finalize=False))
 

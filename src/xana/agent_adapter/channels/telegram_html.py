@@ -81,9 +81,17 @@ def render_answer(draft: TurnDraft) -> str:
     return clip_html("\n".join(parts).strip() or " ")
 
 
+def _markup_button(b: dict, r: int, c: int) -> dict:
+    """send 型 → callback_data='btn:{r}:{c}'(64 字节限制;真实文本 adapter 按轮反查);
+    copy 型 → Bot API copyTextButton(无 callback_data,TG 客户端本地复制到输入框)。"""
+    text = str(b.get("text", ""))[:64]
+    if "copy" in b:
+        return {"text": text, "copy_text": {"text": str(b.get("copy", ""))[:256]}}
+    return {"text": text, "callback_data": f"btn:{r}:{c}"}
+
+
 def buttons_to_reply_markup(rows: list[list[dict]]) -> dict | None:
-    """[[{text,send}],...] → InlineKeyboardMarkup。callback_data='btn:{r}:{c}'
-    索引(64 字节限制);真实文本由 adapter 按轮缓存反查。"""
-    keyboard = [[{"text": b["text"][:64], "callback_data": f"btn:{r}:{c}"}
-                 for c, b in enumerate(row)] for r, row in enumerate(rows or []) if row]
+    """[[{text,send} | {text,copy}],...] → InlineKeyboardMarkup。"""
+    keyboard = [[_markup_button(b, r, c) for c, b in enumerate(row)]
+                for r, row in enumerate(rows or []) if row]
     return {"inline_keyboard": keyboard} if keyboard else None
