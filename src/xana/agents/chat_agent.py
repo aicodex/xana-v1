@@ -94,8 +94,9 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         )
 
     async def to_harness_context(self, spec: AgentSpec, request: AgentRequest) -> HarnessContext:
+        import uuid
         self._run_counter += 1
-        run_id = f"{request.session_id}-{self._run_counter}"
+        run_id = f"{request.session_id}-{uuid.uuid4().hex[:8]}"
         model = self.model
         effort: str | int | None = None
         async_mode = True  # P3 完成,默认 async
