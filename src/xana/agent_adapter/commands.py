@@ -165,6 +165,24 @@ class DefaultCommandRouter(CommandRouter):
         # 直接调用(无 metadata)时退回自产 compactcmd- 前缀。
         run_id = inbound.metadata.get("command_run_id") \
             or f"compactcmd-{inbound.session_id}-{self._compact_seq}"
+        # PH-driven path: 在压缩开始前 detach 该 session 上所有 inflight run,
+        # 并向对应 adapter 发 compact_started → 触发 compact 卡片渲染。
+        ph_note = None
+        if self.gateway is not None:
+            detach_fn = getattr(self.gateway, "detach_inflight_for", None)
+            if detach_fn is not None:
+                detach_fn(inbound.session_id)
+            adapters = getattr(self.gateway, "adapters", {}) or {}
+            adapter = adapters.get(inbound.adapter_id)
+            if adapter is not None:
+                ph_note = getattr(adapter, "note_progress", None)
+        if ph_note is not None:
+            ph_note({
+                "kind": "compact_started",
+                "session_id": inbound.session_id,
+                "run_id": run_id,
+                "fork_point": 0,
+            })
         last_emitted: list[tuple[str, str, str]] = [("", "", "")]
         cancel_event = asyncio.Event()
         self._compact_cancels[run_id] = cancel_event
@@ -206,6 +224,13 @@ class DefaultCommandRouter(CommandRouter):
             await self.active_context_store.set(build_post_compact_context(
                 session_id=inbound.session_id, agent_name="chat", summary=summary,
                 revealed_tools=sorted(revealed)))
+            if ph_note is not None:
+                ph_note({
+                    "kind": "compact_finalized",
+                    "session_id": inbound.session_id,
+                    "run_id": run_id,
+                    "summary": summary,
+                })
             # 最终卡:正文只有满格进度条;折叠块 = 上下文里那条 post-compact 消息全文(开头+摘要+结尾)
             return CommandResult(
                 ok=True,

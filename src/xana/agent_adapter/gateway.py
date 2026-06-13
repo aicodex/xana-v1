@@ -146,6 +146,20 @@ class DefaultAgentGateway(AgentGateway):
                         "run_id": new_run.run_id,
                     })
 
+    def detach_inflight_for(self, session_id: str) -> None:
+        """Mark all inflight runs for session as detached and notify adapters.
+
+        Used by /compact (and by extension any explicit "interrupt + take over"
+        command) to give the PH-driven adapter the same detach signal a new
+        user message would.
+        """
+        for ir in self._inflight.get(session_id, []):
+            if ir.detached:
+                continue
+            ir.detached = True
+            for adapter in self.adapters.values():
+                self._notify_run_detached(adapter, session_id, ir)
+
     async def start_compact(self, session_id: str, fork_point: int) -> None:
         """Trigger a compact run. Stub: emits start/finalize events without running compact.
         Real compact execution wired in Task 8."""
