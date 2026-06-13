@@ -11,6 +11,7 @@ import asyncio
 import sys
 from pathlib import Path
 
+from xana.agent_adapter.channels._cli_renderer_stdout import StdoutRenderer
 from xana.agent_adapter.cli import CliAdapter
 from xana.agent_adapter.contracts import InboundMessage
 from xana.cli.serve import _xana_home
@@ -34,7 +35,11 @@ async def _run(args: argparse.Namespace) -> int:
         history_root=_xana_home() / "sessions",
     )
     try:
-        adapter = CliAdapter(adapter_id="cli", session_id=args.session)
+        adapter = CliAdapter(
+            adapter_id="cli",
+            session_id=args.session,
+            renderer=StdoutRenderer(),
+        )
         await adapter.start()
         await boot_result.gateway.register_adapter("cli", adapter)
 

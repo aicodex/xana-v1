@@ -37,7 +37,7 @@ from xana.agent_adapter.contracts import (
     RenderedMessage,
     SessionBinding,
 )
-from xana.agent_adapter.interfaces import Adapter
+from xana.agent_adapter.interfaces import Adapter, CliRenderer
 from xana.agents.contracts import AgentEvent
 
 
@@ -55,10 +55,12 @@ class CliAdapter(Adapter):
         out: TextIO | None = None,
         adapter_id: str = "cli",
         session_id: str = "cli-session",
+        renderer: CliRenderer | None = None,
     ) -> None:
         self.out = out if out is not None else sys.stdout
         self.adapter_id = adapter_id
         self.session_id = session_id
+        self._renderer = renderer
         self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self.turn_complete: asyncio.Event = asyncio.Event()
         self._status: str = "stopped"
@@ -68,6 +70,21 @@ class CliAdapter(Adapter):
         self._progress_callback = None
         self.foreground_run_id: str | None = None
         self.bg_runs: "OrderedDict[str, str]" = OrderedDict()  # run_id → label
+
+    def _schedule_renderer(self, coro) -> None:
+        """Schedule an async CliRenderer call from sync context.
+
+        `note_progress` is invoked synchronously by the gateway and other
+        channel adapters, but CliRenderer methods are async. When a running
+        loop is available, fire-and-forget via create_task; otherwise drop
+        (sync test contexts that don't want renderer dispatch).
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            coro.close()
+            return
+        loop.create_task(coro)
 
     async def start(self) -> None:
         self._status = "healthy"
@@ -93,13 +110,18 @@ class CliAdapter(Adapter):
         yield msg
 
     async def render(self, event: AgentEvent) -> RenderedMessage:
+        if self._renderer is not None:
+            rid = str(event.payload.get("run_id") or "")
+            await self._renderer.on_event(rid, event)
         if self._turn_start_ts is None:
             self._turn_start_ts = time.monotonic()
             self._draft_seen_this_turn = False
         text = str(event.payload.get("text", ""))
         if event.kind == "draft":
             # Streaming chunk — write as-is, no trailing newline.
-            if text:
+            # When a renderer owns streaming, skip the legacy buffer write to
+            # avoid double-printing (renderer.on_event already emitted).
+            if text and self._renderer is None:
                 self.out.write(text)
                 self.out.flush()
             self._draft_seen_this_turn = True
@@ -189,24 +211,48 @@ class CliAdapter(Adapter):
         self.out.flush()
 
     def note_progress(self, payload: dict[str, Any]) -> None:
-        """Adapter hook for progress updates. Stores latest; REPL may register a
-        callback to repaint the footer in place. 处理 usage_progress / run_detached /
-        run_completed_bg;其它 kind 由各 channel adapter 自行消化。"""
+        """Adapter hook for progress updates.
+
+        Stores latest progress (interactive footer redraw) and maintains
+        legacy `bg_runs` / `foreground_run_id` state for tab rendering.
+        When a `CliRenderer` is injected, also dispatches each lifecycle
+        kind to the renderer's matching hook (Task 6).
+        """
         kind = payload.get("kind")
+        rid = str(payload.get("run_id") or "")
+        # Legacy state (kept so existing tab-state tests + interactive REPL
+        # keep working without forcing a renderer dependency).
         if kind == "usage_progress":
             self.last_progress = dict(payload)
             if self._progress_callback is not None:
                 self._progress_callback(payload)
             return
-        if kind == "run_detached":
-            rid = str(payload.get("run_id") or "")
-            if rid:
-                self.bg_runs[rid] = str(payload.get("label") or rid)
-            return
-        if kind == "run_completed_bg":
-            rid = str(payload.get("run_id") or "")
+        if kind == "run_detached" and rid:
+            self.bg_runs[rid] = str(payload.get("label") or rid)
+        elif kind == "run_completed_bg":
             self.bg_runs.pop(rid, None)
+        # Renderer dispatch (Task 6) — fire-and-forget when a loop is running.
+        r = self._renderer
+        if r is None:
             return
+        if kind == "run_started":
+            self._schedule_renderer(r.on_run_started(rid, str(payload.get("label") or "")))
+        elif kind == "run_detached":
+            self._schedule_renderer(r.on_run_detached(rid))
+        elif kind == "foreground_changed":
+            self._schedule_renderer(r.on_foreground_changed(rid))
+        elif kind == "ph_replaced":
+            self._schedule_renderer(r.on_ph_replaced(rid, payload.get("draft")))
+        elif kind == "run_completed_bg":
+            self._schedule_renderer(r.on_run_completed_bg(rid, payload.get("draft")))
+        elif kind == "compact_started":
+            self._schedule_renderer(
+                r.on_compact_started(rid, int(payload.get("fork_point") or 0))
+            )
+        elif kind == "compact_finalized":
+            self._schedule_renderer(
+                r.on_compact_finalized(rid, str(payload.get("summary") or ""))
+            )
 
     def set_foreground(self, run_id: str | None) -> None:
         self.foreground_run_id = run_id
