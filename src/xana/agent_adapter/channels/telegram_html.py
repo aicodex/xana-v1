@@ -82,6 +82,20 @@ def render_answer(draft: TurnDraft) -> str:
     return clip_html("\n".join(parts).strip() or " ")
 
 
+def format_frozen_ph_html(draft: TurnDraft, label: str) -> str:
+    """Phase 4 / Task 5: frozen-PH placeholder text for a detached background run.
+
+    Header marks the run as 后台运行中 + label; body keeps the partial content
+    rendered as Telegram HTML. Inline keyboard is removed by caller (reply_markup=None).
+    """
+    head = f"🟡 <b>后台运行中</b> · {_html.escape(label)}"
+    body = md_to_html(draft.content or "")
+    parts = [head]
+    if body:
+        parts.append(body)
+    return clip_html("\n\n".join(parts))
+
+
 def format_pure_answer_html(draft: TurnDraft) -> str:
     """后台 run 完成时推的"不抢焦点消息":去掉 thinking/工具折叠块,
     只保留回答正文(+ 脚标,若有)。对称 feishu build_pure_answer_card。"""

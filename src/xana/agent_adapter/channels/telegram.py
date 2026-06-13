@@ -36,9 +36,11 @@ from xana.agent_adapter.channels._draft import (
     footer_from_progress,
 )
 from xana.agent_adapter.channels._pairing import PairingStore
+from xana.agent_adapter.channels._render_state import SessionRenderState
 from xana.agent_adapter.channels._throttle import DraftCoalescer
 from xana.agent_adapter.channels.telegram_html import (
     buttons_to_reply_markup,
+    format_frozen_ph_html,
     format_pure_answer_html,
     render_answer,
     render_streaming,
@@ -138,6 +140,7 @@ class _TurnState:
 @dataclass
 class _SessionBuffer:
     chat_id: str | None = None
+    session_id: str = ""
     turns: "OrderedDict[str, _TurnState]" = field(default_factory=OrderedDict)
     started_as_detached: dict[str, bool] = field(default_factory=dict)
 
@@ -167,6 +170,31 @@ class TelegramAdapter(Adapter):
         self._buffers: dict[str, _SessionBuffer] = {}
         self._poll_task: asyncio.Task[None] | None = None
         self._last_progress: dict[str, Any] | None = None
+        # Phase 4 / Task 5: PH-driven per-session render state.
+        self._render_states: dict[str, SessionRenderState] = {}
+        self._pending_tasks: list[asyncio.Task] = []
+        # Optional gateway hook for switch:<rid> callback routing.
+        self._gateway: Any | None = None
+
+    def set_gateway(self, gateway: Any) -> None:
+        """Inject a gateway reference so switch:<rid> callbacks can call
+        switch_foreground. Optional; if unset, switch callbacks silently no-op."""
+        self._gateway = gateway
+
+    async def _drain_pending(self) -> None:
+        """Test helper: await all scheduled state-machine actions."""
+        while self._pending_tasks:
+            pending = self._pending_tasks
+            self._pending_tasks = []
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    def _schedule(self, coro) -> None:
+        try:
+            task = asyncio.create_task(coro)
+        except RuntimeError:
+            coro.close()
+            return
+        self._pending_tasks.append(task)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -309,6 +337,25 @@ class TelegramAdapter(Adapter):
         data = str(cq.get("data") or "")
         chat = (cq.get("message") or {}).get("chat") or {}
         chat_id = str(chat.get("id", ""))
+        # Phase 4 / Task 5: switch-foreground button → gateway.switch_foreground
+        if data.startswith("switch:") and chat_id:
+            target_rid = data.split(":", 1)[1]
+            if target_rid and self._gateway is not None:
+                session_id = self._bindings.allocate(chat_id, prefix="tg")
+                try:
+                    await self._gateway.switch_foreground(session_id, target_rid)
+                except Exception as exc:
+                    _logger.debug(
+                        "telegram: switch_foreground failed (%s): %s",
+                        type(exc).__name__, self._redact(str(exc)),
+                    )
+            if self._api_client is not None and cq.get("id"):
+                try:
+                    await self._api_client.answer_callback_query(
+                        callback_query_id=str(cq["id"]))
+                except Exception:
+                    pass
+            return
         send_text = self._resolve_button_text(chat_id, data) if chat_id else None
         if send_text:
             user_id_int = (cq.get("from") or {}).get("id")
@@ -392,6 +439,15 @@ class TelegramAdapter(Adapter):
     async def render(self, event: AgentEvent) -> RenderedMessage:
         buf = self._get_or_create_buffer(event.session_id)
         ts = self._turn_for(buf, event)
+        # Phase 4 / Task 5: frozen background runs accumulate into draft only;
+        # no API calls until the next ph_replaced.
+        state = self._render_states.get(event.session_id)
+        rid_hkind = event.payload.get("run_id") or (
+            event.harness_event.run_id if event.harness_event else ""
+        )
+        if (state is not None and rid_hkind and rid_hkind in state.runs
+                and state.runs[rid_hkind].is_frozen):
+            return await self._render_into_draft_only(event, ts)
         hkind = self._harness_kind(event)
         payload = event.payload
         text = str(payload.get("text", "") or "")
@@ -477,6 +533,45 @@ class TelegramAdapter(Adapter):
             metadata={"event_kind": event.kind},
         )
 
+    async def _render_into_draft_only(
+        self, event: AgentEvent, ts: _TurnState
+    ) -> RenderedMessage:
+        """Phase 4 / Task 5: accumulate into draft, no API calls.
+        Used while a run is frozen (background)."""
+        hkind = self._harness_kind(event)
+        payload = event.payload
+        text = str(payload.get("text", "") or "")
+        if hkind == "model_delta":
+            if payload.get("channel") == "thinking":
+                ts.draft.append_thinking(text)
+            else:
+                ts.draft.append_content(text)
+        elif hkind == "tool_started":
+            ts.draft.start_tool(
+                call_id=str(payload.get("call_id", "")),
+                name=str(payload.get("tool_name", "")),
+                args=payload.get("input", {}) or {},
+            )
+        elif hkind == "tool_finished":
+            ts.draft.finish_tool(
+                call_id=str(payload.get("call_id", "")),
+                name=str(payload.get("tool_name", "")),
+                ok=bool(payload.get("ok", True)),
+                result=str(payload.get("text", "")),
+                elapsed_ms=None,
+            )
+        elif hkind in ("final", "error"):
+            ts.draft.close_running_tools()
+            if text:
+                ts.draft.content = text
+            ts.finalized = True
+        return RenderedMessage(
+            adapter_id=self.adapter_id,
+            session_id=event.session_id,
+            text=ts.draft.content,
+            metadata={"event_kind": event.kind, "frozen": True},
+        )
+
     @staticmethod
     def _harness_kind(event: AgentEvent) -> str:
         if event.harness_event is not None:
@@ -512,16 +607,20 @@ class TelegramAdapter(Adapter):
     def note_progress(self, payload: dict) -> None:
         """AdapterProgressSink hook(sync):usage_progress / compact_progress
         实时刷新当前 turn 脚标。_last_progress 只存 usage_progress,
-        避免 compact_progress 把新 turn 的 model/context 种子冲掉。"""
-        if payload.get("kind") == "usage_progress":
+        避免 compact_progress 把新 turn 的 model/context 种子冲掉。
+
+        Phase 4 / Task 5: PH 状态机分支(run_started / run_detached /
+        foreground_changed / ph_replaced / run_completed_bg)优先;命中即返回。"""
+        kind = payload.get("kind")
+        if kind == "usage_progress":
             self._last_progress = dict(payload)
-        buf = self._buffers.get(str(payload.get("session_id") or ""))
-        if buf is None:
+        sid = str(payload.get("session_id") or "")
+        if kind in ("run_started", "run_detached", "foreground_changed",
+                    "ph_replaced", "run_completed_bg"):
+            self._handle_ph_event(sid, payload)
             return
-        if payload.get("kind") == "run_detached":
-            rid = str(payload.get("run_id") or "")
-            if rid:
-                buf.started_as_detached[rid] = True
+        buf = self._buffers.get(sid)
+        if buf is None:
             return
         if payload.get("kind") == "command_progress":
             # 命令卡始终按 payload.run_id 取/建,绝不落到当前活跃 harness turn
@@ -556,6 +655,82 @@ class TelegramAdapter(Adapter):
         ts.draft.footer_meta = footer_from_progress(payload)
         ts.coalescer.flush(self._make_stream_send(buf, ts))
 
+    # ------------------------------------------------------------------
+    # Phase 4 / Task 5: PH state machine
+    # ------------------------------------------------------------------
+
+    def _handle_ph_event(self, sid: str, payload: dict) -> None:
+        kind = payload.get("kind")
+        rid = str(payload.get("run_id") or "")
+        state = self._render_states.setdefault(sid, SessionRenderState())
+        if kind == "run_started":
+            label = str(payload.get("label") or rid or "")
+            state.start_run(rid, label)
+            # mark legacy detached flag for any prior detached run (keep compat)
+            return
+        if kind == "run_detached":
+            run = state.runs.get(rid)
+            if run is None or run.is_frozen:
+                return
+            state.detach(rid)
+            buf = self._buffers.get(sid)
+            if buf is not None:
+                buf.started_as_detached[rid] = True
+            self._schedule(self._patch_frozen_tg(sid, rid, run.label))
+            return
+        if kind == "foreground_changed":
+            prev_fg = state.foreground_run_id
+            if rid not in state.runs:
+                return
+            state.switch_foreground(rid)
+            if prev_fg and prev_fg != rid and prev_fg in state.runs:
+                prev_run = state.runs[prev_fg]
+                self._schedule(self._patch_frozen_tg(sid, prev_fg, prev_run.label))
+            self._schedule(self._send_full_msg_tg(sid, rid, is_new_message=True))
+            return
+        if kind == "ph_replaced":
+            if rid in state.runs:
+                self._schedule(self._send_full_msg_tg(sid, rid, is_new_message=False))
+            return
+        if kind == "run_completed_bg":
+            return
+
+    async def _patch_frozen_tg(self, sid: str, rid: str, label: str) -> None:
+        buf = self._buffers.get(sid)
+        if buf is None or buf.chat_id is None or self._api_client is None:
+            return
+        ts = buf.turns.get(rid)
+        if ts is None or ts.message_id is None:
+            return
+        html = format_frozen_ph_html(ts.draft, label)
+        try:
+            await self._api_client.edit_message_text(
+                chat_id=buf.chat_id, message_id=ts.message_id,
+                text=html, parse_mode="HTML", reply_markup=None,
+            )
+        except Exception as exc:
+            _logger.warning(
+                "telegram: frozen-PH edit failed (%s): %s",
+                type(exc).__name__, self._redact(str(exc)),
+            )
+
+    async def _send_full_msg_tg(
+        self, sid: str, rid: str, *, is_new_message: bool
+    ) -> None:
+        buf = self._buffers.get(sid)
+        if buf is None or buf.chat_id is None or self._api_client is None:
+            return
+        ts = self._ensure_turn(buf, rid)
+        html = render_streaming(ts.draft)
+        markup = self._merge_switch_back(None, buf, rid)
+        if is_new_message or ts.message_id is None:
+            ts.message_id = await self._api_client.send_message(
+                chat_id=buf.chat_id, text=html, parse_mode="HTML",
+                reply_markup=markup,
+            )
+            return
+        await self._send_or_edit_anchor(buf, ts, html, markup)
+
     # -- outbound senders ------------------------------------------------
 
     def _make_stream_send(self, buf: _SessionBuffer, ts: _TurnState):
@@ -567,17 +742,70 @@ class TelegramAdapter(Adapter):
             # 同步存入 last_buttons,callback 'btn:0:0' 才能反查到 "/cancel"。
             ts.last_buttons = STOP_BUTTON_ROWS
             markup = buttons_to_reply_markup(STOP_BUTTON_ROWS)
-            if ts.message_id is None:
+            # Phase 4 / Task 5: merge switch-back inline keyboard for any bg runs
+            markup = self._merge_switch_back(markup, buf, ts.draft.run_id)
+            await self._send_or_edit_anchor(buf, ts, html, markup)
+        return _send
+
+    async def _send_or_edit_anchor(
+        self,
+        buf: _SessionBuffer,
+        ts: _TurnState,
+        html: str,
+        markup: dict | None,
+    ) -> None:
+        """Send (first time) or edit (subsequent) the per-run anchor message.
+
+        Phase 4 / Task 5: on 48h edit failure (BadRequest message can't be
+        edited / not found), fall back to a fresh send_message and overwrite
+        the anchor message_id."""
+        if self._api_client is None or buf.chat_id is None:
+            return
+        if ts.message_id is None:
+            ts.message_id = await self._api_client.send_message(
+                chat_id=buf.chat_id, text=html, parse_mode="HTML",
+                reply_markup=markup,
+            )
+            return
+        try:
+            await self._api_client.edit_message_text(
+                chat_id=buf.chat_id, message_id=ts.message_id,
+                text=html, parse_mode="HTML", reply_markup=markup,
+            )
+        except Exception as exc:
+            msg = str(exc).lower()
+            if ("can't be edited" in msg or "message to edit not found" in msg
+                    or "message is not modified" not in msg):
+                _logger.warning(
+                    "telegram: edit_message_text failed (%s): %s — sending new anchor",
+                    type(exc).__name__, self._redact(str(exc)),
+                )
                 ts.message_id = await self._api_client.send_message(
                     chat_id=buf.chat_id, text=html, parse_mode="HTML",
                     reply_markup=markup,
                 )
-            else:
-                await self._api_client.edit_message_text(
-                    chat_id=buf.chat_id, message_id=ts.message_id,
-                    text=html, parse_mode="HTML", reply_markup=markup,
-                )
-        return _send
+
+    def _merge_switch_back(
+        self, base_markup: dict | None, buf: _SessionBuffer, current_rid: str
+    ) -> dict | None:
+        """Append up to 3 切回 buttons (one per non-foreground bg run) to the
+        existing inline keyboard. callback_data='switch:<run_id>'."""
+        state = self._render_states.get(buf.session_id)
+        if state is None:
+            return base_markup
+        bg = [r for r in state.bg_runs() if r.run_id != current_rid]
+        if not bg:
+            return base_markup
+        extra_row = [
+            {"text": f"切回 {(r.label or r.run_id)[:8]}",
+             "callback_data": f"switch:{r.run_id}"}
+            for r in bg[:3]
+        ]
+        if base_markup and base_markup.get("inline_keyboard"):
+            kb = list(base_markup["inline_keyboard"]) + [extra_row]
+        else:
+            kb = [extra_row]
+        return {"inline_keyboard": kb}
 
     async def _send_tool_message(
         self, buf: _SessionBuffer, ts: _TurnState, call_id: str
@@ -688,5 +916,5 @@ class TelegramAdapter(Adapter):
 
     def _get_or_create_buffer(self, session_id: str) -> _SessionBuffer:
         if session_id not in self._buffers:
-            self._buffers[session_id] = _SessionBuffer()
+            self._buffers[session_id] = _SessionBuffer(session_id=session_id)
         return self._buffers[session_id]

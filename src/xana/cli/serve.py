@@ -225,6 +225,8 @@ async def _run_inner(argv: argparse.Namespace) -> int:
         await boot_result.gateway.register_adapter(adapter.adapter_id, adapter)
         if isinstance(adapter, FeishuAdapter):
             adapter.set_gateway(boot_result.gateway)
+        if isinstance(adapter, TelegramAdapter) and hasattr(adapter, "set_gateway"):
+            adapter.set_gateway(boot_result.gateway)
         pumps.append(asyncio.create_task(_run_inbound_pump(adapter, boot_result.gateway)))
 
         # Telegram「/」菜单:把可见命令推给 setMyCommands(飞书无此能力,依赖 /h)
