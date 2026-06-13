@@ -22,6 +22,12 @@ from xana.agent_adapter.interfaces import CommandRouter
 _HandlerFn = Callable[["DefaultCommandRouter", InboundMessage, str], Awaitable[CommandResult]]
 
 
+def _option_buttons(command: str, options: tuple[str, ...], per_row: int = 3) -> list[list[dict]]:
+    """选项列表 → send 型按钮行(点击即发送 `command option`),按 per_row 分行。"""
+    btns = [{"text": o, "send": f"{command} {o}"} for o in options]
+    return [btns[i:i + per_row] for i in range(0, len(btns), per_row)]
+
+
 class DefaultCommandRouter(CommandRouter):
     def __init__(
         self,
@@ -51,6 +57,7 @@ class DefaultCommandRouter(CommandRouter):
 
         self._specs: tuple[CommandSpec, ...] = (
             CommandSpec(name="/help",     description="显示命令菜单。用法 `/help` 或 `/help /命令`"),
+            CommandSpec(name="/h",        description="同 /help"),
             CommandSpec(name="/clear",    description="清空当前会话上下文"),
             CommandSpec(name="/compact",  description="用 LLM 把本会话历史压缩成摘要"),
             CommandSpec(name="/model",    description="切换本会话模型，无参列出可选"),
@@ -64,6 +71,7 @@ class DefaultCommandRouter(CommandRouter):
         )
         self._handlers: dict[str, _HandlerFn] = {
             "/help":            DefaultCommandRouter._cmd_help,
+            "/h":               DefaultCommandRouter._cmd_help,
             "/clear":           DefaultCommandRouter._cmd_clear,
             "/compact":         DefaultCommandRouter._cmd_compact,
             "/model":           DefaultCommandRouter._cmd_model,
@@ -105,7 +113,10 @@ class DefaultCommandRouter(CommandRouter):
         lines = ["可用命令:"]
         for spec in self._specs:
             lines.append(f"  {spec.name:<20} {spec.description}")
-        return CommandResult(ok=True, message="\n".join(lines))
+        # 每个命令一个 copy 按钮(点击≠执行,只把命令名放进输入/剪贴板),2 列/行。
+        copies = [{"text": spec.name, "copy": spec.name} for spec in self._specs]
+        rows = [copies[i:i + 2] for i in range(0, len(copies), 2)]
+        return CommandResult(ok=True, message="\n".join(lines), payload={"buttons": rows})
 
     async def _cmd_clear(self, inbound: InboundMessage, args: str) -> CommandResult:
         if self.active_context_store is None:
@@ -203,7 +214,9 @@ class DefaultCommandRouter(CommandRouter):
         if not target:
             if not self.available_models:
                 return CommandResult(ok=True, message="未配置可选模型")
-            return CommandResult(ok=True, message="可选模型: " + ", ".join(self.available_models))
+            return CommandResult(
+                ok=True, message="可选模型: " + ", ".join(self.available_models),
+                payload={"buttons": _option_buttons("/model", self.available_models)})
         if self.available_models and target not in self.available_models:
             return CommandResult(ok=False, message=f"未知模型 {target}; 可选: " + ", ".join(self.available_models))
         new = await self._persist_with(inbound.session_id, model=target)
@@ -213,7 +226,9 @@ class DefaultCommandRouter(CommandRouter):
         target = args.strip().lower()
         opts = ", ".join(self.available_efforts)
         if not target:
-            return CommandResult(ok=True, message=f"可选 effort: {opts}")
+            return CommandResult(
+                ok=True, message=f"可选 effort: {opts}",
+                payload={"buttons": _option_buttons("/effort", self.available_efforts)})
         if target not in self.available_efforts:
             return CommandResult(ok=False, message=f"effort 必须为 {opts}")
         new = await self._persist_with(inbound.session_id, effort=target)
@@ -252,7 +267,9 @@ class DefaultCommandRouter(CommandRouter):
         if not target:
             if not self.available_search_providers:
                 return CommandResult(ok=True, message="未配置可选搜索引擎")
-            return CommandResult(ok=True, message="可选搜索引擎: " + ", ".join(self.available_search_providers))
+            return CommandResult(
+                ok=True, message="可选搜索引擎: " + ", ".join(self.available_search_providers),
+                payload={"buttons": _option_buttons("/search_provider", self.available_search_providers)})
         if self.available_search_providers and target not in self.available_search_providers:
             return CommandResult(ok=False, message=f"未知搜索引擎 {target}")
         new = await self._persist_with(inbound.session_id, search_provider=target)
