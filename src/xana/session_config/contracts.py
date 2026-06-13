@@ -20,4 +20,5 @@ class SessionConfig:
     thinking: bool = True  # DS API 默认 thinking enabled,与之对齐(2026-06-13 授权)
     search_provider: str | None = None
     project_root: str | None = None
+    async_mode: bool = True  # ChatAgent 覆盖为 async run; 默认 True
     metadata: dict[str, Any] = field(default_factory=dict)
