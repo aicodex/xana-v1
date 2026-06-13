@@ -358,12 +358,19 @@ class FeishuAdapter(Adapter):
         buf = self._buffers.get(str(payload.get("session_id") or ""))
         if buf is None:
             return
-        ts = buf.turns[next(reversed(buf.turns))] if buf.turns else None
+        if payload.get("kind") == "command_progress":
+            # 命令卡始终按 payload.run_id 取/建,绝不落到当前活跃 harness turn(避免冲掉流式正文)
+            run_id = str(payload.get("run_id") or "")
+            if not run_id:
+                return
+            ts = self._ensure_turn(buf, run_id)
+        else:
+            ts = buf.turns[next(reversed(buf.turns))] if buf.turns else None
         if ts is None or ts.finalized:
             # auto-compact 先于新 run 的第一个 harness 事件触发:
             # 用 payload.run_id 提前建 turn,让 压缩中… 立即出卡。
             run_id = str(payload.get("run_id") or "")
-            if payload.get("kind") not in ("compact_progress", "command_progress") or not run_id:
+            if payload.get("kind") != "compact_progress" or not run_id:
                 return
             ts = self._ensure_turn(buf, run_id)
         if payload.get("kind") == "usage_progress":
