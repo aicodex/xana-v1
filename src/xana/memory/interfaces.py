@@ -19,6 +19,7 @@ from xana.memory.contracts import (
     MemoryLintResult,
     MemoryMessage,
     MemoryNode,
+    Placeholder,
     ReplayResult,
     SearchHit,
     SearchQuery,
@@ -40,6 +41,23 @@ class ActiveContextStore(ABC):
 
     @abstractmethod
     async def clear(self, session_id: str, agent_name: str) -> None: ...
+
+    @abstractmethod
+    async def snapshot(
+        self, session_id: str, agent_name: str
+    ) -> tuple[MemoryMessage | Placeholder, ...]: ...
+
+    @abstractmethod
+    async def append_placeholder(
+        self, session_id: str, agent_name: str, placeholder: Placeholder
+    ) -> None: ...
+
+    @abstractmethod
+    async def replace_placeholder(
+        self,
+        run_id: str,
+        replace_with: tuple[MemoryMessage, ...],
+    ) -> ActiveContext | None: ...
 
 
 class HistoryMirror(ABC):

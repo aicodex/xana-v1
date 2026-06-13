@@ -7,19 +7,23 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from xana.memory.contracts import ActiveContext, HistoryRow, InjectedBlock, MemoryMessage, ReplayResult
+from xana.memory.contracts import ActiveContext, HistoryRow, InjectedBlock, MemoryMessage, Placeholder, ReplayResult
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror, MemoryInjector, MemoryInjectorRegistry
 
 
 class InMemoryActiveContextStore(ActiveContextStore):
     def __init__(self) -> None:
         self._store: dict[tuple[str, str], ActiveContext] = {}
+        # per-(session,agent) 混合序列，按追加顺序记录 MemoryMessage 或 Placeholder。
+        # 与 _store[key].messages 是独立视图：前者含 PH，后者只装 MemoryMessage。
+        self._snapshots: dict[tuple[str, str], list[MemoryMessage | Placeholder]] = {}
 
     async def get(self, session_id: str, agent_name: str) -> ActiveContext | None:
         return self._store.get((session_id, agent_name))
 
     async def set(self, context: ActiveContext) -> None:
         self._store[(context.session_id, context.agent_name)] = context
+        self._snapshots[(context.session_id, context.agent_name)] = list(context.messages)
 
     async def append_message(self, session_id: str, agent_name: str, message: MemoryMessage) -> ActiveContext:
         key = (session_id, agent_name)
@@ -30,6 +34,7 @@ class InMemoryActiveContextStore(ActiveContextStore):
             token_estimate=current.token_estimate + len(message.content),
         )
         self._store[key] = updated
+        self._snapshots.setdefault(key, []).append(message)
         return updated
 
     async def compact(self, session_id: str, agent_name: str, summary: str) -> ActiveContext:
@@ -37,10 +42,47 @@ class InMemoryActiveContextStore(ActiveContextStore):
         current = self._store.get(key) or ActiveContext(session_id=session_id, agent_name=agent_name)
         updated = replace(current, summary=summary, messages=())
         self._store[key] = updated
+        self._snapshots[key] = []
         return updated
 
     async def clear(self, session_id: str, agent_name: str) -> None:
         self._store.pop((session_id, agent_name), None)
+        self._snapshots.pop((session_id, agent_name), None)
+
+    async def snapshot(
+        self, session_id: str, agent_name: str
+    ) -> tuple[MemoryMessage | Placeholder, ...]:
+        return tuple(self._snapshots.get((session_id, agent_name), ()))
+
+    async def append_placeholder(
+        self, session_id: str, agent_name: str, placeholder: Placeholder
+    ) -> None:
+        key = (session_id, agent_name)
+        self._snapshots.setdefault(key, []).append(placeholder)
+        if key not in self._store:
+            self._store[key] = ActiveContext(session_id=session_id, agent_name=agent_name)
+
+    async def replace_placeholder(
+        self,
+        run_id: str,
+        replace_with: tuple[MemoryMessage, ...],
+    ) -> ActiveContext | None:
+        for key, items in self._snapshots.items():
+            for idx, item in enumerate(items):
+                if isinstance(item, Placeholder) and item.run_id == run_id:
+                    items[idx:idx + 1] = list(replace_with)
+                    msgs = tuple(x for x in items if isinstance(x, MemoryMessage))
+                    current = self._store.get(key) or ActiveContext(
+                        session_id=key[0], agent_name=key[1]
+                    )
+                    updated = replace(
+                        current,
+                        messages=msgs,
+                        token_estimate=sum(len(m.content) for m in msgs),
+                    )
+                    self._store[key] = updated
+                    return updated
+        return None
 
 
 class InMemoryHistoryMirror(HistoryMirror):
