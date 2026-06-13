@@ -98,7 +98,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         run_id = f"{request.session_id}-{self._run_counter}"
         model = self.model
         effort: str | int | None = None
-        async_mode = False  # P4 之前 async 路径不完整,默认 sync
+        async_mode = True  # P3 完成,默认 async
         cfg = None
         if self.session_config_store is not None:
             cfg = await self.session_config_store.get(request.session_id)

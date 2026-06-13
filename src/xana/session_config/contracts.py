@@ -20,5 +20,5 @@ class SessionConfig:
     thinking: bool = True  # DS API 默认 thinking enabled,与之对齐(2026-06-13 授权)
     search_provider: str | None = None
     project_root: str | None = None
-    async_mode: bool = False  # P4 之前 async 路径不完整(只有 turn_started + 后台跑,卡片不渲染);默认 sync,/async on 留观测
+    async_mode: bool = True  # P3 完成,默认 async
     metadata: dict[str, Any] = field(default_factory=dict)
