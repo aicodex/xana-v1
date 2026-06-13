@@ -14,10 +14,13 @@ Adapters must:
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TYPE_CHECKING
 
 from xana.agent_adapter.contracts import CommandResult, CommandSpec, InboundMessage
 from xana.agent_adapter.interfaces import CommandRouter
+
+if TYPE_CHECKING:
+    from xana.session_config.contracts import SessionConfig
 
 
 _HandlerFn = Callable[["DefaultCommandRouter", InboundMessage, str], Awaitable[CommandResult]]
