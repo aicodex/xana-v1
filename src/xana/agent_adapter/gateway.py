@@ -119,6 +119,16 @@ class DefaultAgentGateway(AgentGateway):
             label=(inbound.text or "").strip()[:40] or "run",
         )
         self._inflight.setdefault(inbound.session_id, []).insert(0, new_run)
+        # PH 状态机依赖 run_started 才能在 adapter 端初始化 RunRenderState;
+        # 不发的话 _render_states 永远空,detach/freeze/switch 全部失效。
+        note = getattr(adapter, "note_progress", None)
+        if note is not None:
+            note({
+                "kind": "run_started",
+                "session_id": inbound.session_id,
+                "run_id": new_run.run_id,
+                "label": new_run.label,
+            })
         try:
             async for event in agent.send(request):
                 rendered = await adapter.render(event)
