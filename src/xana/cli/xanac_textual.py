@@ -8,6 +8,8 @@ called by TextualRenderer.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 from textual.app import App, ComposeResult
@@ -49,6 +51,7 @@ class XanacApp(App):
         self.adapter_id = adapter_id
         self._fg_run_id: str | None = None
         self._tabs_widget: ListView | None = None
+        self._frozen_runs: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -74,8 +77,17 @@ class XanacApp(App):
             session_id=self.session_id,
             text=text,
         )
-        async for _ in self.gateway.submit(inbound):
-            pass
+
+        async def _drain() -> None:
+            try:
+                async for _ in self.gateway.submit(inbound):
+                    pass
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "xanac submit drain crashed"
+                )
+
+        asyncio.create_task(_drain())
 
     def action_focus_tabs(self) -> None:
         if self._tabs_widget is not None:
@@ -93,6 +105,7 @@ class XanacApp(App):
     # ----- Renderer-facing API -----
 
     def show_run(self, run_id: str, *, label: str, body: str) -> None:
+        self._frozen_runs.discard(run_id)
         self._fg_run_id = run_id
         self.query_one("#fg-body", Static).update(body)
         self.title = f"xana · {label}" if label else "xana"
@@ -103,12 +116,14 @@ class XanacApp(App):
         self.query_one("#fg-body", Static).update(body)
 
     def freeze_run(self, run_id: str, *, label: str) -> None:
+        self._frozen_runs.add(run_id)
         if run_id == self._fg_run_id:
             self.query_one("#fg-body", Static).update(
                 f"后台运行中 · {label}"
             )
 
     def finalize_run(self, run_id: str, *, body: str, label: str) -> None:
+        self._frozen_runs.discard(run_id)
         if run_id == self._fg_run_id:
             self.query_one("#fg-body", Static).update(body)
 
@@ -120,4 +135,5 @@ class XanacApp(App):
         self._tabs_widget.clear()
         for rid in bg_run_ids:
             lbl = (labels.get(rid) or rid)[:24]
-            self._tabs_widget.append(_TabItem(rid, lbl))
+            prefix = "🟡 " if rid in self._frozen_runs else ""
+            self._tabs_widget.append(_TabItem(rid, f"{prefix}{lbl}"))
