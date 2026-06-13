@@ -21,6 +21,7 @@ status: active
 
 - [first_core_flow_v1_leftovers](first_core_flow_v1_leftovers.md) — 第一核心流 v1 已知遗留（token_estimate、provider fallback、CLI 重复输出等），并行接手前先扫
 - [doc_split_followups](doc_split_followups.md) — continue splitting design docs as implementation becomes concrete
+- [deferred_features](deferred_features.md) — tools/skills 待办,依赖未完成的前置功能(request_user_input、AgentSpawner、sandbox 等)
 
 ## 文件命名
 
