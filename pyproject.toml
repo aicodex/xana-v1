@@ -12,6 +12,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "croniter>=2.0",
     "ddgs>=9.0",
+    "textual>=0.85",
 ]
 
 [project.optional-dependencies]

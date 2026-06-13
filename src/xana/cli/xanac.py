@@ -28,38 +28,74 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-async def _run(args: argparse.Namespace) -> int:
+async def _build_pipeline(args: argparse.Namespace, renderer):
     project_root = (args.project or Path.cwd()).resolve()
     boot_result = await boot(
         project_root=project_root,
         history_root=_xana_home() / "sessions",
     )
+    adapter = CliAdapter(
+        adapter_id="cli",
+        session_id=args.session,
+        renderer=renderer,
+    )
+    await adapter.start()
+    await boot_result.gateway.register_adapter("cli", adapter)
+    return boot_result, adapter, project_root
+
+
+async def _run(args: argparse.Namespace) -> int:
+    text = " ".join(args.text).strip()
+    # Default mode: oneshot if user provided text OR stdin is piped;
+    # otherwise launch Textual TUI.
+    use_textual = (
+        not text
+        and not args.interactive
+        and sys.stdin.isatty()
+    )
+    if args.interactive:
+        use_textual = True
+
+    if use_textual:
+        return await _textual(args)
+
+    renderer = StdoutRenderer()
+    boot_result, adapter, _root = await _build_pipeline(args, renderer)
     try:
-        adapter = CliAdapter(
-            adapter_id="cli",
-            session_id=args.session,
-            renderer=StdoutRenderer(),
-        )
-        await adapter.start()
-        await boot_result.gateway.register_adapter("cli", adapter)
-
-        text = " ".join(args.text).strip()
-        if not text and not args.interactive:
-            # Default to interactive when no text supplied (cc-style).
-            args.interactive = True
-
-        if args.interactive:
+        if not text:
+            # Fallback to legacy prompt_toolkit REPL when stdin is piped /
+            # there's still no text (rare — keeps old behavior for scripts).
             print(f"xanac · interactive · session={args.session}")
-            print(f"model={boot_result.model}  provider={boot_result.provider}  cwd={project_root}")
-            print("输入 /help 查看命令；Ctrl-C 取消当前 turn；Ctrl-D 退出。\n")
-            return await _repl_loop(boot_result.gateway, adapter=adapter, session_id=args.session)
-
+            print(f"model={boot_result.model}  provider={boot_result.provider}")
+            return await _repl_loop(
+                boot_result.gateway, adapter=adapter, session_id=args.session
+            )
         inbound = InboundMessage(adapter_id="cli", session_id=args.session, text=text)
         exit_code = 0
         async for rendered in boot_result.gateway.submit(inbound):
             if rendered.metadata.get("event_kind") == "error":
                 exit_code = 1
         return exit_code
+    finally:
+        if boot_result.main_writer is not None:
+            await boot_result.main_writer.aclose()
+
+
+async def _textual(args: argparse.Namespace) -> int:
+    from xana.agent_adapter.channels._cli_renderer_textual import TextualRenderer
+    from xana.cli.xanac_textual import XanacApp
+
+    renderer = TextualRenderer()
+    boot_result, adapter, _root = await _build_pipeline(args, renderer)
+    try:
+        app = XanacApp(
+            gateway=boot_result.gateway,
+            session_id=args.session,
+            adapter_id=adapter.adapter_id,
+        )
+        renderer.attach(app)
+        await app.run_async()
+        return 0
     finally:
         if boot_result.main_writer is not None:
             await boot_result.main_writer.aclose()
