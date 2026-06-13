@@ -169,9 +169,7 @@ class DefaultCommandRouter(CommandRouter):
         # 并向对应 adapter 发 compact_started → 触发 compact 卡片渲染。
         ph_note = None
         if self.gateway is not None:
-            detach_fn = getattr(self.gateway, "detach_inflight_for", None)
-            if detach_fn is not None:
-                detach_fn(inbound.session_id)
+            self.gateway.detach_inflight_for(inbound.session_id)
             adapters = getattr(self.gateway, "adapters", {}) or {}
             adapter = adapters.get(inbound.adapter_id)
             if adapter is not None:
@@ -215,10 +213,26 @@ class DefaultCommandRouter(CommandRouter):
                     client, provider=self.provider, model=model, messages=live,
                     on_progress=_emit)
             except _CompactCancelled:
-                # 用户取消:停流、不写回。
+                # 用户取消:停流、不写回。仍需 finalize 防止 PH 卡片永久停在 running。
+                if ph_note is not None:
+                    ph_note({
+                        "kind": "compact_finalized",
+                        "session_id": inbound.session_id,
+                        "run_id": run_id,
+                        "summary": "",
+                        "cancelled": True,
+                    })
                 return CommandResult(
                     ok=False, message="🛑 压缩已取消", payload={"run_id": run_id})
             if summary is None:
+                if ph_note is not None:
+                    ph_note({
+                        "kind": "compact_finalized",
+                        "session_id": inbound.session_id,
+                        "run_id": run_id,
+                        "summary": "",
+                        "error": True,
+                    })
                 return CommandResult(ok=False, message="压缩失败:模型未返回 <summary>,请重试")
             revealed = revealed_tools_from_messages(snapshot.messages) if snapshot else set()
             await self.active_context_store.set(build_post_compact_context(
@@ -238,6 +252,16 @@ class DefaultCommandRouter(CommandRouter):
                 payload={"thinking": post_compact_message(summary),
                          "thinking_title": f"已压缩 {len(live)} 条消息"},
             )
+        except Exception:
+            if ph_note is not None:
+                ph_note({
+                    "kind": "compact_finalized",
+                    "session_id": inbound.session_id,
+                    "run_id": run_id,
+                    "summary": "",
+                    "error": True,
+                })
+            raise
         finally:
             self._compact_cancels.pop(run_id, None)
 
