@@ -38,6 +38,7 @@ from xana.memory.active_context import (
     InMemoryActiveContextStore,
     InMemoryHistoryMirror,
 )
+from xana.memory.file_history import FileHistoryMirror, FileMemoryReplayer, replay_and_detect_interrupts
 from xana.memory.interfaces import (
     ActiveContextStore,
     HistoryMirror,
@@ -110,6 +111,7 @@ async def boot(
     project_root: Path,
     config_provider: DefaultConfigProvider | None = None,
     extension_registry: ExtensionRegistry | None = None,
+    history_root: Path | None = None,
 ) -> BootResult:
     project_root = Path(project_root).resolve()
 
@@ -122,7 +124,12 @@ async def boot(
     await injector_registry.register(injector, priority=100)
 
     active_ctx = InMemoryActiveContextStore()
-    mirror = InMemoryHistoryMirror()
+    mirror: HistoryMirror
+    if history_root is not None:
+        mirror = FileHistoryMirror(root=Path(history_root))
+        await replay_and_detect_interrupts(mirror, active_ctx, FileMemoryReplayer())
+    else:
+        mirror = InMemoryHistoryMirror()
 
     tools = InMemoryToolRegistry()
     await tools.register(MemorySearchTool(engine))
