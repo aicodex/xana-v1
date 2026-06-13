@@ -50,7 +50,8 @@ def render_tool_block(blk: ToolBlock) -> str:
             clip_body(json.dumps(blk.args, ensure_ascii=False, indent=2))))
     if not blk.running and blk.result:
         body_segments.append(_html.escape(clip_body(blk.result)))
-    body = "\n────────\n".join(body_segments)
+    # 无参运行中的工具 body 会空,Telegram 拒绝空 expandable blockquote → 占位空格
+    body = "\n────────\n".join(body_segments) or " "
     return clip_html(f"<b>{head}</b>\n<blockquote expandable>{body}</blockquote>")
 
 
