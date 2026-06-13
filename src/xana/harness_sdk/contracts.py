@@ -72,6 +72,7 @@ class HarnessContext:
     trace_sink: "TraceSink | None" = None
     progress_sink: "ProgressSink | None" = None
     abort: AbortSignal = field(default_factory=AbortSignal)
+    async_mode: bool = False
     config_snapshot: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
