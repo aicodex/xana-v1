@@ -466,6 +466,9 @@ class TelegramAdapter(Adapter):
     def _turn_for(self, buf: _SessionBuffer, event: AgentEvent) -> _TurnState:
         if event.harness_event is not None and event.harness_event.run_id:
             run_id = event.harness_event.run_id
+        elif event.harness_event is None and event.payload.get("run_id"):
+            # 命令 final/error:无 harness_event,按 gateway 注入的 run_id 落同卡
+            run_id = str(event.payload["run_id"])
         elif buf.turns:
             run_id = next(reversed(buf.turns))
         else:
@@ -498,11 +501,13 @@ class TelegramAdapter(Adapter):
             # auto-compact 先于新 run 的第一个 harness 事件触发:
             # 用 payload.run_id 提前建 turn,让 压缩中… 立即出消息。
             run_id = str(payload.get("run_id") or "")
-            if payload.get("kind") != "compact_progress" or not run_id:
+            if payload.get("kind") not in ("compact_progress", "command_progress") or not run_id:
                 return
             ts = self._ensure_turn(buf, run_id)
         if payload.get("kind") == "usage_progress":
             ts.last_progress = dict(payload)
+        if payload.get("kind") == "command_progress" and payload.get("text"):
+            ts.draft.content = str(payload["text"])
         if payload.get("kind") == "compact_progress" and payload.get("text"):
             # /compact 命令流式进度:进度条直接进消息正文;部分摘要进折叠块
             ts.draft.content = str(payload["text"])

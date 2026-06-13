@@ -31,6 +31,7 @@ class DefaultAgentGateway(AgentGateway):
         self.command_router: CommandRouter | None = None
         self.bindings: dict[str, SessionBinding] = {}
         self._cancel_flags: dict[str, bool] = {}
+        self._cmd_seq = 0
 
     async def register_adapter(self, adapter_id: str, adapter: Adapter) -> None:
         self.adapters[adapter_id] = adapter
@@ -57,12 +58,25 @@ class DefaultAgentGateway(AgentGateway):
         # Slash-command short-circuit: ask the command_router first. If it intercepts
         # (ok=True or ok=False with pass_through=False), render the result and return.
         if self.command_router is not None:
-            cmd_result = await self.command_router.route_command(inbound)
+            # 命令拦截前先给命令分配 run_id 并发 command_progress 预建卡片,
+            # 再把 run_id 经 metadata 传给 router(compact 等内部进度复用同卡),
+            # final/error 把 run_id 放进 payload,adapter 按 run_id finalize 同卡。
+            is_command = inbound.text.strip().startswith("/")
+            run_id = ""
+            enriched = inbound
+            if is_command:
+                self._cmd_seq += 1
+                run_id = f"cmd-{inbound.session_id}-{self._cmd_seq}"
+                self._notify_command_card(adapter, inbound, run_id)
+                enriched = replace(
+                    inbound, metadata={**inbound.metadata, "command_run_id": run_id}
+                )
+            cmd_result = await self.command_router.route_command(enriched)
             if cmd_result.ok or not cmd_result.payload.get("pass_through", False):
                 event = AgentEvent(
                     kind="final" if cmd_result.ok else "error",
                     session_id=inbound.session_id,
-                    payload={"text": cmd_result.message, **cmd_result.payload},
+                    payload={"text": cmd_result.message, "run_id": run_id, **cmd_result.payload},
                 )
                 rendered = await adapter.render(event)
                 yield self._attach_event_kind(rendered, event)
@@ -85,6 +99,21 @@ class DefaultAgentGateway(AgentGateway):
             if self._cancel_flags.get(inbound.session_id):
                 break
         self.clear_cancel(inbound.session_id)
+
+    @staticmethod
+    def _notify_command_card(adapter: Adapter, inbound: InboundMessage, run_id: str) -> None:
+        """命令路由前预建一张卡:发 command_progress ProgressEvent。
+        console 等无 note_progress 的 adapter 直接跳过(hasattr 守卫)。"""
+        note = getattr(adapter, "note_progress", None)
+        if note is None:
+            return
+        first = inbound.text.strip().split()[0] if inbound.text.strip() else ""
+        note({
+            "kind": "command_progress",
+            "run_id": run_id,
+            "session_id": inbound.session_id,
+            "text": f"⏳ {first}",
+        })
 
     def subscribe(self, adapter_id: str, session_id: str) -> AsyncIterator[RenderedMessage]:
         raise NotImplementedError("subscribe is not used by the CLI flow in v1")

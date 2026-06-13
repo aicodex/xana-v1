@@ -139,7 +139,10 @@ class DefaultCommandRouter(CommandRouter):
         if client is None:
             return CommandResult(ok=False, message=f"provider {self.provider!r} 未注册")
         self._compact_seq += 1
-        run_id = f"compactcmd-{inbound.session_id}-{self._compact_seq}"
+        # gateway 已为命令预建卡片并通过 metadata 传入 run_id → 复用同卡;
+        # 直接调用(无 metadata)时退回自产 compactcmd- 前缀。
+        run_id = inbound.metadata.get("command_run_id") \
+            or f"compactcmd-{inbound.session_id}-{self._compact_seq}"
         last_emitted: list[tuple[str, str, str]] = [("", "", "")]
 
         async def _emit(text_so_far: str = "", phase: str = "running") -> None:
