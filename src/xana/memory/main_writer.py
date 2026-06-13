@@ -14,10 +14,10 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, Sequence
 
-from xana.memory.contracts import ActiveContext, HistoryRow, MemoryMessage, Placeholder
+from xana.memory.contracts import ActiveContext, HistoryKind, HistoryRow, MemoryMessage, Placeholder
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror
 
-_ROLE_TO_KIND = {"user": "user", "assistant": "assistant", "tool": "tool", "system": "system"}
+_ROLE_TO_KIND: dict[str, HistoryKind] = {"user": "user", "assistant": "assistant", "tool": "tool", "system": "system"}
 
 
 @dataclass
