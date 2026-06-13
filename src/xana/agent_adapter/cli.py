@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from collections import OrderedDict
 from typing import Any, AsyncGenerator, AsyncIterator, TextIO
 
 from xana.agent_adapter.contracts import (
@@ -65,6 +66,8 @@ class CliAdapter(Adapter):
         self._draft_seen_this_turn: bool = False
         self.last_progress: dict[str, Any] | None = None
         self._progress_callback = None
+        self.foreground_run_id: str | None = None
+        self.bg_runs: "OrderedDict[str, str]" = OrderedDict()  # run_id → label
 
     async def start(self) -> None:
         self._status = "healthy"
@@ -187,13 +190,36 @@ class CliAdapter(Adapter):
 
     def note_progress(self, payload: dict[str, Any]) -> None:
         """Adapter hook for progress updates. Stores latest; REPL may register a
-        callback to repaint the footer in place. 仅处理 usage_progress;
-        compact_progress 等其它 kind 由各 channel adapter 自行消化。"""
-        if payload.get("kind") != "usage_progress":
+        callback to repaint the footer in place. 处理 usage_progress / run_detached /
+        run_completed_bg;其它 kind 由各 channel adapter 自行消化。"""
+        kind = payload.get("kind")
+        if kind == "usage_progress":
+            self.last_progress = dict(payload)
+            if self._progress_callback is not None:
+                self._progress_callback(payload)
             return
-        self.last_progress = dict(payload)
-        if self._progress_callback is not None:
-            self._progress_callback(payload)
+        if kind == "run_detached":
+            rid = str(payload.get("run_id") or "")
+            if rid:
+                self.bg_runs[rid] = str(payload.get("label") or rid)
+            return
+        if kind == "run_completed_bg":
+            rid = str(payload.get("run_id") or "")
+            self.bg_runs.pop(rid, None)
+            return
+
+    def set_foreground(self, run_id: str | None) -> None:
+        self.foreground_run_id = run_id
+        if run_id is not None:
+            self.bg_runs.pop(run_id, None)
+
+    def format_tabs(self) -> str:
+        if not self.bg_runs:
+            return ""
+        items = " | ".join(
+            f"[{i+1}] {lbl}" for i, lbl in enumerate(self.bg_runs.values())
+        )
+        return f"{items}  · Tab 切换"
 
     def set_progress_callback(self, cb) -> None:
         self._progress_callback = cb
