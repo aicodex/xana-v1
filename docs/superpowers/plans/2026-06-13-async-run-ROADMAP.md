@@ -107,6 +107,11 @@ P1 持久化地基 ── P2 单写者+Run/PH 模型 ── P3 双模+/async+后
 
 **目标**:turn 级 cancel(无工具→止 LLM;只读工具→立即 abort,resume=重跑该工具;写入工具→等 2s,完成则正常写,超时强杀+synthetic warning,resume=fork 新 run);冻结回写 main(partial+打断原因+warning);`/resume` 列表 + 恢复(防重入);启动扫 `runs/`(completed 未消费→替换 PH;跑一半→续跑或标记中断)+ main 中断 PH;graceful shutdown(SIGTERM 先 cancel 后台 run ≤2s 再 flush);非用户异常(network/timeout/session_lost)不入 /resume。
 
+**命令卡的取消按钮策略(本期一并定):**
+- **只有「会跑 LLM」的命令才显示取消按钮**:目前仅 `/compact`。把 `/compact` 视为一个**特殊 turn**——它和"turn 里被自动触发的 compact"走同一条 cancel 路径(`compact_cancel` 现成实现即此原理),不再单独维护一套"命令取消"语义。
+- **纯状态操作不显示取消按钮**:`/help`、`/clear`、`/model`、`/effort`、`/streaming`、`/thinking`、`/search_provider`、`/project`、`/async`——这些只是改设置/打印帮助,毫秒级返回,不该带 stop 按钮,也不该在 in-flight 时被任何"打断"机制误伤。
+- **实现含义**:命令卡渲染按钮的判定从"是否命令"改为"是否会进入 turn 循环(即 `CommandResult.payload` 是否含 `triggers_turn=True`,默认 False;`/compact` handler 显式置 True)";gateway 在 `command_progress` 预建卡时按此 flag 决定是否带 stop 按钮。
+
 **复用**:`RunStore.list_unfinished`、`Checkpoint`、`ResumePolicy`/`ResumeDecision`、`ToolSpec.read_only`、`AbortSignal`、`sync.py` 的 `_terminate`。
 
 ---
@@ -116,6 +121,25 @@ P1 持久化地基 ── P2 单写者+Run/PH 模型 ── P3 双模+/async+后
 **目标**:compact 走 write queue 做 `replace_range`(按 msg_id 不按索引,避免与 PH 替换并发冲突);fork_before = 最早 running PH 位置,每次全量覆盖;每个 run 只触发一次 fork_before compact;手动 `/compact` = 开一个无 user 问题的空 run(同子分支 compact 流程);前置 PH 超 30min 未完成 → warning 日志(纯观测);post-compact 消息引用 main.jsonl(抄 CC)。
 
 **复用**:现有 `compact.py`/`compact_prompt.py`、boundary marker、`build_post_compact_context`、`generate_summary`(已支持 on_progress)。
+
+**adapter 渲染策略(本期一并定):**
+- compact 触发时,在当前卡片的**分叉位置**插入一张 compact 卡(渲染流程同命令卡:gateway 预建 `compact_progress` + 独立 `run_id`),把 fork_before 之前的内容"封盖"在这张卡里(标题/摘要/可展开看明细)。
+- 分叉之后的上下文(post-compact 引用 + 新 run 的输出)**立刻在 compact 卡下方继续渲染**,不等 compact 跑完——和"菜单卡 + 之后的对话"是同一种 layout 节奏。
+- compact 卡只有在它自己的 `replace_range` 真正落 main.jsonl 后才 finalize(状态从 ⏳ 转 ✅);失败/取消则标 ✖,fork_before 不前移。
+- 复用 P4 的 per-run `_TurnState` + run_id 路由:compact 卡用独立 run_id,与下方新 run 卡完全解耦,Tab 切换不会跳进 compact 卡。
+
+**🟡 待讨论:统一占位符渲染模型(暂列 P6,可能拆出独立 phase)**
+
+把渲染模型从"P4 的卡片状态机"升级为"占位符驱动":
+
+1. 用户在 streaming 时发新消息 → 当前流立刻 detach,屏幕上**停止刷流**,该位置显示为一个 in-progress 占位符卡(loading 状态、可展开看已产出的部分)。
+2. 后台 run 完成、PH 被 MainWriter 替换时,**adapter 把这个占位符就地展开成实际产出的多张 turn 卡片**(assistant 文本 / 各 tool 调用 / 中间 system 消息逐张渲染),而不是只弹一张"纯回答卡"。
+3. compact 同理:compact 节点位置先是 compact 占位符,完成后就地替换为 compact 卡(摘要 + 可展开明细)。
+4. 失败/取消的 PH 渲染为带原因的"未完成卡"。
+
+收益:渲染模型与底层数据模型(main.jsonl 里的 PH → 实际 rows)一对一,无需 adapter 单独维护"哪些 run 是后台的、哪些已完成"这种状态——遍历 main.jsonl + active context 自然就出对了。
+
+代价:需要 adapter 端有"渲染整段对话历史"的能力(目前是事件驱动单向追加),且要响应 PH 替换事件做"原地展开"。这是 P4 的"per-run 纯回答卡 + 底部 tab"之上的一次重写——届时评估是把 P4 的成果让位给这个统一模型,还是两者共存(per-run 卡片 + PH 替换时刷新)。
 
 ---
 

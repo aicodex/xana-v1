@@ -4,10 +4,9 @@ Adapters translate external protocols into agent requests and render agent event
 """
 from __future__ import annotations
 
+import asyncio as _asyncio
 from dataclasses import dataclass, field
 from typing import Any, Literal
-
-from xana.agents.contracts import AgentEvent
 
 AdapterHealthStatus = Literal["starting", "healthy", "degraded", "stopped", "failed"]
 CommandVisibility = Literal["public", "admin", "debug"]
@@ -71,14 +70,11 @@ class AdapterHealth:
     details: dict[str, Any] = field(default_factory=dict)
 
 
-import asyncio as _asyncio
-
-
 @dataclass
 class InflightRun:
     """Gateway 侧 per-run 追踪。非 frozen——detached 字段可变。"""
     session_id: str
     run_id: str
     label: str
-    task: "_asyncio.Task[Any] | None" = None
+    task: _asyncio.Task[Any] | None = None
     detached: bool = False
