@@ -14,6 +14,7 @@ Three sub-systems live here, sharing a tree-of-nodes substrate:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 HistoryKind = Literal["user", "assistant", "tool", "system", "compact"]
@@ -30,6 +31,7 @@ LintViolationKind = Literal[
 LintSeverity = Literal["error", "warn", "info"]
 InjectionPlacement = Literal["system_head", "system_tail", "user_prefix"]
 SearchBackendKind = Literal["keyword", "embedding", "hybrid", "external"]
+PlaceholderStatus = Literal["running", "completed", "cancelled", "failed"]
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,22 @@ class ReplayResult:
     loaded_sessions: int
     loaded_rows: int
     errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Placeholder:
+    """会话消息序列中的占位符：标记「这里有一个 run，状态见 status」。
+
+    与 MemoryMessage 平级，由 ActiveContextStore.snapshot() 返回为混合序列
+    `tuple[MemoryMessage | Placeholder, ...]`。**不**塞进 ActiveContext.messages
+    （那里只放 MemoryMessage，保持类型纯净）。
+    """
+
+    run_id: str
+    label: str
+    status: PlaceholderStatus = "running"
+    jsonl_path: Path | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
