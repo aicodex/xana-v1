@@ -772,7 +772,7 @@ class TelegramAdapter(Adapter):
         )
 
     async def _edit_or_resend(
-        self, ts: "_TurnState", chat_id: int, text: str, *,
+        self, ts: "_TurnState", chat_id: str, text: str, *,
         parse_mode: str | None = "HTML", reply_markup=None,
     ) -> None:
         """Edit anchor; on benign 'not modified' swallow silently; on any
