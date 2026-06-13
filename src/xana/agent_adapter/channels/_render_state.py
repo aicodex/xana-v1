@@ -19,11 +19,14 @@ class RunRenderState:
 
 @dataclass
 class SessionRenderState:
+    """Adapter-side per-session render state: tracks runs, foreground, and provides PH-driven transitions."""
+
     runs: "OrderedDict[str, RunRenderState]" = field(default_factory=OrderedDict)
     foreground_run_id: str | None = None
     max_runs: int = 4
 
     def start_run(self, run_id: str, label: str) -> RunRenderState:
+        """Create a new run as foreground; demote previous foreground to frozen background."""
         if self.foreground_run_id and self.foreground_run_id in self.runs:
             self.runs[self.foreground_run_id].is_foreground = False
             self.runs[self.foreground_run_id].is_frozen = True
@@ -37,6 +40,7 @@ class SessionRenderState:
         return st
 
     def switch_foreground(self, run_id: str) -> None:
+        """Make run_id the foreground (frozen=False); freeze previous foreground. No-op if unknown."""
         if run_id not in self.runs:
             return
         if self.foreground_run_id and self.foreground_run_id in self.runs:
@@ -47,6 +51,7 @@ class SessionRenderState:
         self.foreground_run_id = run_id
 
     def detach(self, run_id: str) -> None:
+        """Mark run as frozen background; clear foreground_run_id if it was foreground."""
         if run_id in self.runs:
             self.runs[run_id].is_frozen = True
             self.runs[run_id].is_foreground = False
@@ -54,4 +59,5 @@ class SessionRenderState:
                 self.foreground_run_id = None
 
     def bg_runs(self) -> list[RunRenderState]:
+        """Return non-foreground runs in insertion order."""
         return [r for r in self.runs.values() if not r.is_foreground]
