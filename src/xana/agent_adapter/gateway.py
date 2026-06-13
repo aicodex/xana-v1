@@ -95,6 +95,28 @@ class DefaultAgentGateway(AgentGateway):
                 yield self._attach_event_kind(rendered, event)
                 return
 
+        # 旧 run 转后台 —— 不 cancel,只标 detached,并通知 adapter 刷 tab。
+        existing = self._inflight.get(inbound.session_id, [])
+        for ir in existing:
+            if not ir.detached:
+                ir.detached = True
+                self._notify_run_detached(adapter, inbound.session_id, ir)
+
+        import uuid as _uuid
+        self._run_seq += 1
+        # seq + uuid 后缀:seq 保证可读顺序,uuid 避免重启后 RunRecord 文件名冲突。
+        new_run = InflightRun(
+            session_id=inbound.session_id,
+            run_id=f"run-{inbound.session_id}-{self._run_seq}-{_uuid.uuid4().hex[:8]}",
+            label=(inbound.text or "").strip()[:40] or "run",
+        )
+        self._inflight.setdefault(inbound.session_id, []).insert(0, new_run)
+        # gateway 的 run_id 必须传给 harness,否则 adapter 端 _render_states 用
+        # gateway run_id 建 key,但 render() 收到的事件 run_id 是 harness 自产的
+        # uuid 形式,frozen 检查永远 miss → detach 后旧卡还在刷流。
+        inbound = replace(
+            inbound, metadata={**inbound.metadata, "gateway_run_id": new_run.run_id},
+        )
         request = await self.router.route(inbound)
         target = request.target_agent or ""
         agent = self.agents.get(target)
@@ -105,20 +127,6 @@ class DefaultAgentGateway(AgentGateway):
                 metadata={"event_kind": "error"},
             )
             return
-        # 旧 run 转后台 —— 不 cancel,只标 detached,并通知 adapter 刷 tab。
-        existing = self._inflight.get(inbound.session_id, [])
-        for ir in existing:
-            if not ir.detached:
-                ir.detached = True
-                self._notify_run_detached(adapter, inbound.session_id, ir)
-
-        self._run_seq += 1
-        new_run = InflightRun(
-            session_id=inbound.session_id,
-            run_id=f"run-{inbound.session_id}-{self._run_seq}",
-            label=(inbound.text or "").strip()[:40] or "run",
-        )
-        self._inflight.setdefault(inbound.session_id, []).insert(0, new_run)
         # PH 状态机依赖 run_started 才能在 adapter 端初始化 RunRenderState;
         # 不发的话 _render_states 永远空,detach/freeze/switch 全部失效。
         note = getattr(adapter, "note_progress", None)

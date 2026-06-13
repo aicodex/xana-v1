@@ -29,6 +29,7 @@ from xana.agent_adapter.channels._render_state import RunRenderState, SessionRen
 from xana.agent_adapter.channels._throttle import DraftCoalescer
 from xana.agent_adapter.channels.feishu_card import (
     build_card,
+    build_completed_bg_card,
     build_frozen_ph_card,
 )
 from xana.agent_adapter.channels.feishu_events import parse_message_event
@@ -288,11 +289,11 @@ class FeishuAdapter(Adapter):
         # Phase 4 / Task 4: 冻结的后台 run 仍要在 draft 上累积事件
         # (ph_replaced 时一次性出全卡),但不发任何 patch。
         state = self._render_states.get(event.session_id)
-        rid_hkind = event.payload.get("run_id") or (
-            event.harness_event.run_id if event.harness_event else ""
-        )
-        if state is not None and rid_hkind and rid_hkind in state.runs and state.runs[rid_hkind].is_frozen:
-            # 直接走 draft 累积分支,绕过 coalescer.flush(避免 patch)
+        # ts.draft.run_id 由 _turn_for/_ensure_turn 兜底,比从 event payload/harness
+        # 重新抽 run_id 更可靠(final 事件 payload 没有 run_id,会漏掉冻结判断,
+        # 导致 coalescer.finalize 把冻结卡刷回流式)。
+        rid_for_freeze = ts.draft.run_id
+        if state is not None and rid_for_freeze in state.runs and state.runs[rid_for_freeze].is_frozen:
             return await self._render_into_draft_only(event, ts)
         hkind = self._harness_kind(event)
         payload = event.payload
@@ -426,7 +427,16 @@ class FeishuAdapter(Adapter):
                 return
             ts = self._ensure_turn(buf, run_id)
         else:
-            ts = buf.turns[next(reversed(buf.turns))] if buf.turns else None
+            # usage_progress / compact_progress 必须按 run_id 路由,否则它们落到
+            # buf.turns 的最后一个 turn(可能已被 detach),会把冻结卡的 footer 刷新
+            # → 用户视觉上以为冻结卡又在流。
+            run_id = str(payload.get("run_id") or "")
+            if run_id and run_id in buf.turns:
+                ts = buf.turns[run_id]
+            elif run_id:
+                ts = self._ensure_turn(buf, run_id)
+            else:
+                ts = buf.turns[next(reversed(buf.turns))] if buf.turns else None
         if ts is None or ts.finalized:
             # auto-compact 先于新 run 的第一个 harness 事件触发:
             # 用 payload.run_id 提前建 turn,让 压缩中… 立即出卡。
@@ -449,6 +459,11 @@ class FeishuAdapter(Adapter):
         if isinstance(payload_rows, list):
             ts.draft.buttons = list(payload_rows)
         ts.draft.footer_meta = footer_from_progress(payload)
+        # 冻结 run 的 progress(usage_progress 等)不触发 patch:
+        # 冻结卡视觉应该静止,等 PH 替换或切回。
+        state = self._render_states.get(sid)
+        if state is not None and ts.draft.run_id in state.runs and state.runs[ts.draft.run_id].is_frozen:
+            return
         ts.coalescer.flush(self._make_send(buf, ts, finalize=False))
 
     def _make_send(self, buf: _SessionBuffer, ts: _TurnState, *, finalize: bool):
@@ -461,9 +476,17 @@ class FeishuAdapter(Adapter):
             rid = ts.draft.run_id
             state = self._render_states.get(buf.session_id)
             bg = state.bg_runs() if state is not None else None
-            card = build_card(
-                ts.draft, finalize=finalize, buttons=rows, bg_runs=bg or None,
-            )
+            # 不要把自己列进切回按钮(同 _send_full_card 处理)
+            if bg is not None:
+                bg = [r for r in bg if r.run_id != rid]
+            # 当前 run 已经被冻结(detach 后到达的尾随 coalescer flush):
+            # 直接走 frozen 卡,不要带 stop / switch_back 按钮覆盖回干净的 frozen 状态。
+            if state is not None and rid in state.runs and state.runs[rid].is_frozen:
+                card = build_frozen_ph_card(ts.draft, state.runs[rid].label)
+            else:
+                card = build_card(
+                    ts.draft, finalize=finalize, buttons=rows, bg_runs=bg or None,
+                )
             if ts.message_id is None:
                 ts.message_id = await self._api_sender.send_card(
                     receive_id=buf.chat_id, card=card
@@ -544,7 +567,10 @@ class FeishuAdapter(Adapter):
             return
         if kind == "ph_replaced":
             if rid in state.runs:
-                self._schedule(self._send_full_card(sid, rid, is_new_message=False))
+                # ph_replaced = run 已完成,落定最终卡(无 stop 按钮、无 ⏳)。
+                self._schedule(self._send_full_card(
+                    sid, rid, is_new_message=False, finalize=True,
+                ))
             return
         if kind == "run_completed_bg":
             # ph_replaced already finalized; nothing to do.
@@ -570,7 +596,7 @@ class FeishuAdapter(Adapter):
         await self._api_sender.patch_card(message_id=ts.message_id, card=card)
 
     async def _send_full_card(
-        self, sid: str, rid: str, *, is_new_message: bool
+        self, sid: str, rid: str, *, is_new_message: bool, finalize: bool = False,
     ) -> None:
         buf = self._buffers.get(sid)
         if buf is None or buf.chat_id is None or self._api_sender is None:
@@ -581,7 +607,12 @@ class FeishuAdapter(Adapter):
         # filter out self from bg_runs (foreground should not be in bg list)
         if bg is not None:
             bg = [r for r in bg if r.run_id != rid]
-        card = build_card(ts.draft, finalize=False, bg_runs=bg or None)
+        # ph_replaced(finalize=True)+ run 当前还是冻结(bg)→ "后台已完成"卡;
+        # 不带 stop / 切回按钮,header 显示 ✅ 已完成,和 frozen "🟡 运行中"明显区分。
+        if finalize and state is not None and rid in state.runs and state.runs[rid].is_frozen:
+            card = build_completed_bg_card(ts.draft, state.runs[rid].label)
+        else:
+            card = build_card(ts.draft, finalize=finalize, bg_runs=bg or None)
         if is_new_message or ts.message_id is None:
             ts.message_id = await self._api_sender.send_card(
                 receive_id=buf.chat_id, card=card

@@ -79,24 +79,49 @@ def build_card(
         elements.append({"tag": "markdown", "content": f"<font color='grey'>{meta}</font>"})
     elements.extend(_buttons_elements(draft.buttons if buttons is None else buttons))
     if bg_runs:
-        switch_actions = []
         # Feishu action rows get unwieldy beyond 3 buttons; truncated bg runs remain
         # reachable when their PH replaces the card.
+        cols = []
         for r in list(bg_runs)[:3]:
             label = str(getattr(r, "label", "") or "")[:8]
             rid = str(getattr(r, "run_id", "") or "")
             if not rid:
                 continue
-            switch_actions.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": f"切回 {label}"},
-                "type": "default",
-                "size": "medium",
-                "value": {"action": "switch_foreground", "run_id": rid},
+            cols.append({
+                "tag": "column", "width": "weighted", "weight": 1,
+                "vertical_align": "center",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": f"切回 {label}"},
+                    "type": "default", "size": "medium",
+                    "behaviors": [{
+                        "type": "callback",
+                        "value": {"action": "switch_foreground", "run_id": rid},
+                    }],
+                }],
             })
-        if switch_actions:
-            elements.append({"tag": "action", "actions": switch_actions})
+        if cols:
+            elements.append({"tag": "column_set", "horizontal_spacing": "8px", "columns": cols})
     return {"schema": "2.0", "config": {"width_mode": "fill"}, "body": {"elements": elements}}
+
+
+def build_completed_bg_card(draft: TurnDraft, label: str) -> dict:
+    """PH 替换后的后台完成卡:✅ 后台已完成 chip + 完整内容 + 无 stop / 切回按钮。
+
+    视觉上和"刚切走的冻结卡"明显不同(标题改为"已完成"),避免用户把它当
+    成又开始 streaming 了;同时也和"前台正常 finalize 卡"区分开,告诉用户
+    这是后台跑完没人看的那张。"""
+    card = build_card(draft, finalize=True)
+    card["header"] = {
+        "title": {
+            "tag": "plain_text",
+            "content": f"✅ 后台已完成 · {label}",
+        }
+    }
+    # build_card finalize=True 会保留 model buttons,但后台完成卡也保留(允许
+    # 用户点击模型给的下一步建议)。strip column_set 的 stop / 切回 buttons:
+    # finalize=True 已经没有 stop 了(rows = draft.buttons),不需要再过滤。
+    return card
 
 
 def build_frozen_ph_card(draft: TurnDraft, label: str) -> dict:

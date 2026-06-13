@@ -22,7 +22,12 @@ class AdapterProgressSink(ProgressSink):
     async def report(self, event: ProgressEvent) -> None:
         if event.payload.get("kind") not in _FORWARDED_KINDS:
             return
+        # Stuff run_id into the payload so adapters can route per-turn
+        # (harness 没把 ProgressEvent.run_id 写进 payload; 不补的话 adapter
+        # 端 usage_progress 永远落到 buf.turns 的最后一个 turn,被 detach 的 run
+        # 也会被尾随刷新)。
+        payload = {**event.payload, "run_id": event.run_id} if event.run_id else event.payload
         for adapter in self.adapters.values():
             note = getattr(adapter, "note_progress", None)
             if note is not None:
-                note(event.payload)
+                note(payload)

@@ -96,7 +96,11 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
     async def to_harness_context(self, spec: AgentSpec, request: AgentRequest) -> HarnessContext:
         import uuid
         self._run_counter += 1
-        run_id = f"{request.session_id}-{uuid.uuid4().hex[:8]}"
+        # gateway 把它生成的 run_id 通过 inbound.metadata → request.metadata 传进来,
+        # 这样 adapter 端 _render_states 的 key 和 harness 事件的 run_id 对上。
+        # 没有就 fallback uuid(单测、命令行直接调用 ChatAgent 的场景)。
+        run_id = str(request.metadata.get("gateway_run_id") or
+                     f"{request.session_id}-{uuid.uuid4().hex[:8]}")
         model = self.model
         effort: str | int | None = None
         async_mode = True  # P3 完成,默认 async
