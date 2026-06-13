@@ -9,11 +9,15 @@ async 后台 run 时多个生产者通过同一个 queue 串行化 main 写入�
 from __future__ import annotations
 
 import asyncio
+import time
+import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine, Sequence
 
 from xana.memory.contracts import ActiveContext, HistoryRow, MemoryMessage, Placeholder
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror
+
+_ROLE_TO_KIND = {"user": "user", "assistant": "assistant", "tool": "tool", "system": "system"}
 
 
 @dataclass
@@ -102,11 +106,38 @@ class MainWriter:
         self._queue: asyncio.Queue = asyncio.Queue()
         self._task: asyncio.Task | None = None
         self._closed = False
+        self._broken = False
         self.store: ActiveContextStore = _QueuedActiveContextStore(inner_store, self._enqueue)
         self.mirror: HistoryMirror = _QueuedHistoryMirror(inner_mirror, self._enqueue)
 
     async def _enqueue(self, op: _WriteOp) -> None:
+        if self._broken:
+            raise RuntimeError("MainWriter broken")
         await self._queue.put(op)
+
+    async def enqueue_replace_placeholder(
+        self,
+        *,
+        session_id: str,
+        agent_name: str,
+        run_id: str,
+        replace_with: Sequence[MemoryMessage],
+    ) -> None:
+        msgs = tuple(replace_with)
+        # Enqueue store.replace_placeholder via the wrapped store (same queue).
+        await self.store.replace_placeholder(run_id=run_id, replace_with=msgs)
+        # Then enqueue one mirror.append per message, preserving order.
+        for msg in msgs:
+            row = HistoryRow(
+                row_id=uuid.uuid4().hex[:8],
+                session_id=session_id,
+                agent_name=agent_name,
+                kind=_ROLE_TO_KIND.get(msg.role, "assistant"),
+                payload=msg,
+                ts=time.time(),
+                metadata={"run_id": run_id},
+            )
+            await self.mirror.append(row)
 
     async def start(self) -> None:
         if self._task is not None:
@@ -114,18 +145,34 @@ class MainWriter:
         self._task = asyncio.create_task(self._consume(), name="xana-main-writer")
 
     async def _consume(self) -> None:
-        while True:
-            item = await self._queue.get()
-            if item is self._SENTINEL:
-                return
-            assert isinstance(item, _WriteOp)
+        try:
+            while True:
+                item = await self._queue.get()
+                if item is self._SENTINEL:
+                    return
+                assert isinstance(item, _WriteOp)
+                try:
+                    result = await item.coro_factory()
+                    if not item.fut.done():
+                        item.fut.set_result(result)
+                except Exception as exc:
+                    # Per-op isolation: only this caller's future fails.
+                    if not item.fut.done():
+                        item.fut.set_exception(exc)
+        except BaseException as exc:
+            # Outer loop crashed (cancel / unexpected). Mark broken and
+            # drain any pending ops so their callers do not hang.
+            self._broken = True
             try:
-                result = await item.coro_factory()
-                if not item.fut.done():
-                    item.fut.set_result(result)
-            except Exception as exc:
-                if not item.fut.done():
-                    item.fut.set_exception(exc)
+                while True:
+                    pending = self._queue.get_nowait()
+                    if isinstance(pending, _WriteOp) and not pending.fut.done():
+                        pending.fut.set_exception(
+                            RuntimeError("MainWriter broken: consumer crashed")
+                        )
+            except asyncio.QueueEmpty:
+                pass
+            raise
 
     async def aclose(self) -> None:
         if self._closed:
