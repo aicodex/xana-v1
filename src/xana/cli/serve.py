@@ -122,10 +122,24 @@ async def _run_inbound_pump(adapter: Adapter, gateway) -> None:
     gateway.submit(inbound) already calls adapter.render(event) internally
     (see DefaultAgentGateway._submit) and yields RenderedMessage — so the pump
     just needs to drain that async generator to drive the full pipeline.
+
+    每条 inbound 独立 task,让 gateway 的 detach 逻辑(P4)可以触发:
+    第二条消息到来时,第一条 run 仍在跑——gateway 会把它转后台。
+    串行 pump 会阻塞第二条直到第一条收尾,detach 永远没机会启动。
     """
+    tasks: set[asyncio.Task] = set()
+
+    async def _drain(stream) -> None:
+        try:
+            async for _ in stream:
+                pass
+        except Exception as e:  # noqa: BLE001
+            print(f"[pump] submit drain crashed: {e!r}")
+
     async for inbound in adapter.receive():
-        async for _rendered in gateway.submit(inbound):
-            pass  # gateway already called adapter.render(); nothing more to do
+        t = asyncio.create_task(_drain(gateway.submit(inbound)))
+        tasks.add(t)
+        t.add_done_callback(tasks.discard)
 
 
 def _xana_home() -> Path:
