@@ -172,3 +172,18 @@ def footer_from_progress(payload: dict, *, model: str | None = None) -> list[tup
     if tin:
         pairs.append(_context_pair(tin, payload.get("context_window")))
     return pairs
+
+
+from xana.memory.contracts import MemoryMessage, Placeholder  # noqa: E402
+
+
+def filter_renderable(items):
+    """从 ActiveContext snapshot 里挑出可渲染消息,跳过 Placeholder。
+    任何未来在 adapter 端复现 active context 的路径都应过这道滤网。"""
+    out = []
+    for it in items:
+        if isinstance(it, Placeholder):
+            continue
+        if isinstance(it, MemoryMessage):
+            out.append(it)
+    return out
