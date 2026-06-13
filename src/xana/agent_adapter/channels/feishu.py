@@ -538,9 +538,10 @@ class FeishuAdapter(Adapter):
             return
         if kind == "run_detached":
             run = state.runs.get(rid)
+            if run is None or run.is_frozen:
+                return
             state.detach(rid)
-            if run is not None:
-                self._schedule(self._patch_frozen(sid, rid, run.label))
+            self._schedule(self._patch_frozen(sid, rid, run.label))
             return
         if kind == "foreground_changed":
             prev_fg = state.foreground_run_id

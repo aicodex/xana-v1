@@ -80,6 +80,8 @@ def build_card(
     elements.extend(_buttons_elements(draft.buttons if buttons is None else buttons))
     if bg_runs:
         switch_actions = []
+        # Feishu action rows get unwieldy beyond 3 buttons; truncated bg runs remain
+        # reachable when their PH replaces the card.
         for r in list(bg_runs)[:3]:
             label = str(getattr(r, "label", "") or "")[:8]
             rid = str(getattr(r, "run_id", "") or "")
