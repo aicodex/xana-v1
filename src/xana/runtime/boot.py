@@ -56,8 +56,10 @@ from xana.skills.bundled.schedule import ScheduleSkill
 from xana.skills.bundled.skill_creator import SkillCreatorSkill
 from xana.skills.interfaces import SkillRegistry
 from xana.skills.registry import InMemorySkillRegistry
-from xana.state.in_memory import InMemoryStateRepository
-from xana.state.interfaces import StateRepository
+from xana.memory.main_writer import MainWriter
+from xana.state.file_runs import FileRunStore, RunJsonlWriter
+from xana.state.in_memory import InMemorySessionStore, InMemoryStateRepository
+from xana.state.interfaces import RunStore, SessionStore, StateRepository
 from xana.session_config.file_store import FileSessionConfigStore
 from xana.session_config.interfaces import SessionConfigStore
 from xana.tools.builtin._todo_store import TodoStore
@@ -104,6 +106,16 @@ class BootResult:
     provider: str
     model: str
     scheduler: FileSchedulerService | None = None
+    main_writer: MainWriter | None = None
+    run_jsonl_writer: RunJsonlWriter | None = None
+
+
+class _CompositeStateRepository(StateRepository):
+    def __init__(self, sessions: SessionStore, runs: RunStore) -> None:
+        self._sessions = sessions
+        self._runs = runs
+    def sessions(self) -> SessionStore: return self._sessions
+    def runs(self) -> RunStore: return self._runs
 
 
 async def boot(
@@ -123,13 +135,23 @@ async def boot(
     injector_registry = DefaultMemoryInjectorRegistry()
     await injector_registry.register(injector, priority=100)
 
-    active_ctx = InMemoryActiveContextStore()
+    active_ctx_inner = InMemoryActiveContextStore()
+    main_writer: MainWriter | None = None
+    run_jsonl_writer: RunJsonlWriter | None = None
     mirror: HistoryMirror
+    active_ctx: ActiveContextStore
     if history_root is not None:
-        mirror = FileHistoryMirror(root=Path(history_root))
-        await replay_and_detect_interrupts(mirror, active_ctx, FileMemoryReplayer())
+        history_root = Path(history_root)
+        file_mirror = FileHistoryMirror(root=history_root)
+        await replay_and_detect_interrupts(file_mirror, active_ctx_inner, FileMemoryReplayer())
+        main_writer = MainWriter(inner_store=active_ctx_inner, inner_mirror=file_mirror)
+        await main_writer.start()
+        active_ctx = main_writer.store
+        mirror = main_writer.mirror
+        run_jsonl_writer = RunJsonlWriter(sessions_root=history_root)
     else:
         mirror = InMemoryHistoryMirror()
+        active_ctx = active_ctx_inner
 
     tools = InMemoryToolRegistry()
     await tools.register(MemorySearchTool(engine))
@@ -182,7 +204,12 @@ async def boot(
     model_registry = InMemoryModelRegistry()
     await model_registry.register(provider, client)
 
-    state = InMemoryStateRepository()
+    state: StateRepository
+    if history_root is not None:
+        run_store = FileRunStore(root=history_root.parent / "runs")
+        state = _CompositeStateRepository(sessions=InMemorySessionStore(), runs=run_store)
+    else:
+        state = InMemoryStateRepository()
 
     gateway = DefaultAgentGateway(
         agents={},
@@ -244,6 +271,8 @@ async def boot(
         provider=provider,
         model=model,
         scheduler=scheduler,
+        main_writer=main_writer,
+        run_jsonl_writer=run_jsonl_writer,
     )
 
 
