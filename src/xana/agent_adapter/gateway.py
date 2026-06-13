@@ -127,6 +127,22 @@ class DefaultAgentGateway(AgentGateway):
                 if ir.run_id != new_run.run_id
             ]
 
+    async def switch_foreground(self, session_id: str, target_run_id: str) -> None:
+        runs = self._inflight.get(session_id, [])
+        if not any(ir.run_id == target_run_id for ir in runs):
+            return
+        for ir in runs:
+            ir.detached = (ir.run_id != target_run_id)
+        for ad in self.adapters.values():
+            note = getattr(ad, "note_progress", None)
+            if note is None:
+                continue
+            note({
+                "kind": "foreground_changed",
+                "session_id": session_id,
+                "run_id": target_run_id,
+            })
+
     @staticmethod
     def _notify_run_detached(adapter, session_id: str, ir: "InflightRun") -> None:
         note = getattr(adapter, "note_progress", None)
