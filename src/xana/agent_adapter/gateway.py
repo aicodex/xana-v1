@@ -126,6 +126,15 @@ class DefaultAgentGateway(AgentGateway):
                 ir for ir in self._inflight.get(inbound.session_id, [])
                 if ir.run_id != new_run.run_id
             ]
+            if new_run.detached:
+                # 这个 run 在跑的过程中被新的 submit detach 掉了 → 完成时通知 adapter
+                note = getattr(adapter, "note_progress", None)
+                if note is not None:
+                    note({
+                        "kind": "run_completed_bg",
+                        "session_id": inbound.session_id,
+                        "run_id": new_run.run_id,
+                    })
 
     async def switch_foreground(self, session_id: str, target_run_id: str) -> None:
         runs = self._inflight.get(session_id, [])
