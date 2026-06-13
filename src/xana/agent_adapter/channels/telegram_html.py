@@ -96,17 +96,6 @@ def format_frozen_ph_html(draft: TurnDraft, label: str) -> str:
     return clip_html("\n\n".join(parts))
 
 
-def format_pure_answer_html(draft: TurnDraft) -> str:
-    """后台 run 完成时推的"不抢焦点消息":去掉 thinking/工具折叠块,
-    只保留回答正文(+ 脚标,若有)。对称 feishu build_pure_answer_card。"""
-    parts: list[str] = []
-    if draft.content:
-        parts.append(md_to_html(draft.content))
-    if draft.footer_meta:
-        parts.append(_footer_html(draft.footer_meta))
-    return clip_html("\n".join(parts).strip() or " ")
-
-
 def _markup_button(b: dict, r: int, c: int) -> dict:
     """send 型 → callback_data='btn:{r}:{c}'(64 字节限制;真实文本 adapter 按轮反查);
     copy 型 → Bot API copyTextButton(无 callback_data,TG 客户端本地复制到输入框)。"""

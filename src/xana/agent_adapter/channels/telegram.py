@@ -41,7 +41,6 @@ from xana.agent_adapter.channels._throttle import DraftCoalescer
 from xana.agent_adapter.channels.telegram_html import (
     buttons_to_reply_markup,
     format_frozen_ph_html,
-    format_pure_answer_html,
     render_answer,
     render_streaming,
     render_thinking,
@@ -142,7 +141,6 @@ class _SessionBuffer:
     chat_id: str | None = None
     session_id: str = ""
     turns: "OrderedDict[str, _TurnState]" = field(default_factory=OrderedDict)
-    started_as_detached: dict[str, bool] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -673,9 +671,6 @@ class TelegramAdapter(Adapter):
             if run is None or run.is_frozen:
                 return
             state.detach(rid)
-            buf = self._buffers.get(sid)
-            if buf is not None:
-                buf.started_as_detached[rid] = True
             self._schedule(self._patch_frozen_tg(sid, rid, run.label))
             return
         if kind == "foreground_changed":
@@ -856,14 +851,6 @@ class TelegramAdapter(Adapter):
             if buf.chat_id is None or self._api_client is None:
                 return
             markup = buttons_to_reply_markup(ts.draft.buttons)
-            # 后台 run 完成 → 纯回答消息(无 thinking/工具),不抢焦点。
-            if buf.started_as_detached.get(ts.draft.run_id, False):
-                pure = format_pure_answer_html(ts.draft)
-                await self._api_client.send_message(
-                    chat_id=buf.chat_id, text=pure,
-                    parse_mode="HTML", reply_markup=markup,
-                )
-                return
             answer = render_answer(ts.draft)
             has_answer = bool(answer.strip())
             if ts.draft.thinking_title:

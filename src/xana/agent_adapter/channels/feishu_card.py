@@ -116,30 +116,6 @@ def build_frozen_ph_card(draft: TurnDraft, label: str) -> dict:
     return card
 
 
-def build_pure_answer_card(draft: TurnDraft) -> dict:
-    """后台 run 完成 → 不抢焦点的纯回答卡。
-
-    与 build_card(finalize=True) 同 schema/config/body 结构,但剥离
-    thinking 折叠面板和工具调用折叠面板,只保留:
-        [markdown: 回答正文]
-        [hr + 灰字脚标]      (若 draft.footer_meta 非空)
-        [column_set × N: 按钮]  (若 draft.buttons 非空)
-    用于 detached run 的 finalize:用户已经把视线从这个 run 移开,
-    不希望再次弹出 thinking/工具 panel 把卡片重新拉满。
-    """
-    elements: list[dict] = []
-    if draft.content:
-        elements.append({"tag": "markdown", "content": draft.content})
-    else:
-        elements.append({"tag": "markdown", "content": " "})  # 飞书拒绝空 markdown
-    if draft.footer_meta:
-        elements.append({"tag": "hr"})
-        meta = " | ".join(f"{k}: {v}" for k, v in draft.footer_meta)
-        elements.append({"tag": "markdown", "content": f"<font color='grey'>{meta}</font>"})
-    elements.extend(_buttons_elements(draft.buttons))
-    return {"schema": "2.0", "config": {"width_mode": "fill"}, "body": {"elements": elements}}
-
-
 def _buttons_elements(rows: list[list[dict]]) -> list[dict]:
     """逐行移植 yuxu _draft_buttons_to_feishu(feishu.py:538-586):每行一个
     column_set,cell 为 weighted column 包一个 button,点击回调携带 send_text。"""

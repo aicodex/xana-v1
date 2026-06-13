@@ -30,7 +30,6 @@ from xana.agent_adapter.channels._throttle import DraftCoalescer
 from xana.agent_adapter.channels.feishu_card import (
     build_card,
     build_frozen_ph_card,
-    build_pure_answer_card,
 )
 from xana.agent_adapter.channels.feishu_events import parse_message_event
 from xana.agent_adapter.contracts import (
@@ -96,11 +95,6 @@ class _SessionBuffer:
     chat_id: str | None = None
     session_id: str = ""
     turns: "OrderedDict[str, _TurnState]" = field(default_factory=OrderedDict)
-    # Phase 4 Task 6: run_id → 该 run 是否曾被切到后台(收到过 run_detached)。
-    # finalize 时若为 True,渲染纯回答卡(不抢焦点),否则用常规 finalize 卡。
-    # Phase 4 / Task 4: 新 PH 状态机已不再设置此字段(由 SessionRenderState 取代);
-    # 保留以维持 build_pure_answer_card 现有兼容路径,Task 9 一并清理。
-    started_as_detached: dict[str, bool] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -467,14 +461,9 @@ class FeishuAdapter(Adapter):
             rid = ts.draft.run_id
             state = self._render_states.get(buf.session_id)
             bg = state.bg_runs() if state is not None else None
-            # Task 6 旧逻辑:detached run finalize → 纯回答卡(Task 9 计划清理)。
-            # 新 PH 状态机的 ph_replaced 分支会单独处理 finalize,这里保持向后兼容。
-            if finalize and rid and buf.started_as_detached.get(rid, False):
-                card = build_pure_answer_card(ts.draft)
-            else:
-                card = build_card(
-                    ts.draft, finalize=finalize, buttons=rows, bg_runs=bg or None,
-                )
+            card = build_card(
+                ts.draft, finalize=finalize, buttons=rows, bg_runs=bg or None,
+            )
             if ts.message_id is None:
                 ts.message_id = await self._api_sender.send_card(
                     receive_id=buf.chat_id, card=card
