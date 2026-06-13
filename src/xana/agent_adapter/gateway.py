@@ -78,7 +78,11 @@ class DefaultAgentGateway(AgentGateway):
                     inbound, metadata={**inbound.metadata, "command_run_id": run_id}
                 )
             cmd_result = await self.command_router.route_command(enriched)
-            if cmd_result.ok or not cmd_result.payload.get("pass_through", False):
+            if cmd_result.payload.get("triggers_turn", False):
+                # Turn-triggering command (e.g. /compact): falls through to the
+                # regular agent loop so it gets inflight tracking + detach semantics.
+                pass
+            elif cmd_result.ok or not cmd_result.payload.get("pass_through", False):
                 # silent 结果(/compact_cancel)不渲染卡片,直接结束。
                 if cmd_result.payload.get("silent"):
                     return
@@ -126,15 +130,36 @@ class DefaultAgentGateway(AgentGateway):
                 ir for ir in self._inflight.get(inbound.session_id, [])
                 if ir.run_id != new_run.run_id
             ]
-            if new_run.detached:
-                # 这个 run 在跑的过程中被新的 submit detach 掉了 → 完成时通知 adapter
-                note = getattr(adapter, "note_progress", None)
-                if note is not None:
+            note = getattr(adapter, "note_progress", None)
+            if note is not None:
+                note({
+                    "kind": "ph_replaced",
+                    "session_id": inbound.session_id,
+                    "run_id": new_run.run_id,
+                    "mode": "full",
+                })
+                if new_run.detached:
+                    # 这个 run 在跑的过程中被新的 submit detach 掉了 → 完成时通知 adapter
                     note({
                         "kind": "run_completed_bg",
                         "session_id": inbound.session_id,
                         "run_id": new_run.run_id,
                     })
+
+    async def start_compact(self, session_id: str, fork_point: int) -> None:
+        """Trigger a compact run. Stub: emits start/finalize events without running compact.
+        Real compact execution wired in Task 8."""
+        adapter_id = next(iter(self.adapters), None)
+        if adapter_id is None:
+            return
+        adapter = self.adapters[adapter_id]
+        note = getattr(adapter, "note_progress", None)
+        if note is None:
+            return
+        self._run_seq += 1
+        rid = f"compact-{session_id}-{self._run_seq}"
+        note({"kind": "compact_started", "session_id": session_id, "run_id": rid, "fork_point": fork_point})
+        note({"kind": "compact_finalized", "session_id": session_id, "run_id": rid, "summary": ""})
 
     async def switch_foreground(self, session_id: str, target_run_id: str) -> None:
         runs = self._inflight.get(session_id, [])
