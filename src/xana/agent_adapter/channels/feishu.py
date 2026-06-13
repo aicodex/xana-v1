@@ -26,7 +26,7 @@ from xana.agent_adapter.channels._draft import (
 )
 from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels._throttle import DraftCoalescer
-from xana.agent_adapter.channels.feishu_card import build_card
+from xana.agent_adapter.channels.feishu_card import build_card, build_pure_answer_card
 from xana.agent_adapter.channels.feishu_events import parse_message_event
 from xana.agent_adapter.contracts import (
     AdapterHealth,
@@ -90,6 +90,9 @@ class _TurnState:
 class _SessionBuffer:
     chat_id: str | None = None
     turns: "OrderedDict[str, _TurnState]" = field(default_factory=OrderedDict)
+    # Phase 4 Task 6: run_id → 该 run 是否曾被切到后台(收到过 run_detached)。
+    # finalize 时若为 True,渲染纯回答卡(不抢焦点),否则用常规 finalize 卡。
+    started_as_detached: dict[str, bool] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +358,14 @@ class FeishuAdapter(Adapter):
                 buf.turns.popitem(last=False)
         return ts
 
+    def note_run_detached(self, session_id: str, run_id: str) -> None:
+        """Phase 4 Task 6: mark a run as detached so its finalize renders
+        the pure-answer (non-attention-grabbing) card."""
+        buf = self._buffers.get(session_id)
+        if buf is None or not run_id:
+            return
+        buf.started_as_detached[run_id] = True
+
     def note_progress(self, payload: dict) -> None:
         """AdapterProgressSink hook(sync):usage_progress / compact_progress /
         command_progress 实时刷新当前 turn。_last_progress 只存 usage_progress,
@@ -363,6 +374,11 @@ class FeishuAdapter(Adapter):
             self._last_progress = dict(payload)
         buf = self._buffers.get(str(payload.get("session_id") or ""))
         if buf is None:
+            return
+        if payload.get("kind") == "run_detached":
+            run_id = str(payload.get("run_id") or "")
+            if run_id:
+                buf.started_as_detached[run_id] = True
             return
         if payload.get("kind") == "command_progress":
             # 命令卡始终按 payload.run_id 取/建,绝不落到当前活跃 harness turn(避免冲掉流式正文)
@@ -402,7 +418,12 @@ class FeishuAdapter(Adapter):
                 return
             # 流式期间无模型按钮 → 合成 ⏹ 停止;finalize 用 extract_buttons 结果
             rows = ts.draft.buttons or ([] if finalize else STOP_BUTTON_ROWS)
-            card = build_card(ts.draft, finalize=finalize, buttons=rows)
+            # Phase 4 Task 6: detached run finalize → 纯回答卡(不抢焦点)
+            rid = ts.draft.run_id
+            if finalize and rid and buf.started_as_detached.get(rid, False):
+                card = build_pure_answer_card(ts.draft)
+            else:
+                card = build_card(ts.draft, finalize=finalize, buttons=rows)
             if ts.message_id is None:
                 ts.message_id = await self._api_sender.send_card(
                     receive_id=buf.chat_id, card=card
