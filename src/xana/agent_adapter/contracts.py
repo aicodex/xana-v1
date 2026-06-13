@@ -69,3 +69,16 @@ class AdapterHealth:
     adapter_id: str
     status: AdapterHealthStatus
     details: dict[str, Any] = field(default_factory=dict)
+
+
+import asyncio as _asyncio
+
+
+@dataclass
+class InflightRun:
+    """Gateway 侧 per-run 追踪。非 frozen——detached 字段可变。"""
+    session_id: str
+    run_id: str
+    label: str
+    task: "_asyncio.Task[Any] | None" = None
+    detached: bool = False

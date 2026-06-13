@@ -6,6 +6,7 @@ from typing import AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.contracts import (
     InboundMessage,
+    InflightRun,
     RenderedMessage,
     SessionBinding,
 )
@@ -32,6 +33,8 @@ class DefaultAgentGateway(AgentGateway):
         self.bindings: dict[str, SessionBinding] = {}
         self._cancel_flags: dict[str, bool] = {}
         self._cmd_seq = 0
+        self._inflight: dict[str, list[InflightRun]] = {}  # session_id → 倒序(新在前)
+        self._run_seq = 0
 
     async def register_adapter(self, adapter_id: str, adapter: Adapter) -> None:
         self.adapters[adapter_id] = adapter
@@ -98,13 +101,43 @@ class DefaultAgentGateway(AgentGateway):
                 metadata={"event_kind": "error"},
             )
             return
-        self.clear_cancel(inbound.session_id)
-        async for event in agent.send(request):
-            rendered = await adapter.render(event)
-            yield self._attach_event_kind(rendered, event)
-            if self._cancel_flags.get(inbound.session_id):
-                break
-        self.clear_cancel(inbound.session_id)
+        # 旧 run 转后台 —— 不 cancel,只标 detached,并通知 adapter 刷 tab。
+        existing = self._inflight.get(inbound.session_id, [])
+        for ir in existing:
+            if not ir.detached:
+                ir.detached = True
+                self._notify_run_detached(adapter, inbound.session_id, ir)
+
+        self._run_seq += 1
+        new_run = InflightRun(
+            session_id=inbound.session_id,
+            run_id=f"run-{inbound.session_id}-{self._run_seq}",
+            label=(inbound.text or "").strip()[:40] or "run",
+        )
+        self._inflight.setdefault(inbound.session_id, []).insert(0, new_run)
+        try:
+            async for event in agent.send(request):
+                rendered = await adapter.render(event)
+                yield self._attach_event_kind(rendered, event)
+                if event.kind in ("final", "error", "cancelled"):
+                    break
+        finally:
+            self._inflight[inbound.session_id] = [
+                ir for ir in self._inflight.get(inbound.session_id, [])
+                if ir.run_id != new_run.run_id
+            ]
+
+    @staticmethod
+    def _notify_run_detached(adapter, session_id: str, ir: "InflightRun") -> None:
+        note = getattr(adapter, "note_progress", None)
+        if note is None:
+            return
+        note({
+            "kind": "run_detached",
+            "session_id": session_id,
+            "run_id": ir.run_id,
+            "label": ir.label,
+        })
 
     @staticmethod
     def _notify_command_card(adapter: Adapter, inbound: InboundMessage, run_id: str) -> None:
