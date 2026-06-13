@@ -149,8 +149,9 @@ class DefaultAgentGateway(AgentGateway):
     async def start_compact(self, session_id: str, fork_point: int) -> None:
         """Trigger a compact run. Stub: emits start/finalize events without running compact.
         Real compact execution wired in Task 8."""
-        adapter_id = next(iter(self.adapters), None)
-        if adapter_id is None:
+        binding = self.bindings.get(session_id)
+        adapter_id = binding.adapter_id if binding else next(iter(self.adapters), None)
+        if adapter_id is None or adapter_id not in self.adapters:
             return
         adapter = self.adapters[adapter_id]
         note = getattr(adapter, "note_progress", None)
