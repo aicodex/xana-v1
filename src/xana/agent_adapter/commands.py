@@ -117,10 +117,12 @@ class DefaultCommandRouter(CommandRouter):
         lines = ["可用命令:"]
         for spec in self._specs:
             lines.append(f"  {spec.name:<20} {spec.description}")
-        # 每个命令一个 copy 按钮(点击≠执行,只把命令名放进输入/剪贴板),2 列/行。
-        copies = [{"text": spec.name, "copy": spec.name} for spec in self._specs]
-        rows = [copies[i:i + 2] for i in range(0, len(copies), 2)]
-        return CommandResult(ok=True, message="\n".join(lines), payload={"buttons": rows})
+        # 命令名在 TG 正文里本身可点击发送 → 设 linkify_commands,TG 隐去按钮。
+        # 飞书 markdown 无内联点击发送能力,只能用按钮(send 型,点击即发命令)。
+        sends = [{"text": spec.name, "send": spec.name} for spec in self._specs]
+        rows = [sends[i:i + 2] for i in range(0, len(sends), 2)]
+        return CommandResult(ok=True, message="\n".join(lines),
+                             payload={"buttons": rows, "linkify_commands": True})
 
     async def _cmd_clear(self, inbound: InboundMessage, args: str) -> CommandResult:
         if self.active_context_store is None:

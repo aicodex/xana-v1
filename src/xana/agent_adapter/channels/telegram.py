@@ -426,8 +426,12 @@ class TelegramAdapter(Adapter):
                 ts.draft.thinking = str(payload["thinking"])
                 ts.draft.thinking_title = str(payload["thinking_title"])
             ts.draft.content, extracted = extract_buttons(ts.draft.content)
-            # payload 行优先,与正文标记解析的结果并存(payload 在前)
-            payload_rows = payload.get("buttons")
+            # payload 行优先,与正文标记解析的结果并存(payload 在前)。
+            # linkify_commands:正文里的 /命令 在 TG 本就可点击发送 → 不重复出按钮。
+            if payload.get("linkify_commands"):
+                payload_rows = None
+            else:
+                payload_rows = payload.get("buttons")
             ts.draft.buttons = (list(payload_rows) if isinstance(payload_rows, list) else []) + extracted
             ts.last_buttons = ts.draft.buttons
             usage = event.harness_event.usage if event.harness_event else None
