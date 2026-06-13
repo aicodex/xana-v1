@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass, field
 
 from xana.agent_adapter._tool_titles import tool_header
+from xana.memory.contracts import MemoryMessage, Placeholder
 
 CONTEXT_BUDGET_TOKENS = 967_000  # fallback;真实预算来自 usage_progress payload 的 context_window
 
@@ -172,9 +173,6 @@ def footer_from_progress(payload: dict, *, model: str | None = None) -> list[tup
     if tin:
         pairs.append(_context_pair(tin, payload.get("context_window")))
     return pairs
-
-
-from xana.memory.contracts import MemoryMessage, Placeholder  # noqa: E402
 
 
 def filter_renderable(items):
