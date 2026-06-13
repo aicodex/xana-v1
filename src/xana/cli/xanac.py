@@ -38,6 +38,22 @@ async def _run(args: argparse.Namespace) -> int:
         await adapter.start()
         await boot_result.gateway.register_adapter("cli", adapter)
 
+        # xanac is a oneshot/REPL stdin-stdout client — the async (PH +
+        # background task) path would let invoke return before any text was
+        # rendered. Force sync mode on this session, persisted via the
+        # session config store so the request mapper picks it up.
+        from xana.session_config.contracts import SessionConfig
+        cur = await boot_result.session_config_store.get(args.session)
+        if cur.async_mode:
+            await boot_result.session_config_store.save(
+                SessionConfig(
+                    session_id=cur.session_id, model=cur.model, effort=cur.effort,
+                    streaming=cur.streaming, thinking=cur.thinking,
+                    search_provider=cur.search_provider, project_root=cur.project_root,
+                    async_mode=False, metadata=dict(cur.metadata),
+                )
+            )
+
         text = " ".join(args.text).strip()
         if not text and not args.interactive:
             # Default to interactive when no text supplied (cc-style).

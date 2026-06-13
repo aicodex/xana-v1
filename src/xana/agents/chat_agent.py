@@ -63,10 +63,14 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         context_window: int | None = None,
         force_compact: int | None = None,
         model_thresholds: dict[str, tuple[int, int]] | None = None,
+        main_writer: Any = None,
+        run_jsonl_writer: Any = None,
     ) -> None:
         self.context_window = context_window
         self.force_compact = force_compact
         self.model_thresholds = model_thresholds
+        self.main_writer = main_writer
+        self.run_jsonl_writer = run_jsonl_writer
         self.active_context_store = active_context_store
         self.history_mirror = history_mirror
         self.memory_injector_registry = memory_injector_registry
@@ -120,6 +124,11 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
                 "thinking": cfg.thinking,
                 "search_provider": cfg.search_provider,
             })
+        metadata: dict[str, Any] = {}
+        if self.main_writer is not None:
+            metadata["main_writer"] = self.main_writer
+        if self.run_jsonl_writer is not None:
+            metadata["run_jsonl_writer"] = self.run_jsonl_writer
         return HarnessContext(
             session_id=request.session_id,
             agent_name=spec.component.name,
@@ -138,6 +147,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             config_snapshot=config_snapshot,
             progress_sink=self.progress_sink,
             async_mode=async_mode,
+            metadata=metadata,
         )
 
 
@@ -180,6 +190,8 @@ class ChatAgent(Agent):
         context_window: int | None = None,
         force_compact: int | None = None,
         model_thresholds: dict[str, tuple[int, int]] | None = None,
+        main_writer: Any = None,
+        run_jsonl_writer: Any = None,
     ) -> None:
         self._spec = spec
         self.harness = harness
@@ -200,6 +212,8 @@ class ChatAgent(Agent):
             context_window=context_window,
             force_compact=force_compact,
             model_thresholds=model_thresholds,
+            main_writer=main_writer,
+            run_jsonl_writer=run_jsonl_writer,
         )
         self.event_mapper = DefaultAgentEventMapper()
         self._pending_cancel_sessions: set[str] = set()

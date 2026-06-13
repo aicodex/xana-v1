@@ -236,6 +236,8 @@ async def boot(
         context_window=runtime_config.default_model.context_window,
         force_compact=runtime_config.default_model.force_compact,
         model_thresholds=model_thresholds,
+        main_writer=main_writer,
+        run_jsonl_writer=run_jsonl_writer,
     )
 
     gateway.agents["chat"] = chat_agent
