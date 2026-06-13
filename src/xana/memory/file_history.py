@@ -11,8 +11,8 @@ import json
 import logging
 from pathlib import Path
 
-from xana.memory.contracts import HistoryRow, MemoryMessage, ReplayResult
-from xana.memory.interfaces import HistoryMirror
+from xana.memory.contracts import ActiveContext, HistoryRow, MemoryMessage, ReplayResult
+from xana.memory.interfaces import ActiveContextStore, HistoryMirror, MemoryReplayer
 
 _logger = logging.getLogger(__name__)
 
@@ -84,3 +84,32 @@ class FileHistoryMirror(HistoryMirror):
         rows = await self.read_rows()
         sessions = {r.session_id for r in rows}
         return ReplayResult(loaded_sessions=len(sessions), loaded_rows=len(rows))
+
+
+class FileMemoryReplayer(MemoryReplayer):
+    """读 mirror 全部行，按 (session_id, agent_name) 分组重建 ActiveContext。
+
+    依赖 mirror 暴露 async read_rows()（FileHistoryMirror / InMemory 均可加）；
+    没有该方法的 mirror 视为无可恢复内容。
+    """
+
+    async def rebuild_active_context(
+        self, mirror: HistoryMirror, store: ActiveContextStore
+    ) -> ReplayResult:
+        read_rows = getattr(mirror, "read_rows", None)
+        if read_rows is None:
+            return ReplayResult(loaded_sessions=0, loaded_rows=0)
+        rows = await read_rows()
+        grouped: dict[tuple[str, str], list[MemoryMessage]] = {}
+        for row in rows:
+            grouped.setdefault((row.session_id, row.agent_name), []).append(row.payload)
+        for (session_id, agent_name), msgs in grouped.items():
+            await store.set(
+                ActiveContext(
+                    session_id=session_id,
+                    agent_name=agent_name,
+                    messages=tuple(msgs),
+                    token_estimate=sum(len(m.content) for m in msgs),
+                )
+            )
+        return ReplayResult(loaded_sessions=len(grouped), loaded_rows=len(rows))
