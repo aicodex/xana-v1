@@ -94,6 +94,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         run_id = f"{request.session_id}-{self._run_counter}"
         model = self.model
         effort: str | int | None = None
+        async_mode = True  # ChatAgent covers Harness's default False
         cfg = None
         if self.session_config_store is not None:
             cfg = await self.session_config_store.get(request.session_id)
@@ -101,6 +102,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
                 model = cfg.model
             if cfg.effort is not None:
                 effort = cfg.effort
+            async_mode = cfg.async_mode
         ctx_win, force_at = self.context_window, self.force_compact
         if self.model_thresholds and model in self.model_thresholds:
             ctx_win, force_at = self.model_thresholds[model]
@@ -110,6 +112,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             "force_compact": force_at,
             "agent_identity": spec.identity,
             "agent_system_prompt": spec.system_prompt,
+            "async_mode": async_mode,
         }
         if cfg is not None:
             config_snapshot.update({
@@ -134,6 +137,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             model_registry=self.model_registry,
             config_snapshot=config_snapshot,
             progress_sink=self.progress_sink,
+            async_mode=async_mode,
         )
 
 
