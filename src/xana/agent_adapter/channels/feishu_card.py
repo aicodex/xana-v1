@@ -56,13 +56,8 @@ def build_card(
     *,
     finalize: bool = False,
     buttons: list[list[dict]] | None = None,
-    bg_runs: list | None = None,
 ) -> dict:
-    """buttons=None → 用 draft.buttons;显式传入(如流式停止按钮)则覆盖。
-
-    bg_runs:非 foreground 的 run 列表(RunRenderState 鸭子类型,需要 .run_id/.label)。
-    非空时在卡片末尾追加一行 "切回 <label>" 按钮(最多 3 个,回调
-    携带 {"action":"switch_foreground","run_id":...})。"""
+    """buttons=None → 用 draft.buttons;显式传入(如流式停止按钮)则覆盖。"""
     elements: list[dict] = []
     if draft.thinking or draft.thinking_title:
         # thinking_title 非空时即使正文为空也出面板(/compact 卡片布局从第一帧起不跳变)
@@ -78,50 +73,88 @@ def build_card(
         meta = " | ".join(f"{k}: {v}" for k, v in draft.footer_meta)
         elements.append({"tag": "markdown", "content": f"<font color='grey'>{meta}</font>"})
     elements.extend(_buttons_elements(draft.buttons if buttons is None else buttons))
-    if bg_runs:
-        # Feishu action rows get unwieldy beyond 3 buttons; truncated bg runs remain
-        # reachable when their PH replaces the card.
-        cols = []
-        for r in list(bg_runs)[:3]:
-            label = str(getattr(r, "label", "") or "")[:8]
-            rid = str(getattr(r, "run_id", "") or "")
-            if not rid:
-                continue
-            cols.append({
-                "tag": "column", "width": "weighted", "weight": 1,
-                "vertical_align": "center",
-                "elements": [{
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": f"切回 {label}"},
-                    "type": "default", "size": "medium",
-                    "behaviors": [{
-                        "type": "callback",
-                        "value": {"action": "switch_foreground", "run_id": rid},
-                    }],
-                }],
-            })
-        if cols:
-            elements.append({"tag": "column_set", "horizontal_spacing": "8px", "columns": cols})
     return {"schema": "2.0", "config": {"width_mode": "fill"}, "body": {"elements": elements}}
 
 
-def build_completed_bg_card(draft: TurnDraft, label: str) -> dict:
-    """PH 替换后的后台完成卡:✅ 后台已完成 chip + 完整内容 + 无 stop / 切回按钮。
+_FG_TOP_CONTROLS = {
+    "tag": "column_set",
+    "horizontal_spacing": "8px",
+    "columns": [
+        {
+            "tag": "column", "width": "weighted", "weight": 1,
+            "vertical_align": "center",
+            "elements": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "⏹ 停止"},
+                "type": "default", "size": "medium",
+                "behaviors": [{
+                    "type": "callback",
+                    "value": {"action": "stop_foreground"},
+                }],
+            }],
+        },
+        {
+            "tag": "column", "width": "weighted", "weight": 1,
+            "vertical_align": "center",
+            "elements": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "➡ 后台"},
+                "type": "default", "size": "medium",
+                "behaviors": [{
+                    "type": "callback",
+                    "value": {"action": "detach_foreground"},
+                }],
+            }],
+        },
+    ],
+}
 
-    视觉上和"刚切走的冻结卡"明显不同(标题改为"已完成"),避免用户把它当
-    成又开始 streaming 了;同时也和"前台正常 finalize 卡"区分开,告诉用户
-    这是后台跑完没人看的那张。"""
-    card = build_card(draft, finalize=True)
-    card["header"] = {
-        "title": {
-            "tag": "plain_text",
-            "content": f"✅ 后台已完成 · {label}",
-        }
-    }
-    # build_card finalize=True 会保留 model buttons,但后台完成卡也保留(允许
-    # 用户点击模型给的下一步建议)。strip column_set 的 stop / 切回 buttons:
-    # finalize=True 已经没有 stop 了(rows = draft.buttons),不需要再过滤。
+
+def build_fg_streaming_card(draft: TurnDraft, *, finalize: bool = False) -> dict:
+    """fg streaming card: 顶部固定 [⏹ 停止][➡ 后台] 控制行 + 现有 P4 body。
+
+    finalize=True 时不带顶部控制行(run 已 final/freeze),只保留 body。"""
+    card = build_card(draft, finalize=finalize)
+    if not finalize:
+        card["body"]["elements"].insert(0, _FG_TOP_CONTROLS)
     return card
+
+
+def build_bg_placeholder_card(
+    *,
+    label: str,
+    state: str,
+    progress_pct: int,
+    panel_md: str,
+    compacted_n: int = 0,
+) -> dict:
+    """bg placeholder fold card: header 状态 chip + 文本进度条 + 折叠内容面板。
+
+    state: "running" | "compacting" | "completed" | "cancelled" | "failed"
+    无任何按钮 — 操作通过 /attach 命令完成。"""
+    titles = {
+        "running": f"🟡 正在后台 · {label}",
+        "compacting": f"🌀 正在压缩… · {label}",
+        "completed": f"✅ 回答完成 · {label}",
+        "cancelled": f"🛑 已取消 · {label}",
+        "failed": f"✖ 失败 · {label}",
+    }
+    title = titles.get(state, f"· {label}")
+    if compacted_n > 0 and state in ("running", "completed"):
+        title = f"已压缩 {compacted_n} 条 · " + title
+    pct = max(0, min(100, int(progress_pct)))
+    filled = pct // 10
+    bar = "▰" * filled + "▱" * (10 - filled)
+    return {
+        "schema": "2.0",
+        "config": {"width_mode": "fill"},
+        "header": {"title": {"tag": "plain_text", "content": title}},
+        "body": {"elements": [
+            {"tag": "markdown",
+             "content": f"<font color='grey'>{bar} {pct}%</font>"},
+            _panel("详情", panel_md or " "),
+        ]},
+    }
 
 
 def build_frozen_ph_card(draft: TurnDraft, label: str) -> dict:

@@ -18,19 +18,18 @@ from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.channels._bindings import BindingStore
 from xana.agent_adapter.channels._draft import (
-    STOP_BUTTON_ROWS,
     TurnDraft,
     build_footer_meta,
     extract_buttons,
     footer_from_progress,
 )
 from xana.agent_adapter.channels._pairing import PairingStore
-from xana.agent_adapter.channels._render_state import RunRenderState, SessionRenderState
+from xana.agent_adapter.channels._render_state import BgCardState, SessionRenderState
 from xana.agent_adapter.channels._throttle import DraftCoalescer
 from xana.agent_adapter.channels.feishu_card import (
+    build_bg_placeholder_card,
     build_card,
-    build_completed_bg_card,
-    build_frozen_ph_card,
+    build_fg_streaming_card,
 )
 from xana.agent_adapter.channels.feishu_events import parse_message_event
 from xana.agent_adapter.contracts import (
@@ -43,6 +42,22 @@ from xana.agent_adapter.interfaces import Adapter
 from xana.agents.contracts import AgentEvent
 
 _MAX_TURNS_KEPT = 4
+
+
+def _bg_panel_md(draft: TurnDraft) -> str:
+    """Markdown for the bg card's collapsible content.
+
+    Concatenates thinking + tool blocks + answer into a compact view used by
+    the bg placeholder card (Group E dual-card model)."""
+    parts: list[str] = []
+    if draft.thinking:
+        parts.append(f"**思考**\n{draft.thinking}")
+    for blk in draft.tool_blocks:
+        body = (blk.result or "⏳")[:500]
+        parts.append(f"**{blk.header()}**\n{body}")
+    if draft.content:
+        parts.append(f"**回答**\n{draft.content}")
+    return "\n\n".join(parts) if parts else "正在后台运行…"
 
 
 # ---------------------------------------------------------------------------
@@ -232,14 +247,38 @@ class FeishuAdapter(Adapter):
         gateway.switch_foreground() instead of the inbound queue."""
         value = (event.get("action") or {}).get("value", {}) or {}
         chat_id = str((event.get("context") or {}).get("open_chat_id", "") or "")
-        # PH attach action (was: switch_foreground)
-        if str(value.get("action", "")) in ("switch_foreground", "attach_run"):
+        action = str(value.get("action", "") or "")
+        # PH attach action (legacy switch_foreground alias + new attach_run)
+        if action in ("switch_foreground", "attach_run"):
             target_run_id = str(value.get("run_id", "") or "")
             if not target_run_id or not chat_id or self._gateway is None:
                 return
             session_id = self._bindings.allocate(chat_id, prefix="feishu")
             try:
                 await self._gateway.attach(session_id, target_run_id)
+            except Exception:
+                pass
+            return
+        # Group E: fg streaming card top controls.
+        if action == "stop_foreground":
+            if not chat_id or self._gateway is None:
+                return
+            session_id = self._bindings.allocate(chat_id, prefix="feishu")
+            runs = getattr(self._gateway, "_inflight", {}).get(session_id, [])
+            fg = next((ir for ir in runs if getattr(ir, "is_attached", False)), None)
+            if fg is None:
+                return
+            try:
+                await self._gateway.cancel(session_id, fg.run_id)
+            except Exception:
+                pass
+            return
+        if action == "detach_foreground":
+            if not chat_id or self._gateway is None:
+                return
+            session_id = self._bindings.allocate(chat_id, prefix="feishu")
+            try:
+                await self._gateway.detach_foreground(session_id)
             except Exception:
                 pass
             return
@@ -289,10 +328,14 @@ class FeishuAdapter(Adapter):
         # Phase 4 / Task 4: 冻结的后台 run 仍要在 draft 上累积事件
         # (ph_replaced 时一次性出全卡),但不发任何 patch。
         state = self._render_states.get(event.session_id)
-        # ts.draft.run_id 由 _turn_for/_ensure_turn 兜底,比从 event payload/harness
-        # 重新抽 run_id 更可靠(final 事件 payload 没有 run_id,会漏掉冻结判断,
-        # 导致 coalescer.finalize 把冻结卡刷回流式)。
+        # Dual-card (Group E): only the fg run is allowed to patch its streaming
+        # card. Any event whose run_id != fg_run_id accumulates into draft only;
+        # ph_replaced will materialize a bg "completed" card later.
         rid_for_freeze = ts.draft.run_id
+        if state is not None and state.fg_run_id is not None and rid_for_freeze != state.fg_run_id:
+            return await self._render_into_draft_only(event, ts)
+        # Legacy fallback for code paths that still set is_frozen without
+        # going through the PH state machine (kept for back-compat).
         if state is not None and rid_for_freeze in state.runs and state.runs[rid_for_freeze].is_frozen:
             return await self._render_into_draft_only(event, ts)
         hkind = self._harness_kind(event)
@@ -413,8 +456,8 @@ class FeishuAdapter(Adapter):
         if kind == "usage_progress":
             self._last_progress = dict(payload)
         sid = str(payload.get("session_id") or "")
-        if kind in ("run_started", "run_detached", "foreground_changed",
-                    "ph_replaced", "run_completed_bg"):
+        if kind in ("run_started", "run_detached", "attached",
+                    "foreground_changed", "ph_replaced", "run_completed_bg"):
             self._handle_ph_event(sid, payload)
             return
         buf = self._buffers.get(sid)
@@ -459,10 +502,14 @@ class FeishuAdapter(Adapter):
         if isinstance(payload_rows, list):
             ts.draft.buttons = list(payload_rows)
         ts.draft.footer_meta = footer_from_progress(payload)
-        # 冻结 run 的 progress(usage_progress 等)不触发 patch:
-        # 冻结卡视觉应该静止,等 PH 替换或切回。
+        # Dual-card: progress for non-fg runs accumulates into draft only — no
+        # patch (the fg card belongs to fg_run_id; bg cards refresh only on
+        # ph_replaced).
         state = self._render_states.get(sid)
-        if state is not None and ts.draft.run_id in state.runs and state.runs[ts.draft.run_id].is_frozen:
+        rid_p = ts.draft.run_id
+        if state is not None and state.fg_run_id is not None and rid_p != state.fg_run_id:
+            return
+        if state is not None and rid_p in state.runs and state.runs[rid_p].is_frozen:
             return
         ts.coalescer.flush(self._make_send(buf, ts, finalize=False))
 
@@ -470,27 +517,20 @@ class FeishuAdapter(Adapter):
         async def _send() -> None:
             if buf.chat_id is None or self._api_sender is None:
                 return
-            # 流式期间无模型按钮 → 合成 ⏹ 停止;finalize 用 extract_buttons 结果
-            rows = ts.draft.buttons or ([] if finalize else STOP_BUTTON_ROWS)
-            # Phase 4 / Task 4: 全卡带 "切回 <label>" 按钮(若该 session 有后台 run)
             rid = ts.draft.run_id
             state = self._render_states.get(buf.session_id)
-            bg = state.bg_runs() if state is not None else None
-            # 不要把自己列进切回按钮(同 _send_full_card 处理)
-            if bg is not None:
-                bg = [r for r in bg if r.run_id != rid]
-            # 当前 run 已经被冻结(detach 后到达的尾随 coalescer flush):
-            # 直接走 frozen 卡,不要带 stop / switch_back 按钮覆盖回干净的 frozen 状态。
-            if state is not None and rid in state.runs and state.runs[rid].is_frozen:
-                card = build_frozen_ph_card(ts.draft, state.runs[rid].label)
-            else:
-                card = build_card(
-                    ts.draft, finalize=finalize, buttons=rows, bg_runs=bg or None,
-                )
+            # Dual-card: only the current fg run patches the fg streaming card.
+            # If state machine knows a fg and this isn't it, drop silently —
+            # _render_into_draft_only already accumulated the draft.
+            if state is not None and state.fg_run_id is not None and rid != state.fg_run_id:
+                return
+            card = build_fg_streaming_card(ts.draft, finalize=finalize)
             if ts.message_id is None:
                 ts.message_id = await self._api_sender.send_card(
                     receive_id=buf.chat_id, card=card
                 )
+                if state is not None and rid == state.fg_run_id:
+                    state.fg_message_id = ts.message_id
             else:
                 await self._api_sender.patch_card(message_id=ts.message_id, card=card)
         return _send
@@ -547,33 +587,60 @@ class FeishuAdapter(Adapter):
         if kind == "run_started":
             label = str(payload.get("label") or rid or "")
             state.start_run(rid, label)
+            state.fg_run_id = rid
+            state.fg_message_id = None
             return
         if kind == "run_detached":
             run = state.runs.get(rid)
-            if run is None or run.is_frozen:
-                return
-            state.detach(rid)
-            self._schedule(self._patch_frozen(sid, rid, run.label))
+            label = run.label if run is not None else str(payload.get("label") or rid)
+            # mark frozen (back-compat field) and clear fg pointer if matches
+            if run is not None and not run.is_frozen:
+                state.detach(rid)
+            was_fg = (state.fg_run_id == rid)
+            if was_fg:
+                state.fg_run_id = None
+                self._schedule(self._patch_fg_frozen(sid, rid))
+            # lazy-create bg card (idempotent)
+            if rid not in state.bg_cards:
+                self._schedule(self._create_bg_card(sid, rid, label))
             return
-        if kind == "foreground_changed":
-            prev_fg = state.foreground_run_id
+        if kind in ("attached", "foreground_changed"):
+            # New event name 'attached' replaces 'foreground_changed'.
+            prev_fg = state.fg_run_id
+            label = str(payload.get("label") or "")
             if rid not in state.runs:
-                return
-            state.switch_foreground(rid)
-            if prev_fg and prev_fg != rid and prev_fg in state.runs:
-                prev_run = state.runs[prev_fg]
-                self._schedule(self._patch_frozen(sid, prev_fg, prev_run.label))
-            self._schedule(self._send_full_card(sid, rid, is_new_message=True))
+                # gateway may have skipped run_started — create a stub so
+                # downstream rendering can still find a RunRenderState.
+                state.start_run(rid, label or rid)
+            # don't use start_run again — manually retarget fg
+            if prev_fg and prev_fg != rid:
+                prev_label = (
+                    state.runs[prev_fg].label if prev_fg in state.runs else prev_fg
+                )
+                self._schedule(self._patch_fg_frozen(sid, prev_fg))
+                if prev_fg not in state.bg_cards:
+                    self._schedule(self._create_bg_card(sid, prev_fg, prev_label))
+            state.fg_run_id = rid
+            state.fg_message_id = None
+            # Reset the per-turn message_id so the next render() event sends a
+            # fresh fg card (no patching of the prior fg message).
+            buf = self._buffers.get(sid)
+            if buf is not None and rid in buf.turns:
+                buf.turns[rid].message_id = None
+                # Schedule an immediate fg card send if we already have a draft.
+                if buf.turns[rid].draft.content or buf.turns[rid].draft.tool_blocks \
+                        or buf.turns[rid].draft.thinking:
+                    self._schedule(self._send_fg_card(sid, rid))
             return
         if kind == "ph_replaced":
-            if rid in state.runs:
-                # ph_replaced = run 已完成,落定最终卡(无 stop 按钮、无 ⏳)。
-                self._schedule(self._send_full_card(
-                    sid, rid, is_new_message=False, finalize=True,
-                ))
+            # Run finished. If a bg card exists for it, patch to completed.
+            # If not (run finished as fg), the coalescer's final patch already
+            # finalized the fg card — noop here.
+            if rid in state.bg_cards:
+                self._schedule(self._complete_bg_card(sid, rid))
             return
         if kind == "run_completed_bg":
-            # ph_replaced already finalized; nothing to do.
+            # ph_replaced already handled it; noop.
             return
 
     def _schedule(self, coro) -> None:
@@ -585,42 +652,75 @@ class FeishuAdapter(Adapter):
             return
         self._pending_tasks.append(task)
 
-    async def _patch_frozen(self, sid: str, rid: str, label: str) -> None:
+    async def _patch_fg_frozen(self, sid: str, rid: str) -> None:
+        """Patch the prior fg streaming card to its frozen look (no top
+        controls). After this, the card is no longer touched."""
         buf = self._buffers.get(sid)
         if buf is None or buf.chat_id is None or self._api_sender is None:
             return
         ts = buf.turns.get(rid)
         if ts is None or ts.message_id is None:
             return
-        card = build_frozen_ph_card(ts.draft, label)
+        card = build_fg_streaming_card(ts.draft, finalize=True)
         await self._api_sender.patch_card(message_id=ts.message_id, card=card)
 
-    async def _send_full_card(
-        self, sid: str, rid: str, *, is_new_message: bool, finalize: bool = False,
-    ) -> None:
+    async def _create_bg_card(self, sid: str, rid: str, label: str) -> None:
+        """Lazily create the bg placeholder card for a detached run.
+        Idempotent: skips if a card already exists for this run_id."""
+        state = self._render_states.get(sid)
+        if state is None or rid in state.bg_cards:
+            return
+        buf = self._buffers.get(sid)
+        if buf is None or buf.chat_id is None or self._api_sender is None:
+            return
+        ts = buf.turns.get(rid)
+        draft = ts.draft if ts is not None else TurnDraft(run_id=rid)
+        panel_md = _bg_panel_md(draft)
+        card = build_bg_placeholder_card(
+            label=label, state="running", progress_pct=0, panel_md=panel_md,
+        )
+        mid = await self._api_sender.send_card(receive_id=buf.chat_id, card=card)
+        state.bg_cards[rid] = BgCardState(
+            message_id=mid, label=label, state="running", progress_pct=0,
+            panel_md=panel_md,
+        )
+
+    async def _complete_bg_card(self, sid: str, rid: str) -> None:
+        state = self._render_states.get(sid)
+        if state is None:
+            return
+        bg = state.bg_cards.get(rid)
+        if bg is None or self._api_sender is None:
+            return
+        buf = self._buffers.get(sid)
+        ts = buf.turns.get(rid) if buf is not None else None
+        draft = ts.draft if ts is not None else TurnDraft(run_id=rid)
+        bg.state = "completed"
+        bg.progress_pct = 100
+        bg.panel_md = _bg_panel_md(draft)
+        card = build_bg_placeholder_card(
+            label=bg.label, state=bg.state, progress_pct=bg.progress_pct,
+            panel_md=bg.panel_md, compacted_n=bg.compacted_n,
+        )
+        await self._api_sender.patch_card(message_id=bg.message_id, card=card)
+
+    async def _send_fg_card(self, sid: str, rid: str) -> None:
+        """Send a fresh fg streaming card from current draft (used on attach
+        to make the switch visible immediately)."""
         buf = self._buffers.get(sid)
         if buf is None or buf.chat_id is None or self._api_sender is None:
             return
         ts = self._ensure_turn(buf, rid)
         state = self._render_states.get(sid)
-        bg = state.bg_runs() if state is not None else None
-        # filter out self from bg_runs (foreground should not be in bg list)
-        if bg is not None:
-            bg = [r for r in bg if r.run_id != rid]
-        # ph_replaced(finalize=True)+ run 当前还是冻结(bg)→ "后台已完成"卡;
-        # 不带 stop / 切回按钮,header 显示 ✅ 已完成,和 frozen "🟡 运行中"明显区分。
-        if finalize and state is not None and rid in state.runs and state.runs[rid].is_frozen:
-            card = build_completed_bg_card(ts.draft, state.runs[rid].label)
-        else:
-            card = build_card(ts.draft, finalize=finalize, bg_runs=bg or None)
-        if is_new_message or ts.message_id is None:
-            ts.message_id = await self._api_sender.send_card(
-                receive_id=buf.chat_id, card=card
-            )
-        else:
-            await self._api_sender.patch_card(
-                message_id=ts.message_id, card=card
-            )
+        if state is None or state.fg_run_id != rid:
+            return
+        if ts.message_id is not None:
+            return  # already sent
+        card = build_fg_streaming_card(ts.draft, finalize=False)
+        ts.message_id = await self._api_sender.send_card(
+            receive_id=buf.chat_id, card=card,
+        )
+        state.fg_message_id = ts.message_id
 
     # ------------------------------------------------------------------
     # Health

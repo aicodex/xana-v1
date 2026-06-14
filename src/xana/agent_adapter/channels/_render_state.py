@@ -18,12 +18,29 @@ class RunRenderState:
 
 
 @dataclass
+class BgCardState:
+    """Per-run background placeholder card state (dual-card model)."""
+    message_id: str
+    label: str
+    state: str = "running"
+    progress_pct: int = 0
+    panel_md: str = ""
+    compacted_n: int = 0
+
+
+@dataclass
 class SessionRenderState:
     """Adapter-side per-session render state: tracks runs, foreground, and provides PH-driven transitions."""
 
     runs: "OrderedDict[str, RunRenderState]" = field(default_factory=OrderedDict)
     foreground_run_id: str | None = None
     max_runs: int = 4
+
+    # Dual-card model (Group E): single fg streaming card + lazy bg placeholder
+    # cards per detached run.
+    fg_run_id: str | None = None
+    fg_message_id: str | None = None
+    bg_cards: dict[str, BgCardState] = field(default_factory=dict)
 
     def start_run(self, run_id: str, label: str) -> RunRenderState:
         """Create a new run as foreground; demote previous foreground to frozen background."""
