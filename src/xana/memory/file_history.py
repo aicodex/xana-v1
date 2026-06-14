@@ -11,7 +11,7 @@ import json
 import logging
 from pathlib import Path
 
-from xana.memory.contracts import ActiveContext, HistoryRow, MemoryMessage, ReplayResult
+from xana.memory.contracts import ActiveContext, HistoryRow, MemoryMessage, Placeholder, ReplayResult
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror, MemoryReplayer
 
 _logger = logging.getLogger(__name__)
@@ -84,6 +84,26 @@ class FileHistoryMirror(HistoryMirror):
         rows = await self.read_rows()
         sessions = {r.session_id for r in rows}
         return ReplayResult(loaded_sessions=len(sessions), loaded_rows=len(rows))
+
+    async def append_placeholder(
+        self, session_id: str, agent_name: str, placeholder: Placeholder
+    ) -> None:
+        raise NotImplementedError("Group B/C")
+
+    async def replace_placeholder(
+        self, run_id: str, messages: tuple[MemoryMessage, ...]
+    ) -> None:
+        raise NotImplementedError("Group B/C")
+
+    async def replace_range(
+        self,
+        session_id: str,
+        agent_name: str,
+        start_idx: int,
+        end_idx: int,
+        summary_message: MemoryMessage,
+    ) -> None:
+        raise NotImplementedError("Group H")
 
 
 class FileMemoryReplayer(MemoryReplayer):

@@ -931,6 +931,16 @@ class _ForkedActiveContextStore(ActiveContextStore):
     ) -> ActiveContext | None:
         return None
 
+    async def replace_range(
+        self,
+        session_id: str,
+        agent_name: str,
+        start_idx: int,
+        end_idx: int,
+        summary_message: MemoryMessage,
+    ) -> ActiveContext | None:
+        raise NotImplementedError("Group H")
+
 
 class _RunJsonlMirror(HistoryMirror):
     """HistoryMirror that writes each appended row into the per-run JSONL.
@@ -957,6 +967,26 @@ class _RunJsonlMirror(HistoryMirror):
 
     async def replay(self) -> ReplayResult:
         return ReplayResult(loaded_sessions=0, loaded_rows=0)
+
+    async def append_placeholder(
+        self, session_id: str, agent_name: str, placeholder: Placeholder
+    ) -> None:
+        raise NotImplementedError("Group B/C")
+
+    async def replace_placeholder(
+        self, run_id: str, messages: tuple[MemoryMessage, ...]
+    ) -> None:
+        raise NotImplementedError("Group B/C")
+
+    async def replace_range(
+        self,
+        session_id: str,
+        agent_name: str,
+        start_idx: int,
+        end_idx: int,
+        summary_message: MemoryMessage,
+    ) -> None:
+        raise NotImplementedError("Group H")
 
 
 def _denied_result(perm: PermissionResult) -> ToolResult:

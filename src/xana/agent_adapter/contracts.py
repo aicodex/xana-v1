@@ -72,9 +72,13 @@ class AdapterHealth:
 
 @dataclass
 class InflightRun:
-    """Gateway 侧 per-run 追踪。非 frozen——detached 字段可变。"""
+    """Gateway 侧 per-run 追踪。非 frozen——is_attached 字段可变。
+
+    is_attached=True 表示此 run 是 session 当前前台(foreground)。
+    新 submit 会把现有 attached run 翻成 is_attached=False(detach)。
+    """
     session_id: str
     run_id: str
     label: str
     task: _asyncio.Task[Any] | None = None
-    detached: bool = False
+    is_attached: bool = True

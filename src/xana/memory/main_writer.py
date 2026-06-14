@@ -69,6 +69,20 @@ class _QueuedActiveContextStore(ActiveContextStore):
     ) -> ActiveContext | None:
         return await self._run(lambda: self._inner.replace_placeholder(run_id, replace_with))
 
+    async def replace_range(
+        self,
+        session_id: str,
+        agent_name: str,
+        start_idx: int,
+        end_idx: int,
+        summary_message: MemoryMessage,
+    ) -> ActiveContext | None:
+        return await self._run(
+            lambda: self._inner.replace_range(
+                session_id, agent_name, start_idx, end_idx, summary_message
+            )
+        )
+
 
 class _QueuedHistoryMirror(HistoryMirror):
     def __init__(self, inner: HistoryMirror, enqueue: Callable[[_WriteOp], Coroutine]) -> None:
@@ -83,6 +97,52 @@ class _QueuedHistoryMirror(HistoryMirror):
 
     async def replay(self):
         return await self._inner.replay()
+
+    async def append_placeholder(
+        self, session_id: str, agent_name: str, placeholder: Placeholder
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        await self._enqueue(
+            _WriteOp(
+                coro_factory=lambda: self._inner.append_placeholder(session_id, agent_name, placeholder),
+                fut=fut,
+            )
+        )
+        await fut
+
+    async def replace_placeholder(
+        self, run_id: str, messages: tuple[MemoryMessage, ...]
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        await self._enqueue(
+            _WriteOp(
+                coro_factory=lambda: self._inner.replace_placeholder(run_id, messages),
+                fut=fut,
+            )
+        )
+        await fut
+
+    async def replace_range(
+        self,
+        session_id: str,
+        agent_name: str,
+        start_idx: int,
+        end_idx: int,
+        summary_message: MemoryMessage,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        await self._enqueue(
+            _WriteOp(
+                coro_factory=lambda: self._inner.replace_range(
+                    session_id, agent_name, start_idx, end_idx, summary_message
+                ),
+                fut=fut,
+            )
+        )
+        await fut
 
     async def read_rows(self):
         read_rows = getattr(self._inner, "read_rows", None)

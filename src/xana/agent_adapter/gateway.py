@@ -42,8 +42,14 @@ class DefaultAgentGateway(AgentGateway):
     async def register_command_router(self, router: CommandRouter) -> None:
         self.command_router = router
 
-    async def attach(self, binding: SessionBinding) -> None:
+    async def register_binding(self, binding: SessionBinding) -> None:
         self.bindings[binding.session_id] = binding
+
+    async def detach_foreground(self, session_id: str) -> None:
+        raise NotImplementedError("Group D")
+
+    async def attach(self, session_id: str, run_id: str) -> None:
+        raise NotImplementedError("Group D")
 
     def submit(self, inbound: InboundMessage) -> AsyncIterator[RenderedMessage]:
         return self._submit(inbound)
@@ -98,8 +104,8 @@ class DefaultAgentGateway(AgentGateway):
         # 旧 run 转后台 —— 不 cancel,只标 detached,并通知 adapter 刷 tab。
         existing = self._inflight.get(inbound.session_id, [])
         for ir in existing:
-            if not ir.detached:
-                ir.detached = True
+            if ir.is_attached:
+                ir.is_attached = False
                 self._notify_run_detached(adapter, inbound.session_id, ir)
 
         import uuid as _uuid
@@ -156,7 +162,7 @@ class DefaultAgentGateway(AgentGateway):
                     "run_id": new_run.run_id,
                     "mode": "full",
                 })
-                if new_run.detached:
+                if not new_run.is_attached:
                     # 这个 run 在跑的过程中被新的 submit detach 掉了 → 完成时通知 adapter
                     note({
                         "kind": "run_completed_bg",
@@ -172,43 +178,11 @@ class DefaultAgentGateway(AgentGateway):
         user message would.
         """
         for ir in self._inflight.get(session_id, []):
-            if ir.detached:
+            if not ir.is_attached:
                 continue
-            ir.detached = True
+            ir.is_attached = False
             for adapter in self.adapters.values():
                 self._notify_run_detached(adapter, session_id, ir)
-
-    async def start_compact(self, session_id: str, fork_point: int) -> None:
-        """Trigger a compact run. Stub: emits start/finalize events without running compact.
-        Real compact execution wired in Task 8."""
-        binding = self.bindings.get(session_id)
-        adapter_id = binding.adapter_id if binding else next(iter(self.adapters), None)
-        if adapter_id is None or adapter_id not in self.adapters:
-            return
-        adapter = self.adapters[adapter_id]
-        note = getattr(adapter, "note_progress", None)
-        if note is None:
-            return
-        self._run_seq += 1
-        rid = f"compact-{session_id}-{self._run_seq}"
-        note({"kind": "compact_started", "session_id": session_id, "run_id": rid, "fork_point": fork_point})
-        note({"kind": "compact_finalized", "session_id": session_id, "run_id": rid, "summary": ""})
-
-    async def switch_foreground(self, session_id: str, target_run_id: str) -> None:
-        runs = self._inflight.get(session_id, [])
-        if not any(ir.run_id == target_run_id for ir in runs):
-            return
-        for ir in runs:
-            ir.detached = (ir.run_id != target_run_id)
-        for ad in self.adapters.values():
-            note = getattr(ad, "note_progress", None)
-            if note is None:
-                continue
-            note({
-                "kind": "foreground_changed",
-                "session_id": session_id,
-                "run_id": target_run_id,
-            })
 
     @staticmethod
     def _notify_run_detached(adapter, session_id: str, ir: "InflightRun") -> None:

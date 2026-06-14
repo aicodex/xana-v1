@@ -59,6 +59,16 @@ class ActiveContextStore(ABC):
         replace_with: tuple[MemoryMessage, ...],
     ) -> ActiveContext | None: ...
 
+    @abstractmethod
+    async def replace_range(
+        self,
+        session_id: str,
+        agent_name: str,
+        start_idx: int,
+        end_idx: int,
+        summary_message: MemoryMessage,
+    ) -> ActiveContext | None: ...
+
 
 class HistoryMirror(ABC):
     @abstractmethod
@@ -66,6 +76,26 @@ class HistoryMirror(ABC):
 
     @abstractmethod
     async def replay(self) -> ReplayResult: ...
+
+    @abstractmethod
+    async def append_placeholder(
+        self, session_id: str, agent_name: str, placeholder: Placeholder
+    ) -> None: ...
+
+    @abstractmethod
+    async def replace_placeholder(
+        self, run_id: str, messages: tuple[MemoryMessage, ...]
+    ) -> None: ...
+
+    @abstractmethod
+    async def replace_range(
+        self,
+        session_id: str,
+        agent_name: str,
+        start_idx: int,
+        end_idx: int,
+        summary_message: MemoryMessage,
+    ) -> None: ...
 
 
 class MemoryReplayer(ABC):
