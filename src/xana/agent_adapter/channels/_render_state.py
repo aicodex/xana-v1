@@ -41,6 +41,9 @@ class SessionRenderState:
     fg_run_id: str | None = None
     fg_message_id: str | None = None
     bg_cards: dict[str, BgCardState] = field(default_factory=dict)
+    # Group H: maps compact_run_id -> bg_card run_id it lands on. Populated
+    # when compact_started chooses a target (case A) or creates a bg card (case B).
+    compact_targets: dict[str, str] = field(default_factory=dict)
 
     def start_run(self, run_id: str, label: str) -> RunRenderState:
         """Create a new run as foreground; demote previous foreground to frozen background."""

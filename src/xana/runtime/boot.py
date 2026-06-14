@@ -270,6 +270,7 @@ async def boot(
         provider=provider,
         model=model,
         progress_sink=progress_sink,
+        write_queue=write_queue,
     )
     await gateway.register_command_router(command_router)
 

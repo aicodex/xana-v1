@@ -457,7 +457,13 @@ class FeishuAdapter(Adapter):
             self._last_progress = dict(payload)
         sid = str(payload.get("session_id") or "")
         if kind in ("run_started", "run_detached", "attached",
-                    "foreground_changed", "ph_replaced", "run_completed_bg"):
+                    "foreground_changed", "ph_replaced", "run_completed_bg",
+                    "compact_started", "compact_finalized"):
+            self._handle_ph_event(sid, payload)
+            return
+        if kind == "compact_progress" and payload.get("pct") is not None:
+            # PH-level compact bar update (Group H). The legacy text-progress
+            # path below stays for /compact's draft-rendering.
             self._handle_ph_event(sid, payload)
             return
         buf = self._buffers.get(sid)
@@ -632,6 +638,50 @@ class FeishuAdapter(Adapter):
                         or buf.turns[rid].draft.thinking:
                     self._schedule(self._send_fg_card(sid, rid))
             return
+        if kind == "compact_started":
+            target_rid = self._most_recent_bg(state)
+            crid = rid or f"compact-{len(state.bg_cards)}"
+            if target_rid and target_rid in state.bg_cards:
+                bg = state.bg_cards[target_rid]
+                bg.state = "compacting"
+                bg.progress_pct = 0
+                state.compact_targets[crid] = target_rid
+                self._schedule(self._patch_bg_card(sid, target_rid))
+            else:
+                # case B: no bg card → create dedicated compact bg card
+                self._schedule(self._create_compact_bg_card(sid, payload))
+            return
+        if kind == "compact_progress":
+            target_rid = self._compact_target_rid(state, payload)
+            if target_rid and target_rid in state.bg_cards:
+                bg = state.bg_cards[target_rid]
+                try:
+                    pct = int(payload.get("pct", bg.progress_pct))
+                except (TypeError, ValueError):
+                    pct = bg.progress_pct
+                bg.progress_pct = pct
+                self._schedule(self._patch_bg_card(sid, target_rid))
+            return
+        if kind == "compact_finalized":
+            target_rid = self._compact_target_rid(state, payload)
+            if target_rid and target_rid in state.bg_cards:
+                bg = state.bg_cards[target_rid]
+                summary = str(payload.get("summary", "") or "")
+                if summary:
+                    head = f"## 已压缩 {bg.compacted_n + 1} 条对话\n{summary}\n\n---\n"
+                    bg.panel_md = head + (bg.panel_md or "")
+                    bg.compacted_n += 1
+                bg.state = "running" if state.fg_run_id != target_rid else bg.state
+                if payload.get("cancelled"):
+                    bg.state = "cancelled"
+                elif payload.get("error"):
+                    bg.state = "failed"
+                bg.progress_pct = 100
+                self._schedule(self._patch_bg_card(sid, target_rid))
+                # forget the compact->target mapping
+                crid = str(payload.get("run_id") or "")
+                state.compact_targets.pop(crid, None)
+            return
         if kind == "ph_replaced":
             # Run finished. If a bg card exists for it, patch to completed.
             # If not (run finished as fg), the coalescer's final patch already
@@ -703,6 +753,58 @@ class FeishuAdapter(Adapter):
             panel_md=bg.panel_md, compacted_n=bg.compacted_n,
         )
         await self._api_sender.patch_card(message_id=bg.message_id, card=card)
+
+    def _most_recent_bg(self, state: SessionRenderState) -> str | None:
+        """Return the run_id of the most recently created bg card.
+        Python dicts preserve insertion order → last key inserted is newest."""
+        if not state.bg_cards:
+            return None
+        return next(reversed(state.bg_cards))
+
+    def _compact_target_rid(
+        self, state: SessionRenderState, payload: dict
+    ) -> str | None:
+        """Resolve the bg card run_id that a compact_* event lands on.
+        Looks up state.compact_targets via the compact's own run_id."""
+        crid = str(payload.get("run_id") or "")
+        if not crid:
+            return self._most_recent_bg(state)
+        return state.compact_targets.get(crid) or (
+            crid if crid in state.bg_cards else None
+        )
+
+    async def _patch_bg_card(self, sid: str, rid: str) -> None:
+        """Re-render a bg card from current BgCardState."""
+        state = self._render_states.get(sid)
+        if state is None or self._api_sender is None:
+            return
+        bg = state.bg_cards.get(rid)
+        if bg is None:
+            return
+        card = build_bg_placeholder_card(
+            label=bg.label, state=bg.state, progress_pct=bg.progress_pct,
+            panel_md=bg.panel_md or " ", compacted_n=bg.compacted_n,
+        )
+        await self._api_sender.patch_card(message_id=bg.message_id, card=card)
+
+    async def _create_compact_bg_card(self, sid: str, payload: dict) -> None:
+        """Case B: no existing bg card → spin up a compact-only bg card."""
+        buf = self._buffers.get(sid)
+        if buf is None or buf.chat_id is None or self._api_sender is None:
+            return
+        state = self._render_states.setdefault(sid, SessionRenderState())
+        crid = str(payload.get("run_id") or f"compact-{len(state.bg_cards)}")
+        label = str(payload.get("label") or "compact")
+        card = build_bg_placeholder_card(
+            label=label, state="compacting", progress_pct=0, panel_md=" ",
+        )
+        mid = await self._api_sender.send_card(receive_id=buf.chat_id, card=card)
+        # bg card key = compact run_id itself (no prior detached run to land on)
+        state.bg_cards[crid] = BgCardState(
+            message_id=mid, label=label,
+            state="compacting", progress_pct=0, panel_md=" ",
+        )
+        state.compact_targets[crid] = crid
 
     async def _send_fg_card(self, sid: str, rid: str) -> None:
         """Send a fresh fg streaming card from current draft (used on attach

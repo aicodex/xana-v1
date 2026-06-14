@@ -46,6 +46,7 @@ class DefaultCommandRouter(CommandRouter):
         provider: str = "",
         model: str = "",
         progress_sink: Any = None,
+        write_queue: Any = None,
     ) -> None:
         self.session_config_store = session_config_store
         self.active_context_store = active_context_store
@@ -57,6 +58,7 @@ class DefaultCommandRouter(CommandRouter):
         self.provider = provider
         self.model = model
         self.progress_sink = progress_sink
+        self.write_queue = write_queue
         self._compact_seq = 0
         self._compact_cancels: dict[str, asyncio.Event] = {}
 
@@ -235,9 +237,43 @@ class DefaultCommandRouter(CommandRouter):
                     })
                 return CommandResult(ok=False, message="压缩失败:模型未返回 <summary>,请重试")
             revealed = revealed_tools_from_messages(snapshot.messages) if snapshot else set()
-            await self.active_context_store.set(build_post_compact_context(
-                session_id=inbound.session_id, agent_name="chat", summary=summary,
-                revealed_tools=sorted(revealed)))
+            # Group H: route writeback through write_queue (ReplaceRangeItem)
+            # when a queue is wired; otherwise fall back to the legacy direct
+            # store.set() path so unit tests without a queue keep working.
+            if self.write_queue is not None:
+                from xana.memory.contracts import MemoryMessage, Placeholder
+                from xana.memory.write_queue import ReplaceRangeItem
+                from xana.harness_sdk.compact import (
+                    COMPACT_BOUNDARY_MARKER, post_compact_message,
+                )
+                mixed = await self.active_context_store.snapshot(
+                    inbound.session_id, "chat")
+                # fork_point = index of first still-running Placeholder, else len
+                fork_point = len(mixed)
+                for i, item in enumerate(mixed):
+                    if isinstance(item, Placeholder) and item.status == "running":
+                        fork_point = i
+                        break
+                boundary_meta: dict = {"compact_boundary": True}
+                if revealed:
+                    boundary_meta["pre_compact_revealed_tools"] = sorted(revealed)
+                # Single summary message carrying the post-compact preamble;
+                # we stash boundary metadata onto it so revealed_tools survive.
+                summary_msg = MemoryMessage(
+                    role="compact",
+                    content=post_compact_message(summary),
+                    metadata={**boundary_meta,
+                              "compact_summary": True,
+                              "boundary_marker": COMPACT_BOUNDARY_MARKER},
+                )
+                await self.write_queue.put(ReplaceRangeItem(
+                    session_id=inbound.session_id, agent_name="chat",
+                    start_idx=0, end_idx=fork_point, summary=summary_msg,
+                ))
+            else:
+                await self.active_context_store.set(build_post_compact_context(
+                    session_id=inbound.session_id, agent_name="chat", summary=summary,
+                    revealed_tools=sorted(revealed)))
             if ph_note is not None:
                 ph_note({
                     "kind": "compact_finalized",
