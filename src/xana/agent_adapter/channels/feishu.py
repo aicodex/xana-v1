@@ -654,6 +654,11 @@ class FeishuAdapter(Adapter):
                 self._schedule(self._patch_fg_frozen(sid, prev_fg))
                 if prev_fg not in state.bg_cards:
                     self._schedule(self._create_bg_card(sid, prev_fg, prev_label))
+            # Clear is_frozen so render() events flow through to fg patches
+            # (detach had set is_frozen=True; attach must reverse it).
+            if rid in state.runs:
+                state.runs[rid].is_frozen = False
+                state.runs[rid].is_foreground = True
             state.fg_run_id = rid
             state.fg_message_id = None
             # Reset the per-turn message_id so the next render() event sends a
@@ -744,7 +749,15 @@ class FeishuAdapter(Adapter):
         ts = buf.turns.get(rid)
         if ts is None or ts.message_id is None:
             return
+        # Frozen card has no controls AND no model-suggested buttons —
+        # interaction belongs to the bg card / /attach menu only.
         card = build_fg_streaming_card(ts.draft, finalize=True)
+        # strip any column_set rows (button rows) from body — finalize already
+        # drops top controls, but draft.buttons (model option chips) survive
+        # build_card. Frozen = no buttons at all.
+        card["body"]["elements"] = [
+            el for el in card["body"]["elements"] if el.get("tag") != "column_set"
+        ]
         await self._api_sender.patch_card(message_id=ts.message_id, card=card)
 
     async def _create_bg_card(self, sid: str, rid: str, label: str) -> None:

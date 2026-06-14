@@ -785,6 +785,11 @@ class TelegramAdapter(Adapter):
                 self._schedule(self._freeze_fg_message(sid, prev_fg))
                 if prev_fg not in state.bg_cards:
                     self._schedule(self._create_bg_message(sid, prev_fg, prev_label))
+            # Clear is_frozen so render() events flow through to fg patches
+            # (detach had set is_frozen=True; attach must reverse it).
+            if rid in state.runs:
+                state.runs[rid].is_frozen = False
+                state.runs[rid].is_foreground = True
             state.fg_run_id = rid
             state.fg_message_id = None
             buf = self._buffers.get(sid)
