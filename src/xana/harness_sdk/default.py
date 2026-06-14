@@ -377,13 +377,46 @@ class DefaultHarness(Harness):
                             await run_jsonl_writer.finalize(run_id, status)
                         except Exception:
                             _logger.exception("run_jsonl_writer.finalize failed")
-                        try:
-                            await main_writer.enqueue_replace_placeholder(
-                                session_id=session_id, agent_name=agent_name,
-                                run_id=run_id, replace_with=tuple(produced),
-                            )
-                        except Exception:
-                            _logger.exception("main_writer.enqueue_replace_placeholder failed")
+                        # Group C: route PH replacement through the
+                        # session-wide write_queue when available. The
+                        # consumer (boot.write_consumer) drains it on a
+                        # SEPARATE asyncio task so sync mode does not
+                        # deadlock (spec section 11).
+                        wq = context.metadata.get("write_queue")
+                        runs_dir = context.metadata.get("runs_dir")
+                        if wq is not None:
+                            try:
+                                from xana.memory.runs_loader import (
+                                    runs_jsonl_to_memory_messages,
+                                )
+                                from xana.memory.write_queue import ReplaceItem
+                                msgs: tuple[MemoryMessage, ...]
+                                if runs_dir is not None:
+                                    msgs = runs_jsonl_to_memory_messages(
+                                        Path(runs_dir) / f"{run_id}.jsonl"
+                                    )
+                                else:
+                                    msgs = ()
+                                if not msgs:
+                                    # Fall back to fork_store snapshot
+                                    # (covers in-memory tests without runs_dir).
+                                    msgs = tuple(produced)
+                                await wq.put(ReplaceItem(
+                                    run_id=run_id,
+                                    session_id=session_id,
+                                    agent_name=agent_name,
+                                    messages=msgs,
+                                ))
+                            except Exception:
+                                _logger.exception("write_queue.put(ReplaceItem) failed")
+                        else:
+                            try:
+                                await main_writer.enqueue_replace_placeholder(
+                                    session_id=session_id, agent_name=agent_name,
+                                    run_id=run_id, replace_with=tuple(produced),
+                                )
+                            except Exception:
+                                _logger.exception("main_writer.enqueue_replace_placeholder failed")
 
                 task = _asyncio.create_task(_bg_run(), name=f"xana-async-run-{run_id}")
                 self._background_tasks.add(task)

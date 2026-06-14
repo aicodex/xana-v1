@@ -12,6 +12,7 @@ so config_snapshot["provider"] resolves cleanly inside the harness.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,6 +58,7 @@ from xana.skills.bundled.skill_creator import SkillCreatorSkill
 from xana.skills.interfaces import SkillRegistry
 from xana.skills.registry import InMemorySkillRegistry
 from xana.memory.main_writer import MainWriter
+from xana.memory.write_queue import WriteQueue, WriteQueueConsumer
 from xana.state.file_runs import FileRunStore, RunJsonlWriter
 from xana.state.in_memory import InMemorySessionStore, InMemoryStateRepository
 from xana.state.interfaces import RunStore, SessionStore, StateRepository
@@ -108,6 +110,9 @@ class BootResult:
     scheduler: FileSchedulerService | None = None
     main_writer: MainWriter | None = None
     run_jsonl_writer: RunJsonlWriter | None = None
+    write_queue: WriteQueue | None = None
+    write_consumer: WriteQueueConsumer | None = None
+    write_consumer_task: asyncio.Task | None = None
 
 
 class _CompositeStateRepository(StateRepository):
@@ -152,6 +157,17 @@ async def boot(
     else:
         mirror = InMemoryHistoryMirror()
         active_ctx = active_ctx_inner
+
+    # Group C: write queue + single consumer for PH replacement + replace_range.
+    # CRITICAL (spec section 11): consumer runs as a SEPARATE asyncio task
+    # so sync mode does not deadlock when _invoke enqueues during a run.
+    write_queue = WriteQueue()
+    write_consumer = WriteQueueConsumer(
+        write_queue, store=active_ctx, mirror=mirror,
+    )
+    write_consumer_task = asyncio.create_task(
+        write_consumer.run(), name="xana-write-queue-consumer",
+    )
 
     tools = InMemoryToolRegistry()
     await tools.register(MemorySearchTool(engine))
@@ -238,6 +254,7 @@ async def boot(
         model_thresholds=model_thresholds,
         main_writer=main_writer,
         run_jsonl_writer=run_jsonl_writer,
+        write_queue=write_queue,
     )
 
     gateway.agents["chat"] = chat_agent
@@ -275,6 +292,9 @@ async def boot(
         scheduler=scheduler,
         main_writer=main_writer,
         run_jsonl_writer=run_jsonl_writer,
+        write_queue=write_queue,
+        write_consumer=write_consumer,
+        write_consumer_task=write_consumer_task,
     )
 
 
