@@ -6,6 +6,17 @@ from pathlib import Path
 from typing import Any, Literal
 
 RunStatus = Literal["running", "paused", "cancelled", "failed", "completed"]
+ExitReason = Literal[
+    "user_cancel",
+    "tool_kill_timeout",
+    "shutdown_graceful",
+    "shutdown_force",
+    "network_error",
+    "llm_timeout",
+    "session_lost",
+    "tool_error",
+    "unknown",
+]
 ResumeAction = Literal["resume_from_checkpoint", "rerun_turn", "drop", "mark_cancelled"]
 CheckpointName = Literal[
     "turn_started",
@@ -66,6 +77,7 @@ class RunRecord:
     pause_reason: str | None = None
     abort_reason: str | None = None
     error: str | None = None
+    exit_reason: ExitReason | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
