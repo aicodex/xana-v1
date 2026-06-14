@@ -72,7 +72,7 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/streaming", description="token 流开关 on/off(无参数切换)"),
             CommandSpec(name="/thinking", description="思考链开关 on/off(无参数切换)"),
             CommandSpec(name="/async",    description="异步模式开关 on/off(无参数切换)"),
-            CommandSpec(name="/attach",   description="切换 task 订阅"),
+            CommandSpec(name="/attach",   description="切回某个后台运行"),
             CommandSpec(name="/cancel",   description="取消当前 turn"),
             CommandSpec(name="/project",  description="项目管理"),
             CommandSpec(name="/search_provider", description="搜索引擎切换"),
@@ -434,22 +434,30 @@ class DefaultCommandRouter(CommandRouter):
         return CommandResult(ok=True, message="[cancel] 已请求取消当前 turn")
 
     async def _cmd_attach(self, inbound: InboundMessage, args: str) -> CommandResult:
-        if self.session_config_store is None:
-            return CommandResult(ok=False, message="session_config_store 未配置")
-        current = await self.session_config_store.get(inbound.session_id)
-        next_attached = not bool(current.metadata.get("attached"))
-        from xana.session_config.contracts import SessionConfig
-        new_metadata = dict(current.metadata)
-        new_metadata["attached"] = next_attached
-        new = SessionConfig(
-            session_id=current.session_id, model=current.model, effort=current.effort,
-            streaming=current.streaming, thinking=current.thinking,
-            search_provider=current.search_provider, project_root=current.project_root,
-            async_mode=current.async_mode,
-            metadata=new_metadata,
+        """列出当前 session 所有 running Placeholder,渲染为菜单(payload.attach_choices)。
+        点击 attach_run 按钮 → adapter 调用 gateway.attach(sid, run_id),自动 detach 当前 fg。"""
+        from xana.memory.contracts import Placeholder
+        if self.active_context_store is None:
+            return CommandResult(ok=False, message="active_context_store 未配置")
+        snap = await self.active_context_store.snapshot(inbound.session_id, "chat")
+        choices: list[dict[str, Any]] = []
+        for m in snap:
+            if isinstance(m, Placeholder) and m.status == "running":
+                choices.append({"run_id": m.run_id, "label": m.label})
+        if not choices:
+            return CommandResult(
+                ok=True, message="没有后台运行可切换",
+                payload={"triggers_turn": False},
+            )
+        return CommandResult(
+            ok=True,
+            message="选择要切回前台的后台运行",
+            payload={
+                "triggers_turn": False,
+                "requires_detach": True,
+                "attach_choices": choices,
+            },
         )
-        await self.session_config_store.save(new)
-        return CommandResult(ok=True, message=f"attached={next_attached}")
 
     async def _cmd_project(self, inbound: InboundMessage, args: str) -> CommandResult:
         target = args.strip()

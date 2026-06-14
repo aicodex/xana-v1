@@ -116,6 +116,10 @@ class DefaultAgentGateway(AgentGateway):
                 # silent 结果(/compact_cancel)不渲染卡片,直接结束。
                 if cmd_result.payload.get("silent"):
                     return
+                # /attach 类命令:渲染菜单前先把当前 fg detach,
+                # 用户点击菜单按钮后 gateway.attach 再切回新目标。
+                if cmd_result.payload.get("requires_detach"):
+                    await self.detach_foreground(inbound.session_id)
                 event = AgentEvent(
                     kind="final" if cmd_result.ok else "error",
                     session_id=inbound.session_id,

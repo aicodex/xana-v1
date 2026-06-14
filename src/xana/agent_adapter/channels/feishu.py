@@ -27,6 +27,7 @@ from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels._render_state import BgCardState, SessionRenderState
 from xana.agent_adapter.channels._throttle import DraftCoalescer
 from xana.agent_adapter.channels.feishu_card import (
+    build_attach_menu_card,
     build_bg_placeholder_card,
     build_card,
     build_fg_streaming_card,
@@ -324,6 +325,18 @@ class FeishuAdapter(Adapter):
 
     async def render(self, event: AgentEvent) -> RenderedMessage:
         buf = self._get_or_create_buffer(event.session_id)
+        # /attach 菜单卡:独立短卡,不进 turn 状态机。
+        choices = event.payload.get("attach_choices") if event.payload else None
+        if isinstance(choices, list) and choices:
+            card = build_attach_menu_card(list(choices))
+            if buf.chat_id is not None and self._api_sender is not None:
+                await self._api_sender.send_card(receive_id=buf.chat_id, card=card)
+            return RenderedMessage(
+                adapter_id=self.adapter_id,
+                session_id=event.session_id,
+                text=str(event.payload.get("text", "") or ""),
+                metadata={"event_kind": event.kind, "attach_menu": True},
+            )
         ts = self._turn_for(buf, event)
         # Phase 4 / Task 4: 冻结的后台 run 仍要在 draft 上累积事件
         # (ph_replaced 时一次性出全卡),但不发任何 patch。

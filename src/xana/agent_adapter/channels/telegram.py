@@ -472,6 +472,36 @@ class TelegramAdapter(Adapter):
 
     async def render(self, event: AgentEvent) -> RenderedMessage:
         buf = self._get_or_create_buffer(event.session_id)
+        # /attach 菜单:独立短消息 inline_keyboard,不进 turn 状态机。
+        choices = event.payload.get("attach_choices") if event.payload else None
+        if isinstance(choices, list) and choices:
+            rows = []
+            for c in choices:
+                rid = str(c.get("run_id") or "")
+                if not rid:
+                    continue
+                label = str(c.get("label") or rid)
+                short = rid[-8:]
+                rows.append([{
+                    "text": f"{label} · {short}",
+                    "callback_data": f"attach:{rid}",
+                }])
+            markup = {"inline_keyboard": rows}
+            text = str(event.payload.get("text", "") or "选择要切回前台的后台运行")
+            if buf.chat_id is not None and self._api_client is not None:
+                try:
+                    await self._api_client.send_message(
+                        chat_id=buf.chat_id, text=text,
+                        parse_mode=None, reply_markup=markup,
+                    )
+                except Exception:
+                    pass
+            return RenderedMessage(
+                adapter_id=self.adapter_id,
+                session_id=event.session_id,
+                text=text,
+                metadata={"event_kind": event.kind, "attach_menu": True},
+            )
         ts = self._turn_for(buf, event)
         # Phase 4 / Task 5: frozen background runs accumulate into draft only;
         # no API calls until the next ph_replaced.

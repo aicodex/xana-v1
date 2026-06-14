@@ -200,3 +200,57 @@ def _buttons_elements(rows: list[list[dict]]) -> list[dict]:
         if cols:
             out.append({"tag": "column_set", "horizontal_spacing": "8px", "columns": cols})
     return out
+
+
+def build_attach_menu_card(choices: list[dict]) -> dict:
+    """/attach 菜单卡:每个 running run 一个按钮,点击 → attach_run action。
+    布局:每行最多 2 个按钮,column_set 分组。"""
+    rows: list[list[dict]] = []
+    cur: list[dict] = []
+    for c in choices or []:
+        run_id = str(c.get("run_id") or "")
+        label = str(c.get("label") or run_id)
+        if not run_id:
+            continue
+        short = run_id[-8:]
+        cur.append({
+            "run_id": run_id,
+            "label": label,
+            "short": short,
+        })
+        if len(cur) == 2:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+
+    elements: list[dict] = [
+        {"tag": "markdown", "content": "选择要切回前台的后台运行:"},
+    ]
+    for row in rows:
+        cols = []
+        for item in row:
+            cols.append({
+                "tag": "column", "width": "weighted", "weight": 1,
+                "vertical_align": "center",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text",
+                             "content": f"{item['label']} · {item['short']}"},
+                    "type": "default", "size": "medium",
+                    "behaviors": [{
+                        "type": "callback",
+                        "value": {"action": "attach_run", "run_id": item["run_id"]},
+                    }],
+                }],
+            })
+        elements.append({
+            "tag": "column_set", "horizontal_spacing": "8px", "columns": cols,
+        })
+    return {
+        "schema": "2.0",
+        "config": {"width_mode": "fill"},
+        "header": {"title": {"tag": "plain_text",
+                             "content": "🔄 切回后台运行"}},
+        "body": {"elements": elements},
+    }
