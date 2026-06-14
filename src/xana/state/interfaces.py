@@ -40,7 +40,18 @@ class RunStore(ABC):
     async def update_usage(self, run_id: str, usage: UsageSnapshot) -> None: ...
 
     @abstractmethod
-    async def list_unfinished(self) -> tuple[RunRecord, ...]: ...
+    async def list_unfinished(self) -> tuple[RunRecord, ...]:
+        """返回可恢复(/resume 候选)的 run 记录。
+
+        过滤规则(P5.4):
+          - status 在 {"running","paused"} **或** exit_reason 在
+            {"user_cancel","tool_kill_timeout","shutdown_graceful","shutdown_force"}
+            的记录进入候选。
+          - exit_reason 在
+            {"network_error","llm_timeout","session_lost","tool_error","unknown"}
+            的一律排除(无论 status)。
+        """
+        ...
 
     @abstractmethod
     async def list_by_session(self, session_id: str) -> tuple[RunRecord, ...]: ...

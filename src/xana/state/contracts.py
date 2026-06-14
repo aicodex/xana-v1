@@ -87,3 +87,13 @@ class ResumeDecision:
     action: ResumeAction
     reason: str
     checkpoint: Checkpoint | None = None
+
+
+RESUMABLE_EXIT_REASONS: frozenset[ExitReason] = frozenset({
+    "user_cancel", "tool_kill_timeout",
+    "shutdown_graceful", "shutdown_force",
+})
+EXCLUDED_EXIT_REASONS: frozenset[ExitReason] = frozenset({
+    "network_error", "llm_timeout",
+    "session_lost", "tool_error", "unknown",
+})

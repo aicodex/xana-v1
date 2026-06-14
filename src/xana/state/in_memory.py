@@ -3,7 +3,15 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from xana.state.contracts import Checkpoint, RunRecord, RunStatus, SessionRecord, UsageSnapshot
+from xana.state.contracts import (
+    EXCLUDED_EXIT_REASONS,
+    RESUMABLE_EXIT_REASONS,
+    Checkpoint,
+    RunRecord,
+    RunStatus,
+    SessionRecord,
+    UsageSnapshot,
+)
 from xana.state.interfaces import RunStore, SessionStore, StateRepository
 
 
@@ -56,7 +64,13 @@ class InMemoryRunStore(RunStore):
         self._store[run_id] = replace(current, usage=usage)
 
     async def list_unfinished(self) -> tuple[RunRecord, ...]:
-        return tuple(r for r in self._store.values() if r.status in ("running", "paused"))
+        out: list[RunRecord] = []
+        for rec in self._store.values():
+            if rec.exit_reason in EXCLUDED_EXIT_REASONS:
+                continue
+            if rec.status in ("running", "paused") or rec.exit_reason in RESUMABLE_EXIT_REASONS:
+                out.append(rec)
+        return tuple(out)
 
     async def list_by_session(self, session_id: str) -> tuple[RunRecord, ...]:
         return tuple(r for r in self._store.values() if r.session_id == session_id)

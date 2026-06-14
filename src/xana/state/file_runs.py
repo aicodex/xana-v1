@@ -15,7 +15,14 @@ from typing import Literal
 
 from xana.memory.contracts import HistoryRow
 from xana.memory.file_history import _row_to_json
-from xana.state.contracts import Checkpoint, RunRecord, RunStatus, UsageSnapshot
+from xana.state.contracts import (
+    EXCLUDED_EXIT_REASONS,
+    RESUMABLE_EXIT_REASONS,
+    Checkpoint,
+    RunRecord,
+    RunStatus,
+    UsageSnapshot,
+)
 from xana.state.interfaces import RunStore
 
 
@@ -45,6 +52,7 @@ def _record_from_json(text: str) -> RunRecord:
         pause_reason=d.get("pause_reason"),
         abort_reason=d.get("abort_reason"),
         error=d.get("error"),
+        exit_reason=d.get("exit_reason"),
         metadata=d.get("metadata") or {},
     )
 
@@ -112,7 +120,13 @@ class FileRunStore(RunStore):
         return out
 
     async def list_unfinished(self) -> tuple[RunRecord, ...]:
-        return tuple(r for r in await self._iter() if r.status in ("running", "paused"))
+        out: list[RunRecord] = []
+        for rec in await self._iter():
+            if rec.exit_reason in EXCLUDED_EXIT_REASONS:
+                continue
+            if rec.status in ("running", "paused") or rec.exit_reason in RESUMABLE_EXIT_REASONS:
+                out.append(rec)
+        return tuple(out)
 
     async def list_by_session(self, session_id: str) -> tuple[RunRecord, ...]:
         return tuple(r for r in await self._iter() if r.session_id == session_id)
