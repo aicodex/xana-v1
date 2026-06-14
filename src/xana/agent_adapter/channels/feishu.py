@@ -346,7 +346,11 @@ class FeishuAdapter(Adapter):
         # card. Any event whose run_id != fg_run_id accumulates into draft only;
         # ph_replaced will materialize a bg "completed" card later.
         rid_for_freeze = ts.draft.run_id
-        if state is not None and state.fg_run_id is not None and rid_for_freeze != state.fg_run_id:
+        # Only apply the fg-guard if this rid is a tracked run AND it's not the fg.
+        # Command/menu events (cmd-...) and other side messages are not in
+        # state.runs and must pass through.
+        is_tracked_run = state is not None and rid_for_freeze in state.runs
+        if is_tracked_run and state.fg_run_id is not None and rid_for_freeze != state.fg_run_id:
             return await self._render_into_draft_only(event, ts)
         # Legacy fallback for code paths that still set is_frozen without
         # going through the PH state machine (kept for back-compat).
@@ -409,6 +413,9 @@ class FeishuAdapter(Adapter):
             ts.draft.footer_meta = footer
             ts.finalized = True
             await ts.coalescer.finalize(self._make_send(buf, ts, finalize=True))
+            if state is not None and state.fg_run_id == ts.draft.run_id:
+                state.fg_run_id = None
+                state.fg_message_id = None
         elif hkind == "error":
             ts.draft.close_running_tools()
             err = text or str(payload.get("error", "") or "")
@@ -418,6 +425,9 @@ class FeishuAdapter(Adapter):
                 ts.draft.buttons = list(payload_rows)
             ts.finalized = True
             await ts.coalescer.finalize(self._make_send(buf, ts, finalize=True))
+            if state is not None and state.fg_run_id == ts.draft.run_id:
+                state.fg_run_id = None
+                state.fg_message_id = None
         # 其他 harness kind(turn_started/paused/cancelled 等):不渲染。
 
         return RenderedMessage(
@@ -527,7 +537,8 @@ class FeishuAdapter(Adapter):
         # ph_replaced).
         state = self._render_states.get(sid)
         rid_p = ts.draft.run_id
-        if state is not None and state.fg_run_id is not None and rid_p != state.fg_run_id:
+        is_tracked_p = state is not None and rid_p in state.runs
+        if is_tracked_p and state.fg_run_id is not None and rid_p != state.fg_run_id:
             return
         if state is not None and rid_p in state.runs and state.runs[rid_p].is_frozen:
             return
@@ -542,7 +553,8 @@ class FeishuAdapter(Adapter):
             # Dual-card: only the current fg run patches the fg streaming card.
             # If state machine knows a fg and this isn't it, drop silently —
             # _render_into_draft_only already accumulated the draft.
-            if state is not None and state.fg_run_id is not None and rid != state.fg_run_id:
+            is_tracked = state is not None and rid in state.runs
+            if is_tracked and state.fg_run_id is not None and rid != state.fg_run_id:
                 return
             card = build_fg_streaming_card(ts.draft, finalize=finalize)
             if ts.message_id is None:
@@ -704,6 +716,11 @@ class FeishuAdapter(Adapter):
             # finalized the fg card — noop here.
             if rid in state.bg_cards:
                 self._schedule(self._complete_bg_card(sid, rid))
+            # Clear stale fg pointer so subsequent slash-command events
+            # (run_id=cmd-{sid}-N) aren't gated by the fg-guard.
+            if state.fg_run_id == rid:
+                state.fg_run_id = None
+                state.fg_message_id = None
             return
         if kind == "run_completed_bg":
             # ph_replaced already handled it; noop.

@@ -511,8 +511,13 @@ class TelegramAdapter(Adapter):
         )
         # Group F dual-card: only fg run's events touch the fg streaming
         # message. Non-fg / frozen runs accumulate into draft only.
-        if state is not None and state.fg_run_id is not None \
-                and rid_hkind and rid_hkind != state.fg_run_id:
+        # Only apply fg-guard for tracked runs; command/menu events with
+        # synthetic run_id (cmd-...) aren't in state.runs and must pass through.
+        is_tracked_run = (
+            state is not None and rid_hkind and rid_hkind in state.runs
+        )
+        if is_tracked_run and state.fg_run_id is not None \
+                and rid_hkind != state.fg_run_id:
             return await self._render_into_draft_only(event, ts)
         if (state is not None and rid_hkind and rid_hkind in state.runs
                 and state.runs[rid_hkind].is_frozen):
@@ -582,6 +587,9 @@ class TelegramAdapter(Adapter):
             ts.draft.footer_meta = footer
             ts.finalized = True
             await ts.coalescer.finalize(self._make_finalize_send(buf, ts))
+            if state is not None and state.fg_run_id == ts.draft.run_id:
+                state.fg_run_id = None
+                state.fg_message_id = None
         elif hkind == "error":
             for blk in ts.draft.close_running_tools():
                 await self._send_tool_message(buf, ts, blk.call_id)
@@ -593,6 +601,9 @@ class TelegramAdapter(Adapter):
                 ts.last_buttons = ts.draft.buttons
             ts.finalized = True
             await ts.coalescer.finalize(self._make_finalize_send(buf, ts))
+            if state is not None and state.fg_run_id == ts.draft.run_id:
+                state.fg_run_id = None
+                state.fg_message_id = None
         # 其他 harness kind(turn_started/paused/cancelled 等):不渲染。
 
         return RenderedMessage(
@@ -786,6 +797,11 @@ class TelegramAdapter(Adapter):
         if kind == "ph_replaced":
             if rid in state.bg_cards:
                 self._schedule(self._complete_bg_message(sid, rid))
+            # Clear stale fg pointer so subsequent slash-command events
+            # (run_id=cmd-{sid}-N) aren't gated by the fg-guard.
+            if state.fg_run_id == rid:
+                state.fg_run_id = None
+                state.fg_message_id = None
             return
         if kind == "run_completed_bg":
             return
@@ -926,7 +942,9 @@ class TelegramAdapter(Adapter):
             rid = ts.draft.run_id
             state = self._render_states.get(buf.session_id)
             # Dual-card: only fg run is allowed to patch its streaming message.
-            if state is not None and state.fg_run_id is not None and rid != state.fg_run_id:
+            # Untracked rids (command/menu cmd-...) bypass this guard.
+            is_tracked = state is not None and rid in state.runs
+            if is_tracked and state.fg_run_id is not None and rid != state.fg_run_id:
                 return
             html = render_streaming(ts.draft)
             markup = self._fg_keyboard()
