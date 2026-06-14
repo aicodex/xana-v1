@@ -82,6 +82,49 @@ def render_answer(draft: TurnDraft) -> str:
     return clip_html("\n".join(parts).strip() or " ")
 
 
+def render_bg_text(
+    *,
+    label: str,
+    state: str,
+    progress_pct: int,
+    panel_md: str,
+    compacted_n: int = 0,
+) -> str:
+    """Group F: bg placeholder text-message body (header chip + progress bar +
+    content panel). Mirrors Feishu's bg card. Uses Telegram Markdown-style
+    formatting in plain text — caller does NOT pass parse_mode (raw text is fine,
+    inline backticks render even without parse_mode set is_not guaranteed; we
+    therefore omit parse_mode at send-site to avoid formatting failures)."""
+    heads = {
+        "running": "🟡 正在后台",
+        "compacting": "🌀 正在压缩…",
+        "completed": "✅ 回答完成",
+        "cancelled": "🛑 已取消",
+        "failed": "✖ 失败",
+    }
+    head = heads.get(state, "·")
+    if compacted_n > 0 and state in ("running", "completed"):
+        head = f"已压缩 {compacted_n} 条 · " + head
+    pct = max(0, min(100, int(progress_pct)))
+    filled = pct // 10
+    bar = "▰" * filled + "▱" * (10 - filled)
+    return f"*{head} · {label}*\n`{bar} {pct}%`\n\n{panel_md or '正在后台运行…'}"
+
+
+def bg_panel_md(draft: TurnDraft) -> str:
+    """Compact markdown view of a draft for use in the bg placeholder body
+    (mirrors feishu _bg_panel_md)."""
+    parts: list[str] = []
+    if draft.thinking:
+        parts.append(f"**思考**\n{draft.thinking}")
+    for blk in draft.tool_blocks:
+        body = (blk.result or "⏳")[:500]
+        parts.append(f"**{blk.header()}**\n{body}")
+    if draft.content:
+        parts.append(f"**回答**\n{draft.content}")
+    return "\n\n".join(parts) if parts else "正在后台运行…"
+
+
 def format_frozen_ph_html(draft: TurnDraft, label: str) -> str:
     """Phase 4 / Task 5: frozen-PH placeholder text for a detached background run.
 
