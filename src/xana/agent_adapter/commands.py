@@ -169,7 +169,7 @@ class DefaultCommandRouter(CommandRouter):
         # 并向对应 adapter 发 compact_started → 触发 compact 卡片渲染。
         ph_note = None
         if self.gateway is not None:
-            self.gateway.detach_inflight_for(inbound.session_id)
+            await self.gateway.detach_foreground(inbound.session_id)
             adapters = getattr(self.gateway, "adapters", {}) or {}
             adapter = adapters.get(inbound.adapter_id)
             if adapter is not None:

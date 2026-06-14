@@ -46,10 +46,34 @@ class DefaultAgentGateway(AgentGateway):
         self.bindings[binding.session_id] = binding
 
     async def detach_foreground(self, session_id: str) -> None:
-        raise NotImplementedError("Group D")
+        for ir in self._inflight.get(session_id, []):
+            if ir.is_attached:
+                ir.is_attached = False
+                for adapter in self.adapters.values():
+                    self._notify_run_detached(adapter, session_id, ir)
+                return
 
     async def attach(self, session_id: str, run_id: str) -> None:
-        raise NotImplementedError("Group D")
+        runs = self._inflight.get(session_id, [])
+        target = next((ir for ir in runs if ir.run_id == run_id), None)
+        if target is None:
+            return  # unknown / already replaced; noop per spec
+        # auto-detach current fg(s)
+        for ir in runs:
+            if ir.run_id != run_id and ir.is_attached:
+                ir.is_attached = False
+                for ad in self.adapters.values():
+                    self._notify_run_detached(ad, session_id, ir)
+        target.is_attached = True
+        for ad in self.adapters.values():
+            note = getattr(ad, "note_progress", None)
+            if note is not None:
+                note({
+                    "kind": "attached",
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "label": target.label,
+                })
 
     def submit(self, inbound: InboundMessage) -> AsyncIterator[RenderedMessage]:
         return self._submit(inbound)
@@ -101,12 +125,8 @@ class DefaultAgentGateway(AgentGateway):
                 yield self._attach_event_kind(rendered, event)
                 return
 
-        # 旧 run 转后台 —— 不 cancel,只标 detached,并通知 adapter 刷 tab。
-        existing = self._inflight.get(inbound.session_id, [])
-        for ir in existing:
-            if ir.is_attached:
-                ir.is_attached = False
-                self._notify_run_detached(adapter, inbound.session_id, ir)
+        # 旧 run 转后台 —— 不 cancel,只标 detached,并通知所有 adapter 刷 tab。
+        await self.detach_foreground(inbound.session_id)
 
         import uuid as _uuid
         self._run_seq += 1
@@ -169,20 +189,6 @@ class DefaultAgentGateway(AgentGateway):
                         "session_id": inbound.session_id,
                         "run_id": new_run.run_id,
                     })
-
-    def detach_inflight_for(self, session_id: str) -> None:
-        """Mark all inflight runs for session as detached and notify adapters.
-
-        Used by /compact (and by extension any explicit "interrupt + take over"
-        command) to give the PH-driven adapter the same detach signal a new
-        user message would.
-        """
-        for ir in self._inflight.get(session_id, []):
-            if not ir.is_attached:
-                continue
-            ir.is_attached = False
-            for adapter in self.adapters.values():
-                self._notify_run_detached(adapter, session_id, ir)
 
     @staticmethod
     def _notify_run_detached(adapter, session_id: str, ir: "InflightRun") -> None:

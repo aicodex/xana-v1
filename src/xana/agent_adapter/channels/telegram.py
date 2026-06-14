@@ -341,10 +341,10 @@ class TelegramAdapter(Adapter):
             if target_rid and self._gateway is not None:
                 session_id = self._bindings.allocate(chat_id, prefix="tg")
                 try:
-                    await self._gateway.switch_foreground(session_id, target_rid)
+                    await self._gateway.attach(session_id, target_rid)
                 except Exception as exc:
                     _logger.debug(
-                        "telegram: switch_foreground failed (%s): %s",
+                        "telegram: attach failed (%s): %s",
                         type(exc).__name__, self._redact(str(exc)),
                     )
             if self._api_client is not None and cq.get("id"):

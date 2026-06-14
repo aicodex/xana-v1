@@ -161,10 +161,10 @@ async def _repl_loop(
             adapter.set_foreground(target_rid)
             if cur_rid:
                 adapter.bg_runs[cur_rid] = cur_rid
-            switch = getattr(gateway, "switch_foreground", None)
-            if switch is not None:
+            attach = getattr(gateway, "attach", None)
+            if attach is not None:
                 import asyncio as _a
-                _a.create_task(switch(session_id, target_rid))
+                _a.create_task(attach(session_id, target_rid))
 
         prompt = PromptSession("> ", bottom_toolbar=_bottom_toolbar, key_bindings=kb)
         prompt_ctx = patch_stdout()

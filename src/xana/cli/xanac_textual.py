@@ -98,8 +98,8 @@ class XanacApp(App):
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
-        if isinstance(item, _TabItem) and hasattr(self.gateway, "switch_foreground"):
-            await self.gateway.switch_foreground(self.session_id, item.run_id)
+        if isinstance(item, _TabItem) and hasattr(self.gateway, "attach"):
+            await self.gateway.attach(self.session_id, item.run_id)
             self.set_focus(self.query_one("#input", Input))
 
     # ----- Renderer-facing API -----

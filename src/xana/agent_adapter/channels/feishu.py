@@ -232,14 +232,14 @@ class FeishuAdapter(Adapter):
         gateway.switch_foreground() instead of the inbound queue."""
         value = (event.get("action") or {}).get("value", {}) or {}
         chat_id = str((event.get("context") or {}).get("open_chat_id", "") or "")
-        # PH switch-foreground action
-        if str(value.get("action", "")) == "switch_foreground":
+        # PH attach action (was: switch_foreground)
+        if str(value.get("action", "")) in ("switch_foreground", "attach_run"):
             target_run_id = str(value.get("run_id", "") or "")
             if not target_run_id or not chat_id or self._gateway is None:
                 return
             session_id = self._bindings.allocate(chat_id, prefix="feishu")
             try:
-                await self._gateway.switch_foreground(session_id, target_run_id)
+                await self._gateway.attach(session_id, target_run_id)
             except Exception:
                 pass
             return
