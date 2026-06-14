@@ -274,168 +274,211 @@ class DefaultHarness(Harness):
         agent_name = request.agent_name
 
         # ------------------------------------------------------------------
-        # Phase 3 Task 6: async branch.
-        # When ctx.async_mode is True and a MainWriter + RunJsonlWriter were
-        # injected via metadata, fork a background task that drives the full
-        # _run_query_loop against a forked ActiveContextStore + JSONL mirror.
-        # The foreground generator yields turn_started + every event the bg
-        # task produces (via an asyncio.Queue) until the bg task finishes.
-        # The bg task finalizes the per-run JSONL and enqueues a placeholder
-        # replacement via MainWriter when done.
+        # Spec §1.5 — sync vs async唯一差异 = consumer。
+        # PH ritual (snapshot → append user_msg → append PH) fires for BOTH
+        # modes so /attach can see in-flight runs regardless of mode.
+        # Only consumer differs: async fires-and-forgets bg task; sync awaits
+        # the run inline. Both route writeback through write_queue (or fall
+        # back to direct store call when wq is not wired in tests).
         # ------------------------------------------------------------------
+        from xana.state.file_runs import new_run_id as _new_run_id
+        import asyncio as _asyncio
+
+        # Async mode requires writers wired via metadata; otherwise fall
+        # back to a sync-mode-style PH ritual without per-run JSONL.
+        async_writers_ok = False
+        main_writer = context.metadata.get("main_writer")
+        run_jsonl_writer = context.metadata.get("run_jsonl_writer")
         if context.async_mode:
-            main_writer = context.metadata.get("main_writer")
-            run_jsonl_writer = context.metadata.get("run_jsonl_writer")
             if main_writer is None or run_jsonl_writer is None:
                 _logger.warning(
                     "async_mode set but main_writer/run_jsonl_writer missing in "
-                    "ctx.metadata; falling back to sync path"
+                    "ctx.metadata; falling back to sync PH ritual"
                 )
             else:
-                from xana.state.file_runs import new_run_id as _new_run_id
-                import asyncio as _asyncio
+                async_writers_ok = True
 
-                run_id = context.run_id or _new_run_id()
-                assert context.active_context_store is not None, "ActiveContextStore required"
+        # Without an ActiveContextStore there is no PH ritual to perform —
+        # fall straight through to the legacy sync path of _run_query_loop.
+        if context.active_context_store is None:
+            async for ev in self._run_query_loop(request, context):
+                yield ev
+            return
 
-                # a) snapshot REAL store BEFORE appending the user_msg.
-                # Keep Placeholders (from OTHER concurrent runs) in the seed
-                # so the LLM prompt can render them via ph_expand. This run's
-                # own PH is appended AFTER snapshot, so it's never seen here.
-                pre_snapshot = await context.active_context_store.snapshot(session_id, agent_name)
-                pre_msgs = tuple(pre_snapshot)
+        run_id = context.run_id or _new_run_id()
 
-                # b) append user_msg + PH to the REAL store (UI sees both)
-                user_msg = MemoryMessage(role="user", content=request.user_input)
-                await context.active_context_store.append_message(session_id, agent_name, user_msg)
-                if context.history_mirror is not None:
-                    await context.history_mirror.append(HistoryRow(
-                        row_id=f"{run_id}:user", session_id=session_id,
-                        agent_name=agent_name, kind="user", payload=user_msg, ts=time.time(),
+        # a) Snapshot REAL store BEFORE appending the user_msg. Keep
+        # Placeholders (from OTHER concurrent runs) in the seed so the LLM
+        # prompt can render them via ph_expand. This run's own PH is
+        # appended AFTER snapshot, so it's never seen here.
+        pre_snapshot = await context.active_context_store.snapshot(session_id, agent_name)
+        pre_msgs = tuple(pre_snapshot)
+
+        # b) Append user_msg + PH to the REAL store (UI sees both).
+        user_msg = MemoryMessage(role="user", content=request.user_input)
+        await context.active_context_store.append_message(session_id, agent_name, user_msg)
+        if context.history_mirror is not None:
+            await context.history_mirror.append(HistoryRow(
+                row_id=f"{run_id}:user", session_id=session_id,
+                agent_name=agent_name, kind="user", payload=user_msg, ts=time.time(),
+            ))
+
+        label = (request.user_input or "")[:12]
+        ph = Placeholder(
+            run_id=run_id, label=label, status="running",
+            jsonl_path=Path(f"runs/{run_id}.jsonl"),
+        )
+        await context.active_context_store.append_placeholder(session_id, agent_name, ph)
+
+        # c) Build forked store seeded with pre_snapshot + user_msg.
+        fork_store = _ForkedActiveContextStore(
+            session_id=session_id, agent_name=agent_name,
+            seed_messages=pre_msgs + (user_msg,),
+        )
+
+        # d) per-run JSONL mirror when wired (async writers ok), else keep
+        #    the existing real mirror (sync mode without write_queue wiring).
+        if async_writers_ok:
+            jsonl_mirror: Any = _RunJsonlMirror(
+                writer=run_jsonl_writer, run_id=run_id,
+                session_id=session_id, agent_name=agent_name,
+            )
+        else:
+            jsonl_mirror = context.history_mirror
+
+        # e) forked context — async_mode=False so the recursive call drops
+        #    into the sync path of _run_query_loop. _run_query_loop will NOT
+        #    re-append user_msg (handled here in _invoke).
+        forked_context = replace(
+            context,
+            active_context_store=fork_store,
+            history_mirror=jsonl_mirror,
+            run_id=run_id,
+            async_mode=False,
+        )
+
+        async def _finalize_writeback(produced: tuple[MemoryMessage, ...], status: str) -> None:
+            """Route PH replacement through write_queue (preferred) or fall
+            back to direct store/main_writer write. Spec §1.6."""
+            wq = context.metadata.get("write_queue")
+            runs_dir = context.metadata.get("runs_dir")
+            if wq is not None:
+                try:
+                    from xana.memory.runs_loader import (
+                        runs_jsonl_to_memory_messages,
+                    )
+                    from xana.memory.write_queue import ReplaceItem
+                    msgs: tuple[MemoryMessage, ...]
+                    if runs_dir is not None:
+                        msgs = runs_jsonl_to_memory_messages(
+                            Path(runs_dir) / f"{run_id}.jsonl"
+                        )
+                    else:
+                        msgs = ()
+                    if not msgs:
+                        msgs = tuple(produced)
+                    await wq.put(ReplaceItem(
+                        run_id=run_id,
+                        session_id=session_id,
+                        agent_name=agent_name,
+                        messages=msgs,
                     ))
-
-                label = (request.user_input or "")[:12]
-                ph = Placeholder(
-                    run_id=run_id, label=label, status="running",
-                    jsonl_path=Path(f"runs/{run_id}.jsonl"),
-                )
-                await context.active_context_store.append_placeholder(session_id, agent_name, ph)
-
-                # c) Build forked store seeded with pre_snapshot + user_msg.
-                fork_store = _ForkedActiveContextStore(
-                    session_id=session_id, agent_name=agent_name,
-                    seed_messages=pre_msgs + (user_msg,),
-                )
-                # d) per-run JSONL mirror
-                jsonl_mirror = _RunJsonlMirror(
-                    writer=run_jsonl_writer, run_id=run_id,
-                    session_id=session_id, agent_name=agent_name,
-                )
-                # e) forked context — async_mode=False so the recursive call
-                #    drops into the sync path of _run_query_loop.
-                forked_context = replace(
-                    context,
-                    active_context_store=fork_store,
-                    history_mirror=jsonl_mirror,
-                    run_id=run_id,
-                    async_mode=False,
-                )
-
-                # f) background task: stream events into queue + finalize.
-                event_queue: _asyncio.Queue = _asyncio.Queue()
-                _SENTINEL: Any = object()
-
-                async def _bg_run() -> None:
-                    status: str = "completed"
-                    try:
-                        async for ev in self._run_query_loop(request, forked_context):
-                            await event_queue.put(ev)
-                            if ev.kind == "error":
-                                status = "failed"
-                            elif ev.kind == "cancelled":
-                                status = "cancelled"
-                    except Exception:
-                        _logger.exception("async background _run_query_loop crashed")
-                        status = "failed"
-                    finally:
-                        await event_queue.put(_SENTINEL)
-                        produced = fork_store.produced_messages()
-                        if not produced and status != "completed":
-                            produced = (MemoryMessage(
-                                role="system",
-                                content=f"此回答未完成（status={status}）。",
-                            ),)
-                            try:
-                                await jsonl_mirror.append(HistoryRow(
-                                    row_id=f"{run_id}:bg:fail",
-                                    session_id=session_id, agent_name=agent_name,
-                                    kind="system", payload=produced[0], ts=time.time(),
-                                ))
-                            except Exception:
-                                _logger.exception("run_jsonl fail-row write failed")
-                        try:
-                            await run_jsonl_writer.finalize(run_id, status)
-                        except Exception:
-                            _logger.exception("run_jsonl_writer.finalize failed")
-                        # Group C: route PH replacement through the
-                        # session-wide write_queue when available. The
-                        # consumer (boot.write_consumer) drains it on a
-                        # SEPARATE asyncio task so sync mode does not
-                        # deadlock (spec section 11).
-                        wq = context.metadata.get("write_queue")
-                        runs_dir = context.metadata.get("runs_dir")
-                        if wq is not None:
-                            try:
-                                from xana.memory.runs_loader import (
-                                    runs_jsonl_to_memory_messages,
-                                )
-                                from xana.memory.write_queue import ReplaceItem
-                                msgs: tuple[MemoryMessage, ...]
-                                if runs_dir is not None:
-                                    msgs = runs_jsonl_to_memory_messages(
-                                        Path(runs_dir) / f"{run_id}.jsonl"
-                                    )
-                                else:
-                                    msgs = ()
-                                if not msgs:
-                                    # Fall back to fork_store snapshot
-                                    # (covers in-memory tests without runs_dir).
-                                    msgs = tuple(produced)
-                                await wq.put(ReplaceItem(
-                                    run_id=run_id,
-                                    session_id=session_id,
-                                    agent_name=agent_name,
-                                    messages=msgs,
-                                ))
-                            except Exception:
-                                _logger.exception("write_queue.put(ReplaceItem) failed")
-                        else:
-                            try:
-                                await main_writer.enqueue_replace_placeholder(
-                                    session_id=session_id, agent_name=agent_name,
-                                    run_id=run_id, replace_with=tuple(produced),
-                                )
-                            except Exception:
-                                _logger.exception("main_writer.enqueue_replace_placeholder failed")
-
-                task = _asyncio.create_task(_bg_run(), name=f"xana-async-run-{run_id}")
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-
-                # g) foreground generator: emit turn_started then forward events.
-                yield HarnessEvent(
-                    kind="turn_started", session_id=session_id, run_id=run_id,
-                    payload={"async": True, "label": label},
-                )
-                while True:
-                    ev = await event_queue.get()
-                    if ev is _SENTINEL:
-                        break
-                    yield ev
+                except Exception:
+                    _logger.exception("write_queue.put(ReplaceItem) failed")
                 return
+            if main_writer is not None:
+                try:
+                    await main_writer.enqueue_replace_placeholder(
+                        session_id=session_id, agent_name=agent_name,
+                        run_id=run_id, replace_with=tuple(produced),
+                    )
+                    return
+                except Exception:
+                    _logger.exception("main_writer.enqueue_replace_placeholder failed")
+            # Last-resort: write directly to the real store so the PH does
+            # not linger (covers sync-mode tests without any writer wiring).
+            try:
+                await context.active_context_store.replace_placeholder(
+                    run_id, tuple(produced)
+                )
+            except Exception:
+                _logger.exception("direct replace_placeholder fallback failed")
 
-        async for ev in self._run_query_loop(request, context):
-            yield ev
+        if async_writers_ok:
+            # ---- ASYNC: fork + background task + queued forwarding ----
+            event_queue: _asyncio.Queue = _asyncio.Queue()
+            _SENTINEL: Any = object()
+
+            async def _bg_run() -> None:
+                status: str = "completed"
+                try:
+                    async for ev in self._run_query_loop(request, forked_context):
+                        await event_queue.put(ev)
+                        if ev.kind == "error":
+                            status = "failed"
+                        elif ev.kind == "cancelled":
+                            status = "cancelled"
+                except Exception:
+                    _logger.exception("async background _run_query_loop crashed")
+                    status = "failed"
+                finally:
+                    await event_queue.put(_SENTINEL)
+                    produced = fork_store.produced_messages()
+                    if not produced and status != "completed":
+                        produced = (MemoryMessage(
+                            role="system",
+                            content=f"此回答未完成（status={status}）。",
+                        ),)
+                        try:
+                            await jsonl_mirror.append(HistoryRow(
+                                row_id=f"{run_id}:bg:fail",
+                                session_id=session_id, agent_name=agent_name,
+                                kind="system", payload=produced[0], ts=time.time(),
+                            ))
+                        except Exception:
+                            _logger.exception("run_jsonl fail-row write failed")
+                    try:
+                        await run_jsonl_writer.finalize(run_id, status)
+                    except Exception:
+                        _logger.exception("run_jsonl_writer.finalize failed")
+                    await _finalize_writeback(produced, status)
+
+            task = _asyncio.create_task(_bg_run(), name=f"xana-async-run-{run_id}")
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+            yield HarnessEvent(
+                kind="turn_started", session_id=session_id, run_id=run_id,
+                payload={"async": True, "label": label},
+            )
+            while True:
+                ev = await event_queue.get()
+                if ev is _SENTINEL:
+                    break
+                yield ev
+            return
+
+        # ---- SYNC: drive _run_query_loop inline, then enqueue writeback ----
+        status = "completed"
+        try:
+            async for ev in self._run_query_loop(request, forked_context):
+                if ev.kind == "error":
+                    status = "failed"
+                elif ev.kind == "cancelled":
+                    status = "cancelled"
+                yield ev
+        except Exception:
+            _logger.exception("sync _run_query_loop crashed")
+            status = "failed"
+            raise
+        finally:
+            produced = fork_store.produced_messages()
+            if not produced and status != "completed":
+                produced = (MemoryMessage(
+                    role="system",
+                    content=f"此回答未完成（status={status}）。",
+                ),)
+            await _finalize_writeback(produced, status)
 
     async def _run_query_loop(
         self, request: HarnessRequest, context: HarnessContext
@@ -487,18 +530,9 @@ class DefaultHarness(Harness):
         assert context.active_context_store is not None, "ActiveContextStore required"
         assert context.history_mirror is not None, "HistoryMirror required"
 
-        user_msg = MemoryMessage(role="user", content=request.user_input)
-        await context.active_context_store.append_message(session_id, agent_name, user_msg)
-        await context.history_mirror.append(
-            HistoryRow(
-                row_id=f"{run_id}:user",
-                session_id=session_id,
-                agent_name=agent_name,
-                kind="user",
-                payload=user_msg,
-                ts=0.0,
-            )
-        )
+        # NOTE: user_msg append + history mirror row are owned by _invoke
+        # (PH ritual, spec §1.5). _run_query_loop runs against a forked
+        # store that is already seeded with the user_msg.
 
         injected_head: list[str] = []
         injected_tail: list[str] = []
@@ -969,10 +1003,14 @@ class _ForkedActiveContextStore(ActiveContextStore):
         return self._ctx()
 
     async def set(self, context: ActiveContext) -> None:
-        # Used by compaction. We honor it but don't treat the synthesized
-        # messages as "produced" — they replace the seed view.
+        # Used by compaction. After set(), the seed view is replaced with
+        # the post-compact context (boundary + summary). Push those into
+        # `_produced` too so the PH-replacement payload carries the compact
+        # summary forward into the real store (spec §1.6 case A: compact
+        # summary lands on the PH's bg card).
         self._messages = list(context.messages)
         self._summary = context.summary
+        self._produced = [m for m in context.messages]
 
     async def append_message(
         self, session_id: str, agent_name: str, message: MemoryMessage
