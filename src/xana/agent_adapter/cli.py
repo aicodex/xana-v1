@@ -239,7 +239,10 @@ class CliAdapter(Adapter):
             self._schedule_renderer(r.on_run_started(rid, str(payload.get("label") or "")))
         elif kind == "run_detached":
             self._schedule_renderer(r.on_run_detached(rid))
-        elif kind == "foreground_changed":
+        elif kind in ("foreground_changed", "attached"):
+            # Gateway now emits "attached"; "foreground_changed" kept as
+            # legacy alias. The CliRenderer ABC method name is unchanged
+            # (contract-stable) — see interfaces.CliRenderer.on_foreground_changed.
             self._schedule_renderer(r.on_foreground_changed(rid))
         elif kind == "ph_replaced":
             self._schedule_renderer(r.on_ph_replaced(rid, payload.get("draft")))
