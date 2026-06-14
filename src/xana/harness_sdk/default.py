@@ -298,9 +298,12 @@ class DefaultHarness(Harness):
                 run_id = context.run_id or _new_run_id()
                 assert context.active_context_store is not None, "ActiveContextStore required"
 
-                # a) snapshot REAL store BEFORE appending the user_msg
+                # a) snapshot REAL store BEFORE appending the user_msg.
+                # Keep Placeholders (from OTHER concurrent runs) in the seed
+                # so the LLM prompt can render them via ph_expand. This run's
+                # own PH is appended AFTER snapshot, so it's never seen here.
                 pre_snapshot = await context.active_context_store.snapshot(session_id, agent_name)
-                pre_msgs = tuple(m for m in pre_snapshot if isinstance(m, MemoryMessage))
+                pre_msgs = tuple(pre_snapshot)
 
                 # b) append user_msg + PH to the REAL store (UI sees both)
                 user_msg = MemoryMessage(role="user", content=request.user_input)
@@ -628,7 +631,14 @@ class DefaultHarness(Harness):
                 ),
             )
 
-            assembled = _assemble_for_model(system_content, history_msgs)
+            # PH-first: re-read mixed snapshot (may contain Placeholders from
+            # other concurrent runs) and expand them into synthetic
+            # user/assistant pairs before sending to the LLM. The run never
+            # sees its own PH (fork snapshot was taken pre-append).
+            from xana.harness_sdk.ph_expand import expand_placeholders as _expand_ph
+            _mixed_snap = await context.active_context_store.snapshot(session_id, agent_name)
+            _prompt_msgs = _expand_ph(_mixed_snap) if _mixed_snap else history_msgs
+            assembled = _assemble_for_model(system_content, _prompt_msgs)
             self.last_assembled_messages = assembled
 
             model_request = ModelRequest(
@@ -867,11 +877,14 @@ class _ForkedActiveContextStore(ActiveContextStore):
         *,
         session_id: str,
         agent_name: str,
-        seed_messages: tuple[MemoryMessage, ...],
+        seed_messages: tuple[MemoryMessage | Placeholder, ...],
     ) -> None:
         self._session_id = session_id
         self._agent_name = agent_name
-        self._messages: list[MemoryMessage] = list(seed_messages)
+        # Mixed list: other runs' Placeholders may be seeded from pre_snapshot
+        # so the LLM prompt can show them via ph_expand. ActiveContext.messages
+        # (returned by _ctx) stays pure MemoryMessage per the contract.
+        self._messages: list[MemoryMessage | Placeholder] = list(seed_messages)
         self._produced: list[MemoryMessage] = []
         self._summary: str = ""
 
@@ -879,12 +892,13 @@ class _ForkedActiveContextStore(ActiveContextStore):
         return tuple(self._produced)
 
     def _ctx(self) -> ActiveContext:
+        pure = tuple(m for m in self._messages if isinstance(m, MemoryMessage))
         return ActiveContext(
             session_id=self._session_id,
             agent_name=self._agent_name,
-            messages=tuple(self._messages),
+            messages=pure,
             summary=self._summary,
-            token_estimate=sum(len(m.content) for m in self._messages),
+            token_estimate=sum(len(m.content) for m in pure),
         )
 
     async def get(self, session_id: str, agent_name: str) -> ActiveContext | None:
@@ -939,7 +953,10 @@ class _ForkedActiveContextStore(ActiveContextStore):
         end_idx: int,
         summary_message: MemoryMessage,
     ) -> ActiveContext | None:
-        raise NotImplementedError("Group H")
+        if start_idx < 0 or end_idx > len(self._messages) or start_idx >= end_idx:
+            return None
+        self._messages[start_idx:end_idx] = [summary_message]
+        return self._ctx()
 
 
 class _RunJsonlMirror(HistoryMirror):

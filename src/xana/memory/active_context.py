@@ -92,7 +92,24 @@ class InMemoryActiveContextStore(ActiveContextStore):
         end_idx: int,
         summary_message: MemoryMessage,
     ) -> ActiveContext | None:
-        raise NotImplementedError("Group H")
+        key = (session_id, agent_name)
+        items = self._snapshots.get(key)
+        if items is None:
+            return None
+        if start_idx < 0 or end_idx > len(items) or start_idx >= end_idx:
+            return None
+        items[start_idx:end_idx] = [summary_message]
+        msgs = tuple(x for x in items if isinstance(x, MemoryMessage))
+        current = self._store.get(key) or ActiveContext(
+            session_id=session_id, agent_name=agent_name
+        )
+        updated = replace(
+            current,
+            messages=msgs,
+            token_estimate=sum(len(m.content) for m in msgs),
+        )
+        self._store[key] = updated
+        return updated
 
 
 class InMemoryHistoryMirror(HistoryMirror):
