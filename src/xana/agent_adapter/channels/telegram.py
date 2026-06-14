@@ -761,6 +761,8 @@ class TelegramAdapter(Adapter):
                 self._schedule(self._create_bg_message(sid, rid, label))
             return
         if kind in ("attached", "foreground_changed"):
+            # DEPRECATED: 'foreground_changed' alias for back-compat with adapters
+            # that haven't migrated; remove after Group L.
             prev_fg = state.fg_run_id
             label = str(payload.get("label") or "")
             if rid not in state.runs:

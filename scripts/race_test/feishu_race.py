@@ -7,6 +7,12 @@ Usage:
 
 a = detach scenario (U1 → U2)
 c = switch_foreground scenario (U1 → U2 → switch back)
+
+Group K (2026-06-14): scenarios still reference legacy switch_foreground and
+ph_replaced semantics. Updated assertions live in tests/test_feishu_race_e2e.py
+(scenario_c now exercises attach() instead). This manual driver should be
+updated to the dual-card model before it can run again — for now treat it as
+reference-only history.
 """
 from __future__ import annotations
 

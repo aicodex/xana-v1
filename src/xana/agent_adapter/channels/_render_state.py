@@ -59,17 +59,6 @@ class SessionRenderState:
             self.runs.popitem(last=False)
         return st
 
-    def switch_foreground(self, run_id: str) -> None:
-        """Make run_id the foreground (frozen=False); freeze previous foreground. No-op if unknown."""
-        if run_id not in self.runs:
-            return
-        if self.foreground_run_id and self.foreground_run_id in self.runs:
-            self.runs[self.foreground_run_id].is_foreground = False
-            self.runs[self.foreground_run_id].is_frozen = True
-        self.runs[run_id].is_foreground = True
-        self.runs[run_id].is_frozen = False
-        self.foreground_run_id = run_id
-
     def detach(self, run_id: str) -> None:
         """Mark run as frozen background; clear foreground_run_id if it was foreground."""
         if run_id in self.runs:

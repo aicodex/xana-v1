@@ -249,7 +249,8 @@ class FeishuAdapter(Adapter):
         value = (event.get("action") or {}).get("value", {}) or {}
         chat_id = str((event.get("context") or {}).get("open_chat_id", "") or "")
         action = str(value.get("action", "") or "")
-        # PH attach action (legacy switch_foreground alias + new attach_run)
+        # PH attach action (new attach_run; switch_foreground kept as
+        # DEPRECATED alias for back-compat with old card payloads — remove after Group L)
         if action in ("switch_foreground", "attach_run"):
             target_run_id = str(value.get("run_id", "") or "")
             if not target_run_id or not chat_id or self._gateway is None:
@@ -624,6 +625,8 @@ class FeishuAdapter(Adapter):
                 self._schedule(self._create_bg_card(sid, rid, label))
             return
         if kind in ("attached", "foreground_changed"):
+            # DEPRECATED: 'foreground_changed' alias for back-compat with adapters
+            # that haven't migrated; remove after Group L.
             # New event name 'attached' replaces 'foreground_changed'.
             prev_fg = state.fg_run_id
             label = str(payload.get("label") or "")
