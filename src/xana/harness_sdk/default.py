@@ -19,6 +19,8 @@ for durable log, RunStore (via StateRepository) for run metadata.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import time
 from dataclasses import replace
@@ -63,6 +65,16 @@ _DEFAULT_PROVIDER = "fake"
 _ANON_RUN_ID = "run-anon"
 _ANON_CALL_ID = "call-anon"
 _MAX_TURNS = 25  # cc's default; yuxu uses max_iterations=200 but caps differently per agent
+
+# P5.2 — synthetic warning 中文文案,注入到 tool_result.content,告诉模型勿自动重试。
+_SYNTHETIC_WARNING_TEXT_KILLED = (
+    "[工具执行已被用户取消(超过 2 秒宽限期后强制终止)。该操作可能已部分完成 "
+    "—— 切勿自动重试,半完成状态下重试可能让目标变得更糟。请等待用户的下一步指示。]"
+)
+_SYNTHETIC_WARNING_TEXT_READONLY = (
+    "[只读工具被用户取消。该工具未产生副作用,可由用户决定是否在下一轮重试。]"
+)
+_TOOL_ABORT_GRACE_SECONDS = 2.0
 
 
 class DefaultHarness(Harness):
@@ -145,6 +157,51 @@ class DefaultHarness(Harness):
             payload={"kind": "compact_progress", "session_id": session_id,
                      "run_id": run_id, "model": context.model, "phase": phase},
         ))
+
+    async def _run_tool_with_abort(
+        self,
+        execute_coro_factory,
+        *,
+        abort,
+        read_only: bool,
+    ) -> ToolResult:
+        """abort 触发时:
+           - read_only=True → 立即取消;返回 cancelled ToolResult
+           - read_only=False → 等 2.0s 宽限;完成则正常写,超时强杀 + 注入 synthetic warning
+        """
+        task = asyncio.create_task(execute_coro_factory())
+        poll = 0.02
+        # Phase 1: wait for completion or abort.
+        while not task.done():
+            if getattr(abort, "aborted", False):
+                if read_only:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+                    return ToolResult(
+                        ok=False,
+                        content=_SYNTHETIC_WARNING_TEXT_READONLY,
+                        failure_kind="cancelled",
+                        error="abort during read-only tool",
+                    )
+                # Non-read-only: 2s grace, finished result writes normally.
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.shield(task), _TOOL_ABORT_GRACE_SECONDS
+                    )
+                    return result
+                except asyncio.TimeoutError:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+                    return ToolResult(
+                        ok=False,
+                        content=_SYNTHETIC_WARNING_TEXT_KILLED,
+                        failure_kind="cancelled",
+                        error="abort + 2s grace timeout",
+                    )
+            await asyncio.sleep(poll)
+        return task.result()
 
     async def _dispatch_tool(
         self,
@@ -251,7 +308,11 @@ class DefaultHarness(Harness):
                 result = _denied_result(perm)
             else:
                 prepared = await tool.pre_tool_use(invocation, tool_ctx)
-                result = await tool.execute(prepared, tool_ctx)
+                result = await self._run_tool_with_abort(
+                    lambda: tool.execute(prepared, tool_ctx),
+                    abort=context.abort,
+                    read_only=bool(getattr(tool.spec(), "read_only", False)),
+                )
                 result = await tool.post_tool_use(prepared, tool_ctx, result)
             rendered = await tool.render_result(result)
         except Exception as exc:
