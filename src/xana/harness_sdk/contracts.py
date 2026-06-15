@@ -28,10 +28,19 @@ if TYPE_CHECKING:
 HarnessEventKind = Literal["turn_started", "model_delta", "tool_started", "tool_finished", "paused", "cancelled", "final", "error"]
 
 
-@dataclass(frozen=True)
+@dataclass
 class AbortSignal:
+    """Mutable per-run abort flag — gateway flips `aborted=True` via
+    `trigger()` on stop click, and the harness's `_run_tool_with_abort`
+    polls `.aborted` to interrupt a currently-running tool. Mutability is
+    required so a flip on an in-flight turn is visible to the loop that
+    captured this instance in its `HarnessContext`."""
     aborted: bool = False
     reason: str | None = None
+
+    def trigger(self, reason: str) -> None:
+        self.aborted = True
+        self.reason = reason
 
 
 @dataclass(frozen=True)
