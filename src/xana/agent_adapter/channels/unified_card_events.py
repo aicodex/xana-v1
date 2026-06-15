@@ -136,10 +136,19 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
 
 
 def _apply_agent_only(state: UnifiedCardState, ev: AgentEvent) -> None:
-    # Agent-level events without a wrapped harness event are rare; payload
-    # typically carries simple text. Currently only `cancelled` and `error`
-    # are meaningful here.
-    if ev.kind in ("cancelled", "error"):
+    # Agent-level events without a wrapped harness event carry results from
+    # the command router (e.g. /clear, /help fallback). Treat `final`/`error`
+    # payload `text` as the answer to display on the pre-built command card.
+    payload = ev.payload or {}
+    if ev.kind in ("final", "error"):
+        if state.answer is None:
+            state.answer = AnswerSection()
+        text = str(payload.get("text", "") or state.answer.answer_text)
+        finalize_answer(state.answer, final_text=text)
+        state.menu = None
+        state.top_buttons = compute_top_buttons(state)
+        return
+    if ev.kind == "cancelled":
         if state.answer is not None:
             cancel_answer(state.answer)
         state.top_buttons = compute_top_buttons(state)
