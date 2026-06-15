@@ -179,15 +179,18 @@ class Card:
     # ------------------------------------------------------------------
 
     def _is_finalize_after(self, kind: str) -> bool:
-        # ph_replaced / run_completed_bg → terminal
+        # ph_replaced / run_completed_bg → terminal(state.footer.state 已由
+        # apply_ph_replaced 设为 terminal)
         if kind in _THAW_KINDS:
             self.terminal = True
             self.state.top_buttons = ()
             return True
-        # harness final/error/cancelled → terminal
+        # harness final/error/cancelled → terminal,同时把 footer 切到 terminal
+        # 才能让 🟢 绿点出现(否则停在 fg_running → 🟡)。
         if kind in _FINALIZE_HARNESS_KINDS:
             self.terminal = True
             self.state.top_buttons = ()
+            self.state.footer.state = "terminal"
             return True
         # run_detached:一次 finalize patch 后进入 frozen
         if kind == "run_detached":

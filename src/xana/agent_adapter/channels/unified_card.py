@@ -154,7 +154,7 @@ class FooterText:
                 parts.append(self.model)
             if self.menu_label:
                 parts.append(
-                    f"菜单 {self.menu_label} 用时 "
+                    f"{self.menu_label} 用时 "
                     f"{_fmt_short_time(self.menu_elapsed_s)}"
                 )
             return " · ".join(parts)
@@ -162,7 +162,7 @@ class FooterText:
             parts.append("🟡 正在后台回答")
             if self.menu_label:
                 parts.append(
-                    f"菜单 {self.menu_label} 用时 "
+                    f"{self.menu_label} 用时 "
                     f"{_fmt_short_time(self.menu_elapsed_s)}"
                 )
             return " · ".join(parts)
