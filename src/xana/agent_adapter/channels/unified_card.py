@@ -56,7 +56,11 @@ class ButtonRow:
 
 
 def _format_elapsed(secs: int) -> str:
-    """Task 2 owns full coverage; minimal impl here just for fg_running smoke."""
+    """Format elapsed seconds as Xh Ym Zs / Xm Ys / Zs.
+
+    Skip leading zero units; once an hour appears all three units appear,
+    once a minute appears both m and s appear. Negative input clamps to 0.
+    """
     if secs < 0:
         secs = 0
     h = secs // 3600
@@ -78,8 +82,14 @@ class FooterText:
     state: FooterState = "fg_running"
 
     def render(self) -> str:
-        # Task 2 owns bg_frozen / terminal variants; smoke impl for fg_running.
+        """Render footer line per state.
+
+        - fg_running / terminal: ``model · 上下文 used/max · 用时 T``
+        - bg_frozen: ``model · 🟡 后台运行中 · 用时 T`` (frozen ctx hidden)
+        """
         t = _format_elapsed(self.elapsed_s)
+        if self.state == "bg_frozen":
+            return f"{self.model} · 🟡 后台运行中 · 用时 {t}"
         return f"{self.model} · 上下文 {self.ctx_used}/{self.ctx_max} · 用时 {t}"
 
 
