@@ -557,7 +557,7 @@ class DefaultHarness(Harness):
                 RunRecord(
                     run_id=run_id, session_id=session_id, agent_name=agent_name,
                     status="running",
-                    input_request={"text": getattr(request, "text", "") or ""},
+                    input_request={"text": request.user_input or ""},
                 )
             )
 
