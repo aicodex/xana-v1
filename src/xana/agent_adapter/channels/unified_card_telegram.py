@@ -63,17 +63,17 @@ def _render_answer(sec: AnswerSection) -> str:
         parts.append(f"<b>+{sec.tools_pending} 待加载工具</b>")
     elif sec.state == "streaming" and not sec.tools and not sec.answer_text:
         parts.append("<i>正在组织回答</i>")
-    # answer body
+    # 回答块:所有状态都用 <blockquote expandable>,保 detach 高度不变(spec §4.2)。
     if sec.state == "detached":
-        parts.append(
-            _fold("回答中…", "<i>回答仍在后台生成,完成后会自动更新</i>")
-        )
+        parts.append(_fold("回答中…", "<i>回答仍在后台生成</i>"))
     elif sec.state == "terminal":
         parts.append(_fold("回答", sec.answer_text or " "))
     elif sec.state == "cancelled":
-        parts.append(f"<b>回答已取消</b>\n\n{sec.answer_text}")
+        parts.append(_fold("回答已取消", sec.answer_text or " "))
+    elif sec.answer_text:
+        parts.append(_fold("回答", sec.answer_text))
     else:
-        parts.append(f"<b>回答</b>\n\n{sec.answer_text or '<i>…</i>'}")
+        parts.append(_fold("正在回答", "<i>…</i>"))
     return "\n".join(parts)
 
 

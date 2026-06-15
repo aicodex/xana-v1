@@ -98,26 +98,32 @@ def _render_answer(sec: AnswerSection) -> list[dict]:
     visible_tools = sec.tools[:TOOLS_VISIBLE_LIMIT]
     for t in visible_tools:
         out.append(_panel(t.header, t.body_md or " ", folded=True))
-    # tools hint / pending
+    # tools 提示块 + 按钮(spec §4.3):
+    #   >3 → "N+ 待加载工具" + load button
+    #   ≤3 且 streaming 中无 tools/answer → "正在组织回答" 占位
     if sec.tools_pending > 0:
         out.append(_md(f"**+{sec.tools_pending} 待加载工具**"))
+        out.append(_btn_row(
+            ButtonRow(buttons=(Button(text="加载剩余工具",
+                                       send="/load_pending_tools"),)),
+            ph_run_id=None,
+        ))
     elif sec.state == "streaming" and not sec.tools and not sec.answer_text:
         out.append(_md("_正在组织回答_"))
-    # answer block
+    # 回答块:所有状态都用 collapsible_panel,保 detach 高度不变(spec §4.2)。
     if sec.state == "detached":
-        out.append(
-            _panel(
-                "回答中…",
-                "_回答仍在后台生成,完成后会自动更新_",
-                folded=True,
-            )
-        )
+        ans_title, ans_body, ans_folded = "回答中…", "_回答仍在后台生成_", True
     elif sec.state == "terminal":
-        out.append(_panel("回答", sec.answer_text or " ", folded=False))
+        ans_title, ans_body, ans_folded = "回答", sec.answer_text or " ", False
     elif sec.state == "cancelled":
-        out.append(_md(f"**回答已取消**\n\n{sec.answer_text}"))
+        ans_title, ans_body, ans_folded = (
+            "回答已取消", sec.answer_text or " ", True,
+        )
+    elif sec.answer_text:
+        ans_title, ans_body, ans_folded = "回答", sec.answer_text, False
     else:
-        out.append(_md(f"**回答**\n\n{sec.answer_text or '_…_'}"))
+        ans_title, ans_body, ans_folded = "正在回答", "_…_", False
+    out.append(_panel(ans_title, ans_body, folded=ans_folded))
     return out
 
 
