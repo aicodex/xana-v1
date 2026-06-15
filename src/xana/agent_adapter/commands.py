@@ -314,16 +314,12 @@ class DefaultCommandRouter(CommandRouter):
             # PH 卡上(compact 段切完成态)。
             #  - 用了 inflight PH 卡 → 直接 silent(避免再发一条 final 把卡覆盖)
             #  - 自建 compactcmd-... 卡 → 正常发 final 把卡 patch 为完成态
-            if inflight_run_id is not None:
-                return CommandResult(
-                    ok=True, message="", payload={"silent": True})
+            # /compact 始终 silent:compact_finalized note_progress 已经把
+            # 卡片的 compact 段切到完成态。再发 final 会让 _apply_agent_only 把
+            # CommandResult.message ('▰▰▰▰▰▰▰') 落到 menu section,在同一张卡
+            # 上出现"第二个进度条"。
             return CommandResult(
-                ok=True,
-                message="▰" * len(SUMMARY_SECTIONS),
-                payload={"thinking": post_compact_message(summary),
-                         "thinking_title": f"已压缩 {len(live)} 条消息",
-                         "run_id": run_id},
-            )
+                ok=True, message="", payload={"silent": True})
         except Exception:
             if ph_note is not None:
                 ph_note({
