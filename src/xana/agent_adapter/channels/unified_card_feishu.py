@@ -135,4 +135,8 @@ def render(state: UnifiedCardState) -> dict:
     for row in state.bottom_buttons:
         elements.append(_btn_row(row, ph_run_id=state.ph_run_id))
     elements.append(_md(f"_{state.footer.render()}_"))
-    return {"msg_type": "interactive", "card": {"elements": elements}}
+    return {
+        "schema": "2.0",
+        "config": {"width_mode": "fill"},
+        "body": {"elements": elements},
+    }
