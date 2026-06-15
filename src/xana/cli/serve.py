@@ -282,8 +282,10 @@ async def _run_inner(argv: argparse.Namespace) -> int:
         )
     except (NotImplementedError, RuntimeError):
         pass  # platform without signal handler support (e.g. Windows)
+    async def _run_pumps() -> None:
+        await asyncio.gather(*pumps)
     try:
-        gather_pumps = asyncio.create_task(asyncio.gather(*pumps))
+        gather_pumps = asyncio.create_task(_run_pumps())
         shutdown_wait = asyncio.create_task(_shutdown_evt.wait())
         await asyncio.wait(
             {gather_pumps, shutdown_wait},
