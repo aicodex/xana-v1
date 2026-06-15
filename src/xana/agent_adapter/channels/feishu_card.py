@@ -142,18 +142,26 @@ def build_bg_placeholder_card(
     title = titles.get(state, f"· {label}")
     if compacted_n > 0 and state in ("running", "completed"):
         title = f"已压缩 {compacted_n} 条 · " + title
-    pct = max(0, min(100, int(progress_pct)))
-    filled = pct // 10
-    bar = "▰" * filled + "▱" * (10 - filled)
+    # Terminal states (completed / cancelled / failed) drop the progress bar —
+    # a finalized card showing a 100% bar visually reads as "still running" and
+    # gets confused with active compact cards. The header chip already conveys
+    # the terminal outcome (✅ / 🛑 / ✖).
+    terminal = state in ("completed", "cancelled", "failed")
+    elements: list[dict] = []
+    if not terminal:
+        pct = max(0, min(100, int(progress_pct)))
+        filled = pct // 10
+        bar = "▰" * filled + "▱" * (10 - filled)
+        elements.append({
+            "tag": "markdown",
+            "content": f"<font color='grey'>{bar} {pct}%</font>",
+        })
+    elements.append(_panel("详情", panel_md or " "))
     return {
         "schema": "2.0",
         "config": {"width_mode": "fill"},
         "header": {"title": {"tag": "plain_text", "content": title}},
-        "body": {"elements": [
-            {"tag": "markdown",
-             "content": f"<font color='grey'>{bar} {pct}%</font>"},
-            _panel("详情", panel_md or " "),
-        ]},
+        "body": {"elements": elements},
     }
 
 
