@@ -111,7 +111,10 @@ class DefaultAgentGateway(AgentGateway):
             enriched = inbound
             # /compact_cancel 是隐藏命令,只置取消事件,不该自成一张卡 →
             # 跳过预建(预建发生在路由前,故按命令名提前 gate)。
-            silent_cmd = inbound.text.strip().startswith("/compact_cancel")
+            # /compact 也跳过预建 — 当有 in-flight 时它要挂在 PH 卡前,
+            # 自建命令卡会导致 spec §3 违反(同时有 cmd 卡 + PH 卡)。
+            text_head = inbound.text.strip().split(" ", 1)[0]
+            silent_cmd = text_head in ("/compact_cancel", "/compact")
             if is_command and not silent_cmd:
                 self._cmd_seq += 1
                 run_id = f"cmd-{inbound.session_id}-{self._cmd_seq}"

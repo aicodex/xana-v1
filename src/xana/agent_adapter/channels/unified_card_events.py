@@ -83,11 +83,13 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
         if state.answer is None:
             state.answer = AnswerSection()
         name = str(payload.get("tool_name", "") or "")
+        call_id = str(payload.get("call_id", "") or "")
         args = payload.get("input") or {}
         header = _tool_header(name, args)
         append_tool(
             state.answer,
-            ToolBlock(name=name, header=header, body_md="", ok=True),
+            ToolBlock(name=name, header=header, body_md="",
+                      ok=True, call_id=call_id),
         )
         return
     if kind == "tool_finished":
@@ -97,20 +99,37 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
         name = str(payload.get("tool_name", "") or "")
         ok = bool(payload.get("ok", True))
         body = str(payload.get("text", "") or "")
-        # find the latest matching tool block (by name) and patch body/ok.
-        # tools is a tuple; rebuild with the last matching entry updated.
-        tools = list(state.answer.tools)
-        for i in range(len(tools) - 1, -1, -1):
-            if tools[i].name == name or not name:
-                tools[i] = ToolBlock(
-                    name=tools[i].name,
-                    header=tools[i].header,
-                    body_md=body,
-                    ok=ok,
+
+        def _match(t: ToolBlock) -> bool:
+            if call_id and t.call_id:
+                return t.call_id == call_id
+            return t.name == name or not name
+
+        # 优先匹 sec.tools(已渲染),没中再匹 buf(按钮后的)。
+        # 不带 body 的 tool 优先,避免重复 finished 覆盖已完成的。
+        for collection_name in ("tools", "_pending_tools_buf"):
+            items = list(getattr(state.answer, collection_name))
+            # 找最后一个匹的且 body_md 为空(未完成)的
+            target = -1
+            for i in range(len(items) - 1, -1, -1):
+                if _match(items[i]) and not items[i].body_md:
+                    target = i
+                    break
+            if target == -1:
+                # fallback:匹最后一个(允许覆盖已完成)
+                for i in range(len(items) - 1, -1, -1):
+                    if _match(items[i]):
+                        target = i
+                        break
+            if target >= 0:
+                items[target] = ToolBlock(
+                    name=items[target].name,
+                    header=items[target].header,
+                    body_md=body, ok=ok,
+                    call_id=items[target].call_id,
                 )
-                break
-        state.answer.tools = tuple(tools)
-        _ = call_id  # currently unused — adapter may correlate later
+                setattr(state.answer, collection_name, tuple(items))
+                return
         return
     if kind == "paused":
         # treat as transient — no state flip. Adapter may add visual hint later.

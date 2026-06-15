@@ -27,6 +27,7 @@ class ToolBlock:
     header: str                  # 例 "Read /foo/bar.py"
     body_md: str
     ok: bool = True
+    call_id: str = ""            # 对应 harness tool_started/finished 的 call_id
 
 
 @dataclass

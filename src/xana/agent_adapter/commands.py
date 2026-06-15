@@ -181,19 +181,30 @@ class DefaultCommandRouter(CommandRouter):
         if client is None:
             return CommandResult(ok=False, message=f"provider {self.provider!r} 未注册")
         self._compact_seq += 1
-        # gateway 已为命令预建卡片并通过 metadata 传入 run_id → 复用同卡;
-        # 直接调用(无 metadata)时退回自产 compactcmd- 前缀。
-        run_id = inbound.metadata.get("command_run_id") \
-            or f"compactcmd-{inbound.session_id}-{self._compact_seq}"
-        # PH-driven path: 在压缩开始前 detach 该 session 上所有 inflight run,
-        # 并向对应 adapter 发 compact_started → 触发 compact 卡片渲染。
+        # PH-driven path:
+        #  1) detach 所有 in-flight run
+        #  2) run_id 选择:
+        #     - 有 in-flight → 用 inflight[0].run_id(compact 段挂到现存 PH 卡)
+        #     - 无 in-flight → 自产 compactcmd-...(新建一张 compact 卡)
+        #  gateway 不为 /compact 预建命令卡(见 _submit silent_cmd),所以这里
+        #  全权决定 run_id,避免重复出现"⏳ /compact"占位卡 + PH 卡两张。
         ph_note = None
+        inflight_run_id: str | None = None
         if self.gateway is not None:
             await self.gateway.detach_foreground(inbound.session_id)
+            inflight = list(self.gateway._inflight.get(
+                inbound.session_id, []))
+            if inflight:
+                inflight_run_id = inflight[0].run_id
             adapters = getattr(self.gateway, "adapters", {}) or {}
             adapter = adapters.get(inbound.adapter_id)
             if adapter is not None:
                 ph_note = getattr(adapter, "note_progress", None)
+        run_id = (
+            inflight_run_id
+            or inbound.metadata.get("command_run_id")
+            or f"compactcmd-{inbound.session_id}-{self._compact_seq}"
+        )
         if ph_note is not None:
             ph_note({
                 "kind": "compact_started",
@@ -299,12 +310,19 @@ class DefaultCommandRouter(CommandRouter):
                     "run_id": run_id,
                     "summary": summary,
                 })
-            # 最终卡:正文只有满格进度条;折叠块 = 上下文里那条 post-compact 消息全文(开头+摘要+结尾)
+            # compact 完成:visual 已由 compact_finalized note_progress 落到
+            # PH 卡上(compact 段切完成态)。
+            #  - 用了 inflight PH 卡 → 直接 silent(避免再发一条 final 把卡覆盖)
+            #  - 自建 compactcmd-... 卡 → 正常发 final 把卡 patch 为完成态
+            if inflight_run_id is not None:
+                return CommandResult(
+                    ok=True, message="", payload={"silent": True})
             return CommandResult(
                 ok=True,
                 message="▰" * len(SUMMARY_SECTIONS),
                 payload={"thinking": post_compact_message(summary),
-                         "thinking_title": f"已压缩 {len(live)} 条消息"},
+                         "thinking_title": f"已压缩 {len(live)} 条消息",
+                         "run_id": run_id},
             )
         except Exception:
             if ph_note is not None:
