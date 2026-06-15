@@ -37,6 +37,7 @@ class AnswerSection:
     tools: tuple[ToolBlock, ...] = ()
     tools_pending: int = 0        # 待加载工具数 (累积 - 已显示)
     answer_text: str = ""
+    _pending_tools_buf: tuple[ToolBlock, ...] = ()
 
 
 @dataclass
@@ -132,6 +133,64 @@ def finalize_compact(
 
 
 def cancel_compact(sec: CompactSection) -> None:
+    sec.state = "cancelled"
+
+
+# --- answer section state machine + tools overflow ---------------------------
+
+TOOLS_VISIBLE_LIMIT = 3
+
+
+def append_thinking(sec: AnswerSection, delta: str) -> None:
+    """Accumulate thinking text; no-op if cancelled."""
+    if sec.state == "cancelled":
+        return
+    sec.thinking_text += delta
+
+
+def append_answer(sec: AnswerSection, delta: str) -> None:
+    """Accumulate answer text; no-op if cancelled."""
+    if sec.state == "cancelled":
+        return
+    sec.answer_text += delta
+
+
+def append_tool(sec: AnswerSection, tool: ToolBlock) -> None:
+    """Append a tool. First TOOLS_VISIBLE_LIMIT go visible; rest buffer.
+
+    No-op if cancelled.
+    """
+    if sec.state == "cancelled":
+        return
+    total = len(sec.tools) + sec.tools_pending
+    if total < TOOLS_VISIBLE_LIMIT:
+        sec.tools = sec.tools + (tool,)
+    else:
+        sec.tools_pending += 1
+        sec._pending_tools_buf = sec._pending_tools_buf + (tool,)
+
+
+def load_pending_tools(sec: AnswerSection) -> None:
+    """Reveal all buffered tools into ``sec.tools``; reset pending count."""
+    if sec._pending_tools_buf:
+        sec.tools = sec.tools + sec._pending_tools_buf
+        sec._pending_tools_buf = ()
+    sec.tools_pending = 0
+
+
+def detach_answer(sec: AnswerSection) -> None:
+    """Flip to detached state; content preserved (renderer collapses)."""
+    sec.state = "detached"
+
+
+def finalize_answer(sec: AnswerSection, *, final_text: str) -> None:
+    """Terminal transition; replace answer_text with final."""
+    sec.state = "terminal"
+    sec.answer_text = final_text
+
+
+def cancel_answer(sec: AnswerSection) -> None:
+    """Cancel; subsequent append_* are no-ops."""
     sec.state = "cancelled"
 
 
