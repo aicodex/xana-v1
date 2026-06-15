@@ -604,7 +604,20 @@ class TelegramAdapter(Adapter):
             if state is not None and state.fg_run_id == ts.draft.run_id:
                 state.fg_run_id = None
                 state.fg_message_id = None
-        # 其他 harness kind(turn_started/paused/cancelled 等):不渲染。
+        elif hkind == "cancelled":
+            # Stop-button click — finalize the card so any streaming-state UI
+            # (e.g. inline stop button) drops off and user sees the cancel.
+            for blk in ts.draft.close_running_tools():
+                await self._send_tool_message(buf, ts, blk.call_id)
+            reason = str(payload.get("reason", "") or "user_cancel")
+            tail = f"\n[已取消 · {reason}]" if reason else "\n[已取消]"
+            ts.draft.content = (ts.draft.content or "") + tail
+            ts.finalized = True
+            await ts.coalescer.finalize(self._make_finalize_send(buf, ts))
+            if state is not None and state.fg_run_id == ts.draft.run_id:
+                state.fg_run_id = None
+                state.fg_message_id = None
+        # 其他 harness kind(turn_started/paused 等):不渲染。
 
         return RenderedMessage(
             adapter_id=self.adapter_id,

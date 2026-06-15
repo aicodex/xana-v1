@@ -428,7 +428,22 @@ class FeishuAdapter(Adapter):
             if state is not None and state.fg_run_id == ts.draft.run_id:
                 state.fg_run_id = None
                 state.fg_message_id = None
-        # 其他 harness kind(turn_started/paused/cancelled 等):不渲染。
+        elif hkind == "cancelled":
+            # Stop-button click → harness yields cancelled. Treat like final:
+            # close tools, mark finalized, patch the fg card with finalize=True
+            # so the top ⏹/➡ controls are dropped and the user sees the run
+            # actually stopped. Without this branch the fg card stays in its
+            # last streaming frame with the stop button still visible.
+            ts.draft.close_running_tools()
+            reason = str(payload.get("reason", "") or "user_cancel")
+            tail = f"\n[已取消 · {reason}]" if reason else "\n[已取消]"
+            ts.draft.content = (ts.draft.content or "") + tail
+            ts.finalized = True
+            await ts.coalescer.finalize(self._make_send(buf, ts, finalize=True))
+            if state is not None and state.fg_run_id == ts.draft.run_id:
+                state.fg_run_id = None
+                state.fg_message_id = None
+        # 其他 harness kind(turn_started/paused 等):不渲染。
 
         return RenderedMessage(
             adapter_id=self.adapter_id,
@@ -443,7 +458,8 @@ class FeishuAdapter(Adapter):
             return event.harness_event.kind
         # 无 harness_event 时由 AgentEvent.kind 推断
         return {"draft": "model_delta", "tool": "tool_finished",
-                "final": "final", "error": "error"}.get(event.kind, event.kind)
+                "final": "final", "error": "error",
+                "cancelled": "cancelled"}.get(event.kind, event.kind)
 
     def _turn_for(self, buf: _SessionBuffer, event: AgentEvent) -> _TurnState:
         if event.harness_event is not None and event.harness_event.run_id:
@@ -600,7 +616,7 @@ class FeishuAdapter(Adapter):
                 result=str(payload.get("text", "")),
                 elapsed_ms=None,
             )
-        elif hkind in ("final", "error"):
+        elif hkind in ("final", "error", "cancelled"):
             ts.draft.close_running_tools()
             if text:
                 ts.draft.content = text
