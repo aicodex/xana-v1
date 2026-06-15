@@ -93,6 +93,48 @@ class FooterText:
         return f"{self.model} · 上下文 {self.ctx_used}/{self.ctx_max} · 用时 {t}"
 
 
+# --- compact section state machine ---------------------------------------
+
+SUMMARY_SECTIONS = 7
+_COMPACT_INPUT_ESTIMATE_S = 20.0
+
+
+def advance_compact_input(sec: CompactSection, elapsed_s: float) -> None:
+    """input 阶段按时间推进 0→7 格。20s 估算总长。
+
+    streaming/completed/cancelled 状态为 no-op。
+    """
+    if sec.state != "input":
+        return
+    if elapsed_s < 0:
+        elapsed_s = 0.0
+    sec.progress_cells = min(7, int(elapsed_s / _COMPACT_INPUT_ESTIMATE_S * 7))
+
+
+def advance_compact_streaming(sec: CompactSection, sections_done: int) -> None:
+    """streaming 阶段从 7 起,SUMMARY_SECTIONS=7,每段 0.43 → floor(N/7*3)。
+
+    首次调用(sections_done=0)即把 state 切到 streaming 并跳到 7 格。
+    """
+    sec.state = "streaming"
+    if sections_done < 0:
+        sections_done = 0
+    sec.progress_cells = min(10, 7 + int(sections_done / SUMMARY_SECTIONS * 3))
+
+
+def finalize_compact(
+    sec: CompactSection, *, compacted_n: int, summary_text: str
+) -> None:
+    sec.state = "completed"
+    sec.progress_cells = 10
+    sec.compacted_n = compacted_n
+    sec.summary_text = summary_text
+
+
+def cancel_compact(sec: CompactSection) -> None:
+    sec.state = "cancelled"
+
+
 @dataclass
 class UnifiedCardState:
     card_id: str
