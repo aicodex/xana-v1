@@ -194,6 +194,74 @@ def cancel_answer(sec: AnswerSection) -> None:
     sec.state = "cancelled"
 
 
+# --- top buttons + detach / ph_replaced transitions ------------------------
+
+
+def compute_top_buttons(state: "UnifiedCardState") -> tuple[ButtonRow, ...]:
+    """Top button rules per spec §5.
+
+    - detached / terminal: no buttons.
+    - answer.streaming (regardless of compact): ⏹ 停止 / ➡ 后台.
+      compact cancel is suppressed because cancelling re-wakes the run.
+    - compact.input|streaming alone (no answer running): single 取消.
+    - otherwise: none.
+    """
+    if state.detached or state.terminal:
+        return ()
+    a_running = state.answer is not None and state.answer.state == "streaming"
+    c_running = (
+        state.compact is not None
+        and state.compact.state in ("input", "streaming")
+    )
+    if a_running:
+        run_id = state.ph_run_id or ""
+        return (ButtonRow(buttons=(
+            Button(text="⏹ 停止", send=f"/cancel {run_id}".strip()),
+            Button(text="➡ 后台", send=None),
+        )),)
+    if c_running:
+        run_id = state.ph_run_id or ""
+        return (ButtonRow(buttons=(
+            Button(text="取消", send=f"/compact_cancel {run_id}".strip()),
+        )),)
+    return ()
+
+
+def apply_detach(state: "UnifiedCardState") -> None:
+    """Detach transition: clear top buttons, freeze footer, mark answer detached.
+
+    Content preserved; renderer collapses based on state. Compact section
+    untouched (a parallel compact run continues to update independently).
+    """
+    state.detached = True
+    if state.answer is not None:
+        detach_answer(state.answer)
+    state.footer.state = "bg_frozen"
+    state.top_buttons = ()
+
+
+def apply_ph_replaced(
+    state: "UnifiedCardState",
+    *,
+    final_answer: str,
+    ctx_used: int,
+    elapsed_s: int,
+) -> None:
+    """Terminal transition triggered by ph_replaced.
+
+    Replaces answer with final text, restores ctx in footer, clears buttons.
+    Compact section is left as-is (if completed it stays completed).
+    """
+    state.terminal = True
+    state.detached = False
+    if state.answer is not None:
+        finalize_answer(state.answer, final_text=final_answer)
+    state.footer.state = "terminal"
+    state.footer.ctx_used = ctx_used
+    state.footer.elapsed_s = elapsed_s
+    state.top_buttons = ()
+
+
 @dataclass
 class UnifiedCardState:
     card_id: str
