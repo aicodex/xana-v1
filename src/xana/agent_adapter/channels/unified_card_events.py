@@ -141,12 +141,17 @@ def _apply_agent_only(state: UnifiedCardState, ev: AgentEvent) -> None:
     # payload `text` as the answer to display on the pre-built command card.
     payload = ev.payload or {}
     if ev.kind in ("final", "error"):
-        if state.answer is None:
-            state.answer = AnswerSection()
-        text = str(payload.get("text", "") or state.answer.answer_text)
-        finalize_answer(state.answer, final_text=text)
-        state.menu = None
-        state.top_buttons = compute_top_buttons(state)
+        text = str(payload.get("text", "") or "")
+        # 命令结果是菜单卡(纯命令场景):落到 menu section,不创建 answer。
+        # spec §3:菜单卡只有 menu,不出 thinking/回答。已经有 answer 的(普通 chat
+        # 通过 harness 路径)走 _apply_harness final 分支,不进这里。
+        if state.menu is None:
+            state.menu = MenuSection(body_md=text)
+        else:
+            state.menu.body_md = text
+        state.terminal = True
+        state.footer.state = "terminal"
+        state.top_buttons = ()
         return
     if ev.kind == "cancelled":
         if state.answer is not None:
@@ -212,6 +217,9 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
         else:
             state.compact.state = "input"
             state.compact.progress_cells = 0
+        # compact section 出现 → 清掉 loading menu(command_progress 占位),
+        # spec §3:section 互斥,只 compact 或 compact+回答,不应同时有菜单。
+        state.menu = None
         state.top_buttons = compute_top_buttons(state)
         return
     if kind == "compact_progress":
