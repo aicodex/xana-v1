@@ -356,6 +356,15 @@ class FeishuAdapter(Adapter):
                 text=slot.state.answer.answer_text if slot.state.answer else "",
                 metadata={"event_kind": event.kind, "drop": "terminal"},
             )
+        # Detached card 冻结:detach 瞬间一次 patch 后,本卡不再刷新,
+        # 直到 ph_replaced/run_completed_bg 让它回到 terminal(走 note_progress)。
+        if slot.state.detached:
+            return RenderedMessage(
+                adapter_id=self.adapter_id,
+                session_id=event.session_id,
+                text="",
+                metadata={"event_kind": event.kind, "drop": "detached"},
+            )
         apply_event(slot.state, event)
         # Determine finalize: harness final/error/cancelled → flush + mark terminal.
         hkind = (

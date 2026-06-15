@@ -96,32 +96,29 @@ def _render_answer(sec: AnswerSection, *, card_id: str) -> list[dict]:
             folded=(sec.state != "streaming"),
         )
     )
-    # tools — 永远显示前 TOOLS_VISIBLE_LIMIT 个,revealed 后追加 buf
-    visible_tools = sec.tools[:TOOLS_VISIBLE_LIMIT]
-    for t in visible_tools:
+    # tools — 全渲染。buf 里的不在这里出,等点按钮 reveal 才进 tools。
+    for t in sec.tools:
         out.append(_panel(t.header, t.body_md or " ", folded=True))
-    if sec.tools_revealed:
-        # revealed 后所有 buf 进 sec.tools(load_pending_tools 已经搬过),
-        # 这里把 LIMIT 后的也渲出来。
-        for t in sec.tools[TOOLS_VISIBLE_LIMIT:]:
-            out.append(_panel(t.header, t.body_md or " ", folded=True))
     # tools overflow 槽位按钮:label 由 state 决定。
-    # fg streaming: "+N 待加载工具"(可点)
-    # detached:    "正在后台调用工具"(占位,不可点 — 用 send=None+无 action)
-    # terminal:    "显示剩余 x 工具结果"(可点,reveal)
-    # cancelled/已 revealed/无 pending: 不出
-    if sec.tools_pending > 0 and not sec.tools_revealed:
+    # streaming:  "+N 待加载工具" (可点 reveal)
+    # detached:   "正在后台调用工具" (静默占位,detach 瞬间冻结按钮)
+    # terminal:   "显示剩余 N 工具" (可点 reveal)
+    # cancelled / 无 buf: 不出
+    if sec.tools_pending > 0:
         if sec.state == "detached":
-            label = "正在后台调用工具"
-            btn = Button(text=label)  # 静默占位
+            btn = Button(text="正在后台调用工具")
         elif sec.state == "terminal":
-            label = f"显示剩余 {sec.tools_pending} 工具结果"
-            btn = Button(text=label, action="load_tools", action_arg=card_id)
+            btn = Button(
+                text=f"显示剩余 {sec.tools_pending} 工具",
+                action="load_tools", action_arg=card_id,
+            )
         elif sec.state == "streaming":
-            label = f"+{sec.tools_pending} 待加载工具"
-            btn = Button(text=label, action="load_tools", action_arg=card_id)
+            btn = Button(
+                text=f"+{sec.tools_pending} 待加载工具",
+                action="load_tools", action_arg=card_id,
+            )
         else:
-            btn = None  # cancelled etc.
+            btn = None
         if btn is not None:
             out.append(_btn_row(ButtonRow(buttons=(btn,)), ph_run_id=None))
     elif sec.state == "streaming" and not sec.tools and not sec.answer_text:

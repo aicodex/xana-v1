@@ -39,11 +39,17 @@ class CompactSection:
 
 @dataclass
 class AnswerSection:
+    """回答段。tools 是已渲染面板,_pending_tools_buf 是按钮后面的隐藏 tool。
+
+    - 新 tool 到来:len(tools)<3 → tools;否则 → buf。
+    - 用户点按钮(adapter 调 load_pending_tools): buf → tools, buf 清空。
+    - 之后又来新 tool: 又进 buf, 按钮又出现, 标签反映新 buf 数。
+    - tools_pending 与 len(buf) 同步,renderer 据此显示/隐藏按钮。
+    """
     state: AnswerState = "streaming"
     thinking_text: str = ""
-    tools: tuple[ToolBlock, ...] = ()        # 累积所有 tool
-    tools_pending: int = 0                    # = max(0, len(tools) - TOOLS_VISIBLE_LIMIT)
-    tools_revealed: bool = False              # 用户点过 "加载剩余工具" 后 True
+    tools: tuple[ToolBlock, ...] = ()
+    tools_pending: int = 0                    # = len(_pending_tools_buf)
     answer_text: str = ""
     _pending_tools_buf: tuple[ToolBlock, ...] = ()
 
@@ -195,12 +201,14 @@ def append_tool(sec: AnswerSection, tool: ToolBlock) -> None:
 
 
 def load_pending_tools(sec: AnswerSection) -> None:
-    """Reveal all buffered tools into ``sec.tools``; mark revealed."""
+    """Reveal all buffered tools: buf → tools, buf cleared, pending=0.
+
+    后续如果还有新 tool 到来,会再次进 buf,按钮重新出现。
+    """
     if sec._pending_tools_buf:
         sec.tools = sec.tools + sec._pending_tools_buf
         sec._pending_tools_buf = ()
     sec.tools_pending = 0
-    sec.tools_revealed = True
 
 
 def detach_answer(sec: AnswerSection) -> None:

@@ -442,6 +442,14 @@ class TelegramAdapter(Adapter):
                 text=slot.state.answer.answer_text if slot.state.answer else "",
                 metadata={"event_kind": event.kind, "drop": "terminal"},
             )
+        # Detached card 冻结:detach 后一次 patch,卡不再刷,直到 ph_replaced。
+        if slot.state.detached:
+            return RenderedMessage(
+                adapter_id=self.adapter_id,
+                session_id=event.session_id,
+                text="",
+                metadata={"event_kind": event.kind, "drop": "detached"},
+            )
         apply_event(slot.state, event)
         hkind = (
             event.harness_event.kind

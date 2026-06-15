@@ -56,33 +56,28 @@ def _render_answer(sec: AnswerSection, *, extra_kb: list[list[dict]],
     # thinking
     think_title = "思考过程" if sec.thinking_text else "正在思考"
     parts.append(_fold(think_title, sec.thinking_text or " "))
-    # tools — 永远前 LIMIT 个,revealed 后追加剩余。
-    visible_tools = sec.tools[:TOOLS_VISIBLE_LIMIT]
-    for t in visible_tools:
+    # tools — 全渲染。buf 在按钮里。
+    for t in sec.tools:
         parts.append(_fold(t.header, t.body_md or " "))
-    if sec.tools_revealed:
-        for t in sec.tools[TOOLS_VISIBLE_LIMIT:]:
-            parts.append(_fold(t.header, t.body_md or " "))
-    # tools overflow 槽位(TG 用 button + 文字标识):label 由 state 决定
-    if sec.tools_pending > 0 and not sec.tools_revealed:
+    if sec.tools_pending > 0:
         if sec.state == "detached":
             parts.append("<b>正在后台调用工具</b>")
         elif sec.state == "terminal":
-            label = f"显示剩余 {sec.tools_pending} 工具结果"
+            label = f"显示剩余 {sec.tools_pending} 工具"
             parts.append(f"<b>{label}</b>")
-            extra_kb.append([
-                {"text": label,
-                 "callback_data": f"__load_tools__:{card_id}"[
-                     :_TG_CALLBACK_DATA_LIMIT]},
-            ])
+            extra_kb.append([{
+                "text": label,
+                "callback_data": f"__load_tools__:{card_id}"[
+                    :_TG_CALLBACK_DATA_LIMIT],
+            }])
         elif sec.state == "streaming":
             label = f"+{sec.tools_pending} 待加载工具"
             parts.append(f"<b>{label}</b>")
-            extra_kb.append([
-                {"text": label,
-                 "callback_data": f"__load_tools__:{card_id}"[
-                     :_TG_CALLBACK_DATA_LIMIT]},
-            ])
+            extra_kb.append([{
+                "text": label,
+                "callback_data": f"__load_tools__:{card_id}"[
+                    :_TG_CALLBACK_DATA_LIMIT],
+            }])
     elif sec.state == "streaming" and not sec.tools and not sec.answer_text:
         parts.append("<i>正在组织回答</i>")
     # 回答块:所有状态都用 <blockquote expandable>,保 detach 高度不变(spec §4.2)。
