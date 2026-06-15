@@ -179,6 +179,11 @@ class TelegramAdapter(Adapter):
         switch_foreground. Optional; if unset, switch callbacks silently no-op."""
         self._gateway = gateway
 
+    def rotate_session(self, external_thread_id: str) -> str:
+        """Rotate the binding for a chat — used by /clear to start truly fresh.
+        Next inbound from this chat resolves to the new session_id."""
+        return self._bindings.rotate(external_thread_id, prefix="tg")
+
     async def _drain_pending(self) -> None:
         """Test helper: await all scheduled state-machine actions."""
         while self._pending_tasks:

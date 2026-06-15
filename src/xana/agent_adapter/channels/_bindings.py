@@ -39,3 +39,12 @@ class BindingStore:
         sid = f"{prefix}-{secrets.token_hex(6)}"
         self.put(external_thread_id, sid)
         return sid
+
+    def rotate(self, external_thread_id: str, *, prefix: str) -> str:
+        """Overwrite mapping with a fresh session_id. Used by /clear to give the
+        user a truly fresh session — next inbound from the same external thread
+        will allocate to (i.e. find) the new sid, abandoning all prior history.
+        """
+        sid = f"{prefix}-{secrets.token_hex(6)}"
+        self.put(external_thread_id, sid)
+        return sid

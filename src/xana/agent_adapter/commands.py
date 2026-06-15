@@ -139,7 +139,23 @@ class DefaultCommandRouter(CommandRouter):
         snapshot = await self.active_context_store.get(inbound.session_id, "chat")
         n = len(snapshot.messages) if snapshot else 0
         await self.active_context_store.clear(inbound.session_id, "chat")
-        return CommandResult(ok=True, message=f"[cleared] 已清空 {n} 条历史")
+        # /clear should produce a TRULY fresh session — rotate the adapter's
+        # binding so the next inbound from this chat resolves to a brand-new
+        # session_id. Without this, /resume etc. still surface historical runs
+        # from the old session. CLI-style adapters (fixed session_id, no
+        # binding store) silently skip — old behaviour preserved.
+        new_sid: str | None = None
+        adapters = getattr(self.gateway, "adapters", {}) if self.gateway is not None else {}
+        adapter = adapters.get(inbound.adapter_id) if adapters else None
+        external_thread_id = inbound.metadata.get("chat_id") if inbound.metadata else None
+        rotate = getattr(adapter, "rotate_session", None) if adapter is not None else None
+        if rotate is not None and external_thread_id:
+            try:
+                new_sid = rotate(external_thread_id)
+            except Exception:
+                new_sid = None
+        suffix = f"; 新 session={new_sid}" if new_sid else ""
+        return CommandResult(ok=True, message=f"[cleared] 已清空 {n} 条历史{suffix}")
 
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
         from xana.harness_sdk.compact import (
