@@ -232,6 +232,19 @@ class DefaultAgentGateway(AgentGateway):
         self._cancel_flags[session_id] = True
         for agent in self.agents.values():
             await agent.cancel(session_id, run_id)
+        # P5: mark exit_reason=user_cancel so list_unfinished/RunRecord reflect
+        # the cancel source. cancel_all overwrites this with shutdown_graceful
+        # by calling update_status again with the shutdown reason.
+        if self.run_store is not None and run_id is not None:
+            try:
+                rec = await self.run_store.get(run_id)
+                if rec is not None:
+                    await self.run_store.update_status(
+                        run_id, rec.status,
+                        fields={"exit_reason": "user_cancel"},
+                    )
+            except Exception:
+                pass
 
     async def resume(self, session_id: str, run_id: str) -> None:
         """续跑 = (1) 把原 run JSONL 改名 .aborted.jsonl
