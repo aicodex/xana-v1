@@ -221,6 +221,7 @@ async def boot(
     await model_registry.register(provider, client)
 
     state: StateRepository
+    run_store: RunStore | None = None
     if history_root is not None:
         run_store = FileRunStore(root=history_root.parent / "runs")
         state = _CompositeStateRepository(sessions=InMemorySessionStore(), runs=run_store)
@@ -231,6 +232,39 @@ async def boot(
         agents={},
         router=DefaultAgentRequestRouter(default_agent="chat"),
     )
+    # P5: wire RunStore + RunJsonlWriter so /resume + cancel_all have backing.
+    gateway.run_store = run_store
+    gateway.run_jsonl_writer = run_jsonl_writer
+
+    # P5.5/5.6: after replay, scan runs/ dir → PH-replace completed, mark
+    # unfinished as resumable (exit_reason=shutdown_force).
+    if history_root is not None and run_store is not None:
+        from xana.state.startup_scan import (
+            mark_unfinished_as_resumable,
+            replace_completed_placeholders,
+            scan_runs_dir,
+        )
+        runs_root = history_root / "runs"
+        report = scan_runs_dir(runs_root)
+        # Enumerate session_ids by session jsonl files at history_root.
+        session_ids = sorted({p.stem for p in history_root.glob("*.jsonl")})
+        # If no session files exist yet, still process scan with a synthetic
+        # "default" session_id so unfinished runs are marked — RunRecord needs
+        # a session_id field but list_unfinished does not filter by it.
+        if not session_ids:
+            session_ids = ["default"]
+        for sid in session_ids:
+            await replace_completed_placeholders(
+                report=report, runs_root=runs_root,
+                session_id=sid, agent_name="chat", store=active_ctx,
+            )
+        # mark_unfinished_as_resumable is idempotent per-run (get → update vs
+        # create); call once with the first session_id to avoid duplicate
+        # create errors across sessions.
+        await mark_unfinished_as_resumable(
+            report=report, store=run_store,
+            session_id=session_ids[0], agent_name="chat",
+        )
 
     progress_sink = AdapterProgressSink(gateway.adapters)
 
