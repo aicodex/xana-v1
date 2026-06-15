@@ -344,6 +344,20 @@ class TelegramAdapter(Adapter):
             await _ack()
             return
 
+        if data.startswith("__load_tools__:"):
+            from xana.agent_adapter.channels.unified_card import (
+                load_pending_tools,
+            )
+            card_id = data.split(":", 1)[1]
+            session_id = self._bindings.allocate(chat_id, prefix="tg")
+            buf = self._get_or_create_buffer(session_id)
+            slot = buf.cards.get(card_id)
+            if slot is not None and slot.state.answer is not None:
+                load_pending_tools(slot.state.answer)
+                self._schedule_send(buf, slot, finalize=True)
+            await _ack()
+            return
+
         # All other callback_data values are command strings (e.g. /cancel r1,
         # /attach r1, /help). Run through the same gate as direct messages.
         if data:

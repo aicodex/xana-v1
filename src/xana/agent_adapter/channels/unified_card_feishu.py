@@ -41,10 +41,12 @@ def _btn(b: Button, *, ph_run_id: str | None) -> dict:
     }
     if b.send:
         out["value"] = {"send": b.send}
+    elif b.action == "load_tools":
+        out["value"] = {"load_tools": b.action_arg or ""}
+    elif b.action == "detach":
+        out["value"] = {"detach": b.action_arg or ph_run_id or ""}
     else:
-        # send=None buttons (e.g. "后台") are adapter-local detach actions.
-        # Encode ph_run_id so the card-action handler can route to
-        # gateway.detach_foreground via value["detach"].
+        # 兜底:历史 send=None 按钮 (e.g. 后台) 默认为 detach。
         out["value"] = {"detach": ph_run_id or ""}
     return out
 
@@ -80,7 +82,7 @@ def _render_compact(sec: CompactSection) -> list[dict]:
     return out
 
 
-def _render_answer(sec: AnswerSection) -> list[dict]:
+def _render_answer(sec: AnswerSection, *, card_id: str) -> list[dict]:
     out: list[dict] = []
     # thinking
     if sec.thinking_text:
@@ -94,20 +96,34 @@ def _render_answer(sec: AnswerSection) -> list[dict]:
             folded=(sec.state != "streaming"),
         )
     )
-    # tools — cap visible to first TOOLS_VISIBLE_LIMIT
+    # tools — 永远显示前 TOOLS_VISIBLE_LIMIT 个,revealed 后追加 buf
     visible_tools = sec.tools[:TOOLS_VISIBLE_LIMIT]
     for t in visible_tools:
         out.append(_panel(t.header, t.body_md or " ", folded=True))
-    # tools 提示块 + 按钮(spec §4.3):
-    #   >3 → "N+ 待加载工具" + load button
-    #   ≤3 且 streaming 中无 tools/answer → "正在组织回答" 占位
-    if sec.tools_pending > 0:
-        out.append(_md(f"**+{sec.tools_pending} 待加载工具**"))
-        out.append(_btn_row(
-            ButtonRow(buttons=(Button(text="加载剩余工具",
-                                       send="/load_pending_tools"),)),
-            ph_run_id=None,
-        ))
+    if sec.tools_revealed:
+        # revealed 后所有 buf 进 sec.tools(load_pending_tools 已经搬过),
+        # 这里把 LIMIT 后的也渲出来。
+        for t in sec.tools[TOOLS_VISIBLE_LIMIT:]:
+            out.append(_panel(t.header, t.body_md or " ", folded=True))
+    # tools overflow 槽位按钮:label 由 state 决定。
+    # fg streaming: "+N 待加载工具"(可点)
+    # detached:    "正在后台调用工具"(占位,不可点 — 用 send=None+无 action)
+    # terminal:    "显示剩余 x 工具结果"(可点,reveal)
+    # cancelled/已 revealed/无 pending: 不出
+    if sec.tools_pending > 0 and not sec.tools_revealed:
+        if sec.state == "detached":
+            label = "正在后台调用工具"
+            btn = Button(text=label)  # 静默占位
+        elif sec.state == "terminal":
+            label = f"显示剩余 {sec.tools_pending} 工具结果"
+            btn = Button(text=label, action="load_tools", action_arg=card_id)
+        elif sec.state == "streaming":
+            label = f"+{sec.tools_pending} 待加载工具"
+            btn = Button(text=label, action="load_tools", action_arg=card_id)
+        else:
+            btn = None  # cancelled etc.
+        if btn is not None:
+            out.append(_btn_row(ButtonRow(buttons=(btn,)), ph_run_id=None))
     elif sec.state == "streaming" and not sec.tools and not sec.answer_text:
         out.append(_md("_正在组织回答_"))
     # 回答块:所有状态都用 collapsible_panel,保 detach 高度不变(spec §4.2)。
@@ -135,7 +151,7 @@ def render(state: UnifiedCardState) -> dict:
     if state.compact is not None:
         elements.extend(_render_compact(state.compact))
     if state.answer is not None:
-        elements.extend(_render_answer(state.answer))
+        elements.extend(_render_answer(state.answer, card_id=state.card_id))
     if state.menu is not None:
         elements.append(_md(state.menu.body_md))
     for row in state.bottom_buttons:

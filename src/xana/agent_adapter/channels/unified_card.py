@@ -11,7 +11,14 @@ from typing import Literal
 
 CompactState = Literal["input", "streaming", "completed", "cancelled"]
 AnswerState = Literal["streaming", "detached", "terminal", "cancelled"]
-FooterState = Literal["fg_running", "bg_frozen", "terminal"]
+FooterState = Literal["fg_running", "bg_frozen", "terminal", "menu"]
+
+
+def _fmt_k(n: int) -> str:
+    """Format an int as k-rounded short form. <1000 stays as-is."""
+    if n < 1000:
+        return str(n)
+    return f"{n // 1000}k"
 
 
 @dataclass
@@ -34,8 +41,9 @@ class CompactSection:
 class AnswerSection:
     state: AnswerState = "streaming"
     thinking_text: str = ""
-    tools: tuple[ToolBlock, ...] = ()
-    tools_pending: int = 0        # 待加载工具数 (累积 - 已显示)
+    tools: tuple[ToolBlock, ...] = ()        # 累积所有 tool
+    tools_pending: int = 0                    # = max(0, len(tools) - TOOLS_VISIBLE_LIMIT)
+    tools_revealed: bool = False              # 用户点过 "加载剩余工具" 后 True
     answer_text: str = ""
     _pending_tools_buf: tuple[ToolBlock, ...] = ()
 
@@ -47,8 +55,18 @@ class MenuSection:
 
 @dataclass
 class Button:
+    """卡片按钮。
+
+    三种点击形态(互斥):
+    - ``send``:点击 = 用户发了一条命令文本(走 router,会回话)
+    - ``action`` + ``action_arg``:adapter 本地动作(detach / load_tools 等),
+      不走 router、不回话,只刷卡片
+    - 两者都空:占位按钮(静默,不响应)
+    """
     text: str
-    send: str | None = None       # 点击发送的命令
+    send: str | None = None
+    action: str | None = None
+    action_arg: str | None = None
 
 
 @dataclass
@@ -85,13 +103,19 @@ class FooterText:
     def render(self) -> str:
         """Render footer line per state.
 
-        - fg_running / terminal: ``model · 上下文 used/max · 用时 T``
+        - fg_running / terminal: ``model · 上下文 Nk/Mk · 用时 T``
         - bg_frozen: ``model · 🟡 后台运行中 · 用时 T`` (frozen ctx hidden)
+        - menu: ``model · 用时 T`` (no ctx — 菜单卡无 ctx 意义)
         """
         t = _format_elapsed(self.elapsed_s)
         if self.state == "bg_frozen":
             return f"{self.model} · 🟡 后台运行中 · 用时 {t}"
-        return f"{self.model} · 上下文 {self.ctx_used}/{self.ctx_max} · 用时 {t}"
+        if self.state == "menu":
+            return f"{self.model} · 用时 {t}"
+        return (
+            f"{self.model} · 上下文 "
+            f"{_fmt_k(self.ctx_used)}/{_fmt_k(self.ctx_max)} · 用时 {t}"
+        )
 
 
 # --- compact section state machine ---------------------------------------
@@ -171,11 +195,12 @@ def append_tool(sec: AnswerSection, tool: ToolBlock) -> None:
 
 
 def load_pending_tools(sec: AnswerSection) -> None:
-    """Reveal all buffered tools into ``sec.tools``; reset pending count."""
+    """Reveal all buffered tools into ``sec.tools``; mark revealed."""
     if sec._pending_tools_buf:
         sec.tools = sec.tools + sec._pending_tools_buf
         sec._pending_tools_buf = ()
     sec.tools_pending = 0
+    sec.tools_revealed = True
 
 
 def detach_answer(sec: AnswerSection) -> None:
@@ -285,6 +310,7 @@ def build_help_menu(
         card_id=card_id,
         menu=MenuSection(body_md=body),
         bottom_buttons=rows,
+        footer=FooterText(state="menu"),
     )
 
 
@@ -306,6 +332,7 @@ def build_attach_menu(
         card_id=card_id,
         menu=MenuSection(body_md="\n".join(lines)),
         bottom_buttons=rows,
+        footer=FooterText(state="menu"),
     )
 
 

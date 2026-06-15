@@ -49,18 +49,40 @@ def _render_compact(sec: CompactSection) -> str:
     return "\n".join(parts)
 
 
-def _render_answer(sec: AnswerSection) -> str:
+def _render_answer(sec: AnswerSection, *, extra_kb: list[list[dict]],
+                   card_id: str) -> str:
+    """渲染回答段。tools-overflow 按钮通过 ``extra_kb`` 追加(TG 不能 mid-text)。"""
     parts: list[str] = []
     # thinking
     think_title = "思考过程" if sec.thinking_text else "正在思考"
     parts.append(_fold(think_title, sec.thinking_text or " "))
-    # tools (cap visible)
+    # tools — 永远前 LIMIT 个,revealed 后追加剩余。
     visible_tools = sec.tools[:TOOLS_VISIBLE_LIMIT]
     for t in visible_tools:
         parts.append(_fold(t.header, t.body_md or " "))
-    # pending hint / streaming placeholder
-    if sec.tools_pending > 0:
-        parts.append(f"<b>+{sec.tools_pending} 待加载工具</b>")
+    if sec.tools_revealed:
+        for t in sec.tools[TOOLS_VISIBLE_LIMIT:]:
+            parts.append(_fold(t.header, t.body_md or " "))
+    # tools overflow 槽位(TG 用 button + 文字标识):label 由 state 决定
+    if sec.tools_pending > 0 and not sec.tools_revealed:
+        if sec.state == "detached":
+            parts.append("<b>正在后台调用工具</b>")
+        elif sec.state == "terminal":
+            label = f"显示剩余 {sec.tools_pending} 工具结果"
+            parts.append(f"<b>{label}</b>")
+            extra_kb.append([
+                {"text": label,
+                 "callback_data": f"__load_tools__:{card_id}"[
+                     :_TG_CALLBACK_DATA_LIMIT]},
+            ])
+        elif sec.state == "streaming":
+            label = f"+{sec.tools_pending} 待加载工具"
+            parts.append(f"<b>{label}</b>")
+            extra_kb.append([
+                {"text": label,
+                 "callback_data": f"__load_tools__:{card_id}"[
+                     :_TG_CALLBACK_DATA_LIMIT]},
+            ])
     elif sec.state == "streaming" and not sec.tools and not sec.answer_text:
         parts.append("<i>正在组织回答</i>")
     # 回答块:所有状态都用 <blockquote expandable>,保 detach 高度不变(spec §4.2)。
@@ -86,11 +108,17 @@ def _kb_row(row: ButtonRow, *, ph_run_id: str | None) -> list[dict]:
         item: dict = {"text": b.text}
         if b.send:
             item["callback_data"] = b.send[:_TG_CALLBACK_DATA_LIMIT]
+        elif b.action == "load_tools":
+            item["callback_data"] = f"__load_tools__:{b.action_arg or ''}"[
+                :_TG_CALLBACK_DATA_LIMIT]
+        elif b.action == "detach":
+            arg = b.action_arg or ph_run_id or ""
+            item["callback_data"] = f"__detach__:{arg}"[
+                :_TG_CALLBACK_DATA_LIMIT]
         else:
-            # send=None button (e.g. "后台") -> adapter-local detach action.
+            # 兜底:历史 send=None 默认 detach。
             item["callback_data"] = f"__detach__:{ph_run_id or ''}"[
-                :_TG_CALLBACK_DATA_LIMIT
-            ]
+                :_TG_CALLBACK_DATA_LIMIT]
         out.append(item)
     return out
 
@@ -98,10 +126,12 @@ def _kb_row(row: ButtonRow, *, ph_run_id: str | None) -> list[dict]:
 def render(state: UnifiedCardState) -> tuple[str, list[list[dict]]]:
     """Render a UnifiedCardState to (html_text, inline_keyboard rows)."""
     parts: list[str] = []
+    extra_kb: list[list[dict]] = []
     if state.compact is not None:
         parts.append(_render_compact(state.compact))
     if state.answer is not None:
-        parts.append(_render_answer(state.answer))
+        parts.append(_render_answer(
+            state.answer, extra_kb=extra_kb, card_id=state.card_id))
     if state.menu is not None:
         parts.append(state.menu.body_md)
     parts.append(f"<i>{state.footer.render()}</i>")
@@ -110,6 +140,7 @@ def render(state: UnifiedCardState) -> tuple[str, list[list[dict]]]:
     kb: list[list[dict]] = []
     for row in state.top_buttons:
         kb.append(_kb_row(row, ph_run_id=state.ph_run_id))
+    kb.extend(extra_kb)
     for row in state.bottom_buttons:
         kb.append(_kb_row(row, ph_run_id=state.ph_run_id))
     return html, kb

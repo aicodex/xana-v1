@@ -150,7 +150,7 @@ def _apply_agent_only(state: UnifiedCardState, ev: AgentEvent) -> None:
         else:
             state.menu.body_md = text
         state.terminal = True
-        state.footer.state = "terminal"
+        state.footer.state = "menu"
         state.top_buttons = ()
         return
     if ev.kind == "cancelled":
@@ -302,6 +302,7 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
                 state.menu = MenuSection(body_md=str(text))
             else:
                 state.menu.body_md = str(text)
+            state.footer.state = "menu"
         return
     if kind == "menu_response":
         specs_raw = payload.get("specs") or ()

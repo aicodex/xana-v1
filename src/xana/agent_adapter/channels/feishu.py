@@ -250,6 +250,11 @@ class FeishuAdapter(Adapter):
             except Exception:
                 pass
             return
+        # 加载剩余工具:adapter 本地动作,不走 router,只刷卡。
+        load_card = value.get("load_tools")
+        if load_card:
+            await self._handle_load_tools(chat_id, str(load_card))
+            return
         if action == "detach_foreground" or value.get("detach"):
             if not chat_id or self._gateway is None:
                 return
@@ -278,6 +283,21 @@ class FeishuAdapter(Adapter):
                 metadata={"chat_id": chat_id, "source": "card_action"},
             )
         )
+
+    async def _handle_load_tools(self, chat_id: str, card_id: str) -> None:
+        """加载剩余工具按钮回调:翻 sec.tools_revealed,重渲卡片。"""
+        from xana.agent_adapter.channels.unified_card import (
+            load_pending_tools,
+        )
+        if not chat_id:
+            return
+        session_id = self._bindings.allocate(chat_id, prefix="feishu")
+        buf = self._get_or_create_buffer(session_id)
+        slot = buf.cards.get(card_id)
+        if slot is None or slot.state.answer is None:
+            return
+        load_pending_tools(slot.state.answer)
+        self._schedule_send(buf, slot, finalize=True)
 
     # ------------------------------------------------------------------
     # Session binding helpers
