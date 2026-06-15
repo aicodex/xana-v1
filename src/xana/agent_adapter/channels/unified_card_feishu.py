@@ -34,21 +34,24 @@ def _panel(title: str, body_md: str, *, folded: bool = True) -> dict:
 
 
 def _btn(b: Button, *, ph_run_id: str | None) -> dict:
-    out: dict = {
+    """飞书 card v2:button 点击 callback 必须包在 ``behaviors`` 里;
+    裸 ``value`` 在 v2 schema 下不触发,这就是用户报的"按钮报错"根因。
+    """
+    if b.send:
+        value: dict = {"send_text": b.send}
+    elif b.action == "load_tools":
+        value = {"load_tools": b.action_arg or ""}
+    elif b.action == "detach":
+        value = {"detach": b.action_arg or ph_run_id or ""}
+    else:
+        value = {"detach": ph_run_id or ""}
+    return {
         "tag": "button",
         "type": "default",
+        "size": "medium",
         "text": {"tag": "plain_text", "content": b.text},
+        "behaviors": [{"type": "callback", "value": value}],
     }
-    if b.send:
-        out["value"] = {"send": b.send}
-    elif b.action == "load_tools":
-        out["value"] = {"load_tools": b.action_arg or ""}
-    elif b.action == "detach":
-        out["value"] = {"detach": b.action_arg or ph_run_id or ""}
-    else:
-        # 兜底:历史 send=None 按钮 (e.g. 后台) 默认为 detach。
-        out["value"] = {"detach": ph_run_id or ""}
-    return out
 
 
 def _btn_row(row: ButtonRow, *, ph_run_id: str | None) -> dict:
