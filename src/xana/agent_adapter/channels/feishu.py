@@ -16,16 +16,14 @@ from typing import Any, AsyncGenerator, AsyncIterator
 from xana.agent_adapter.channels._bindings import BindingStore
 from xana.agent_adapter.channels._draft import TurnDraft
 from xana.agent_adapter.channels._pairing import PairingStore
-from xana.agent_adapter.channels._throttle import DraftCoalescer
+from xana.agent_adapter.channels.card import Card
 from xana.agent_adapter.channels.feishu_card import build_card
 from xana.agent_adapter.channels.feishu_events import parse_message_event
 from xana.agent_adapter.channels.unified_card import (
-    AnswerSection,
     UnifiedCardState,
     build_attach_menu,
     build_help_menu,
 )
-from xana.agent_adapter.channels.unified_card_events import apply_event
 from xana.agent_adapter.channels.unified_card_feishu import render as render_unified
 from xana.agent_adapter.contracts import (
     AdapterHealth,
@@ -68,25 +66,16 @@ class FeishuApiSender:
 
 
 # ---------------------------------------------------------------------------
-# Per-card state holder
+# Per-session card registry
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class _CardSlot:
-    state: UnifiedCardState
-    coalescer: DraftCoalescer = field(
-        default_factory=lambda: DraftCoalescer(min_interval_s=0.25)
-    )
-    terminal: bool = False
 
 
 @dataclass
 class _SessionBuffer:
     chat_id: str | None = None
     session_id: str = ""
-    # card_id -> slot. card_id == run_id for PH cards; dedicated id for menus.
-    cards: dict[str, _CardSlot] = field(default_factory=dict)
+    # card_id -> Card. card_id == run_id for PH cards; dedicated id for menus.
+    cards: dict[str, Card] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -285,19 +274,15 @@ class FeishuAdapter(Adapter):
         )
 
     async def _handle_load_tools(self, chat_id: str, card_id: str) -> None:
-        """加载剩余工具按钮回调:翻 sec.tools_revealed,重渲卡片。"""
-        from xana.agent_adapter.channels.unified_card import (
-            load_pending_tools,
-        )
+        """加载剩余工具按钮回调:委托给 Card。"""
         if not chat_id:
             return
         session_id = self._bindings.allocate(chat_id, prefix="feishu")
         buf = self._get_or_create_buffer(session_id)
-        slot = buf.cards.get(card_id)
-        if slot is None or slot.state.answer is None:
+        card = buf.cards.get(card_id)
+        if card is None:
             return
-        load_pending_tools(slot.state.answer)
-        self._schedule_send(buf, slot, finalize=True)
+        card.reveal_tools()
 
     # ------------------------------------------------------------------
     # Session binding helpers
@@ -322,16 +307,17 @@ class FeishuAdapter(Adapter):
         # /attach menu-card detour: payload may carry attach_choices.
         choices = event.payload.get("attach_choices") if event.payload else None
         if isinstance(choices, list) and choices:
-            cards = tuple(
+            cands = tuple(
                 (str(c.get("run_id") or ""), str(c.get("label") or c.get("run_id") or ""))
                 for c in choices
                 if c.get("run_id")
             )
             card_id = self._next_menu_card_id(event.session_id, prefix="attach")
-            state = build_attach_menu(card_id=card_id, candidates=cards)
-            slot = _CardSlot(state=state)
-            buf.cards[card_id] = slot
-            await self._send_or_patch(buf, slot, finalize=True)
+            state = build_attach_menu(card_id=card_id, candidates=cands)
+            card = self._make_card(buf, state)
+            card.terminal = True   # 菜单卡一次性
+            buf.cards[card_id] = card
+            await self._direct_send_or_patch(buf, card)
             return RenderedMessage(
                 adapter_id=self.adapter_id,
                 session_id=event.session_id,
@@ -347,39 +333,16 @@ class FeishuAdapter(Adapter):
                 text="",
                 metadata={"event_kind": event.kind},
             )
-        slot = self._ensure_slot(buf, card_id, ph_run_id=card_id)
-        if slot.terminal:
-            # Card already terminal — drop late events to avoid resurrecting.
-            return RenderedMessage(
-                adapter_id=self.adapter_id,
-                session_id=event.session_id,
-                text=slot.state.answer.answer_text if slot.state.answer else "",
-                metadata={"event_kind": event.kind, "drop": "terminal"},
-            )
-        # Detached card 冻结:detach 瞬间一次 patch 后,本卡不再刷新,
-        # 直到 ph_replaced/run_completed_bg 让它回到 terminal(走 note_progress)。
-        if slot.state.detached:
-            return RenderedMessage(
-                adapter_id=self.adapter_id,
-                session_id=event.session_id,
-                text="",
-                metadata={"event_kind": event.kind, "drop": "detached"},
-            )
-        apply_event(slot.state, event)
-        # Determine finalize: harness final/error/cancelled → flush + mark terminal.
-        hkind = (
-            event.harness_event.kind
-            if event.harness_event is not None
-            else event.kind
+        card = self._ensure_card(buf, card_id, ph_run_id=card_id)
+        task = card.dispatch(event)
+        if task is not None:
+            try:
+                await task
+            except Exception:
+                pass
+        text_out = (
+            card.state.answer.answer_text if card.state.answer else ""
         )
-        finalize = hkind in ("final", "error", "cancelled")
-        if finalize:
-            slot.terminal = True
-            slot.state.top_buttons = ()
-            await slot.coalescer.finalize(self._make_send(buf, slot))
-        else:
-            slot.coalescer.flush(self._make_send(buf, slot))
-        text_out = slot.state.answer.answer_text if slot.state.answer else ""
         return RenderedMessage(
             adapter_id=self.adapter_id,
             session_id=event.session_id,
@@ -395,47 +358,48 @@ class FeishuAdapter(Adapter):
             return str(rid)
         return ""
 
-    def _ensure_slot(
+    def _make_card(self, buf: _SessionBuffer, state: UnifiedCardState) -> Card:
+        """新 Card + 注入交付/任务追踪。"""
+        card = Card(state)
+        card.bind_transport(
+            deliver=lambda c: self._deliver(buf, c),
+            task_sink=lambda t: self._pending_tasks.append(t),
+        )
+        return card
+
+    def _ensure_card(
         self, buf: _SessionBuffer, card_id: str, *, ph_run_id: str | None = None
-    ) -> _CardSlot:
-        slot = buf.cards.get(card_id)
-        if slot is None:
+    ) -> Card:
+        card = buf.cards.get(card_id)
+        if card is None:
             state = UnifiedCardState(card_id=card_id, ph_run_id=ph_run_id)
-            slot = _CardSlot(state=state)
-            buf.cards[card_id] = slot
-        return slot
+            card = self._make_card(buf, state)
+            buf.cards[card_id] = card
+        return card
 
     def _next_menu_card_id(self, session_id: str, *, prefix: str) -> str:
         n = self._menu_seq.get(session_id, 0) + 1
         self._menu_seq[session_id] = n
         return f"{prefix}-{session_id}-{n}"
 
-    def _make_send(self, buf: _SessionBuffer, slot: _CardSlot):
-        async def _send() -> None:
-            await self._send_or_patch(buf, slot, finalize=False)
-        return _send
-
-    async def _send_or_patch(
-        self, buf: _SessionBuffer, slot: _CardSlot, *, finalize: bool
-    ) -> None:
+    async def _deliver(self, buf: _SessionBuffer, card: Card) -> None:
+        """Card 的 deliver 钩子:渲染 + send_card / patch_card。"""
         if buf.chat_id is None or self._api_sender is None:
             return
-        # Ensure top_buttons reflect current state.
-        from xana.agent_adapter.channels.unified_card import compute_top_buttons
-        if not slot.terminal and not finalize:
-            slot.state.top_buttons = compute_top_buttons(slot.state)
-        else:
-            slot.state.top_buttons = ()
-        card = render_unified(slot.state)
-        if slot.state.message_id is None:
+        schema = render_unified(card.state)
+        if card.message_id is None:
             mid = await self._api_sender.send_card(
-                receive_id=buf.chat_id, card=card
+                receive_id=buf.chat_id, card=schema
             )
-            slot.state.message_id = mid
+            card.message_id = mid
         else:
             await self._api_sender.patch_card(
-                message_id=slot.state.message_id, card=card
+                message_id=card.message_id, card=schema
             )
+
+    async def _direct_send_or_patch(self, buf: _SessionBuffer, card: Card) -> None:
+        """绕开 coalescer 直接交付(用于 attach_choices 这种命令直送)。"""
+        await self._deliver(buf, card)
 
     # ------------------------------------------------------------------
     # ProgressEvent path (note_progress)
@@ -447,66 +411,41 @@ class FeishuAdapter(Adapter):
             return
         buf = self._get_or_create_buffer(sid)
         kind = payload.get("kind")
-        # Menu responses get their own card.
-        if kind == "menu_response":
-            specs_raw = payload.get("specs") or ()
-            specs = tuple((str(n), str(d)) for n, d in specs_raw)
-            cid = self._next_menu_card_id(sid, prefix="help")
-            state = build_help_menu(card_id=cid, specs=specs)
-            slot = _CardSlot(state=state, terminal=True)
-            buf.cards[cid] = slot
-            self._schedule_send(buf, slot, finalize=True)
-            return
-        if kind == "attach_options":
-            cands_raw = payload.get("candidates") or ()
-            cands = tuple((str(rid), str(lbl)) for rid, lbl in cands_raw)
-            cid = self._next_menu_card_id(sid, prefix="attach")
-            state = build_attach_menu(card_id=cid, candidates=cands)
-            slot = _CardSlot(state=state, terminal=True)
-            buf.cards[cid] = slot
-            self._schedule_send(buf, slot, finalize=True)
+        # Menu cards (one-shot, no PH).
+        if kind in ("menu_response", "attach_options"):
+            if kind == "menu_response":
+                specs = tuple(
+                    (str(n), str(d)) for n, d in (payload.get("specs") or ())
+                )
+                cid = self._next_menu_card_id(sid, prefix="help")
+                state = build_help_menu(card_id=cid, specs=specs)
+            else:
+                cands = tuple(
+                    (str(r), str(l)) for r, l in (payload.get("candidates") or ())
+                )
+                cid = self._next_menu_card_id(sid, prefix="attach")
+                state = build_attach_menu(card_id=cid, candidates=cands)
+            card = self._make_card(buf, state)
+            card.terminal = True
+            buf.cards[cid] = card
+            self._spawn_task(self._deliver(buf, card))
             return
         rid = str(payload.get("run_id") or "")
         if not rid:
             return
-        slot = self._ensure_slot(buf, rid, ph_run_id=rid)
-        if slot.terminal:
-            return
-        # Build a ProgressEvent and dispatch through apply_event.
+        card = self._ensure_card(buf, rid, ph_run_id=rid)
         pe = ProgressEvent(
-            session_id=sid,
-            run_id=rid,
-            message=str(kind or ""),
-            payload=dict(payload),
+            session_id=sid, run_id=rid,
+            message=str(kind or ""), payload=dict(payload),
         )
-        apply_event(slot.state, pe)
-        # Terminal kinds finalize the slot.
-        finalize = kind in ("ph_replaced", "run_completed_bg")
-        if finalize:
-            slot.terminal = True
-        # ph_replaced / detach call _schedule_send finalize; others go through
-        # the throttle so high-rate compact_progress / usage_progress don't
-        # spam the API.
-        if finalize or kind == "run_detached":
-            self._schedule_send(buf, slot, finalize=True)
-        else:
-            slot.coalescer.flush(self._make_send(buf, slot))
+        card.dispatch(pe)
 
-    def _schedule_send(
-        self, buf: _SessionBuffer, slot: _CardSlot, *, finalize: bool
-    ) -> None:
-        async def _runner() -> None:
-            if finalize:
-                await slot.coalescer.finalize(
-                    lambda: self._send_or_patch(buf, slot, finalize=True)
-                )
-            else:
-                await self._send_or_patch(buf, slot, finalize=False)
+    def _spawn_task(self, coro) -> None:
         try:
-            task = asyncio.create_task(_runner())
+            t = asyncio.create_task(coro)
         except RuntimeError:
             return
-        self._pending_tasks.append(task)
+        self._pending_tasks.append(t)
 
     # ------------------------------------------------------------------
     # Health

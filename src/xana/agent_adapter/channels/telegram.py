@@ -24,14 +24,12 @@ from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.channels._bindings import BindingStore
 from xana.agent_adapter.channels._pairing import PairingStore
-from xana.agent_adapter.channels._throttle import DraftCoalescer
+from xana.agent_adapter.channels.card import Card
 from xana.agent_adapter.channels.unified_card import (
     UnifiedCardState,
     build_attach_menu,
     build_help_menu,
-    compute_top_buttons,
 )
-from xana.agent_adapter.channels.unified_card_events import apply_event
 from xana.agent_adapter.channels.unified_card_telegram import render as render_unified
 from xana.agent_adapter.contracts import (
     AdapterHealth,
@@ -111,20 +109,11 @@ class TelegramApiClient:
 
 
 @dataclass
-class _CardSlot:
-    state: UnifiedCardState
-    coalescer: DraftCoalescer = field(
-        default_factory=lambda: DraftCoalescer(min_interval_s=0.25)
-    )
-    terminal: bool = False
-
-
-@dataclass
 class _SessionBuffer:
     chat_id: str | None = None
     session_id: str = ""
-    # card_id -> slot. card_id == run_id for PH cards; dedicated id for menus.
-    cards: dict[str, _CardSlot] = field(default_factory=dict)
+    # card_id -> Card. card_id == run_id for PH cards; dedicated id for menus.
+    cards: dict[str, Card] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -345,16 +334,12 @@ class TelegramAdapter(Adapter):
             return
 
         if data.startswith("__load_tools__:"):
-            from xana.agent_adapter.channels.unified_card import (
-                load_pending_tools,
-            )
             card_id = data.split(":", 1)[1]
             session_id = self._bindings.allocate(chat_id, prefix="tg")
             buf = self._get_or_create_buffer(session_id)
-            slot = buf.cards.get(card_id)
-            if slot is not None and slot.state.answer is not None:
-                load_pending_tools(slot.state.answer)
-                self._schedule_send(buf, slot, finalize=True)
+            card = buf.cards.get(card_id)
+            if card is not None:
+                card.reveal_tools()
             await _ack()
             return
 
@@ -416,9 +401,10 @@ class TelegramAdapter(Adapter):
             )
             card_id = self._next_menu_card_id(event.session_id, prefix="attach")
             state = build_attach_menu(card_id=card_id, candidates=cands)
-            slot = _CardSlot(state=state, terminal=True)
-            buf.cards[card_id] = slot
-            await self._send_or_patch(buf, slot, finalize=True)
+            card = self._make_card(buf, state)
+            card.terminal = True
+            buf.cards[card_id] = card
+            await self._deliver(buf, card)
             return RenderedMessage(
                 adapter_id=self.adapter_id,
                 session_id=event.session_id,
@@ -434,36 +420,14 @@ class TelegramAdapter(Adapter):
                 text="",
                 metadata={"event_kind": event.kind},
             )
-        slot = self._ensure_slot(buf, card_id, ph_run_id=card_id)
-        if slot.terminal:
-            return RenderedMessage(
-                adapter_id=self.adapter_id,
-                session_id=event.session_id,
-                text=slot.state.answer.answer_text if slot.state.answer else "",
-                metadata={"event_kind": event.kind, "drop": "terminal"},
-            )
-        # Detached card 冻结:detach 后一次 patch,卡不再刷,直到 ph_replaced。
-        if slot.state.detached:
-            return RenderedMessage(
-                adapter_id=self.adapter_id,
-                session_id=event.session_id,
-                text="",
-                metadata={"event_kind": event.kind, "drop": "detached"},
-            )
-        apply_event(slot.state, event)
-        hkind = (
-            event.harness_event.kind
-            if event.harness_event is not None
-            else event.kind
-        )
-        finalize = hkind in ("final", "error", "cancelled")
-        if finalize:
-            slot.terminal = True
-            slot.state.top_buttons = ()
-            await slot.coalescer.finalize(self._make_send(buf, slot))
-        else:
-            slot.coalescer.flush(self._make_send(buf, slot))
-        text_out = slot.state.answer.answer_text if slot.state.answer else ""
+        card = self._ensure_card(buf, card_id, ph_run_id=card_id)
+        task = card.dispatch(event)
+        if task is not None:
+            try:
+                await task
+            except Exception:
+                pass
+        text_out = card.state.answer.answer_text if card.state.answer else ""
         return RenderedMessage(
             adapter_id=self.adapter_id,
             session_id=event.session_id,
@@ -479,38 +443,36 @@ class TelegramAdapter(Adapter):
             return str(rid)
         return ""
 
-    def _ensure_slot(
+    def _make_card(self, buf: _SessionBuffer, state: UnifiedCardState) -> Card:
+        card = Card(state)
+        card.bind_transport(
+            deliver=lambda c: self._deliver(buf, c),
+            task_sink=lambda t: self._pending_tasks.append(t),
+        )
+        return card
+
+    def _ensure_card(
         self, buf: _SessionBuffer, card_id: str, *, ph_run_id: str | None = None
-    ) -> _CardSlot:
-        slot = buf.cards.get(card_id)
-        if slot is None:
+    ) -> Card:
+        card = buf.cards.get(card_id)
+        if card is None:
             state = UnifiedCardState(card_id=card_id, ph_run_id=ph_run_id)
-            slot = _CardSlot(state=state)
-            buf.cards[card_id] = slot
-        return slot
+            card = self._make_card(buf, state)
+            buf.cards[card_id] = card
+        return card
 
     def _next_menu_card_id(self, session_id: str, *, prefix: str) -> str:
         n = self._menu_seq.get(session_id, 0) + 1
         self._menu_seq[session_id] = n
         return f"{prefix}-{session_id}-{n}"
 
-    def _make_send(self, buf: _SessionBuffer, slot: _CardSlot):
-        async def _send() -> None:
-            await self._send_or_patch(buf, slot, finalize=False)
-        return _send
-
-    async def _send_or_patch(
-        self, buf: _SessionBuffer, slot: _CardSlot, *, finalize: bool
-    ) -> None:
+    async def _deliver(self, buf: _SessionBuffer, card: Card) -> None:
+        """Card 的 deliver:渲染 + send_message / edit_message_text。"""
         if buf.chat_id is None or self._api_client is None:
             return
-        if not slot.terminal and not finalize:
-            slot.state.top_buttons = compute_top_buttons(slot.state)
-        else:
-            slot.state.top_buttons = ()
-        html, kb = render_unified(slot.state)
+        html, kb = render_unified(card.state)
         markup: dict | None = {"inline_keyboard": kb} if kb else None
-        if slot.state.message_id is None:
+        if card.message_id is None:
             try:
                 mid = await self._api_client.send_message(
                     chat_id=buf.chat_id, text=html,
@@ -522,12 +484,12 @@ class TelegramAdapter(Adapter):
                     type(exc).__name__, self._redact(str(exc)),
                 )
                 return
-            slot.state.message_id = str(mid)
+            card.message_id = str(mid)
         else:
             try:
                 await self._api_client.edit_message_text(
                     chat_id=buf.chat_id,
-                    message_id=int(slot.state.message_id),
+                    message_id=int(card.message_id),
                     text=html, parse_mode="HTML",
                     reply_markup=markup,
                 )
@@ -544,7 +506,7 @@ class TelegramAdapter(Adapter):
                         chat_id=buf.chat_id, text=html,
                         parse_mode="HTML", reply_markup=markup,
                     )
-                    slot.state.message_id = str(mid)
+                    card.message_id = str(mid)
                 except Exception:
                     pass
 
@@ -558,60 +520,40 @@ class TelegramAdapter(Adapter):
             return
         buf = self._get_or_create_buffer(sid)
         kind = payload.get("kind")
-        if kind == "menu_response":
-            specs_raw = payload.get("specs") or ()
-            specs = tuple((str(n), str(d)) for n, d in specs_raw)
-            cid = self._next_menu_card_id(sid, prefix="help")
-            state = build_help_menu(card_id=cid, specs=specs)
-            slot = _CardSlot(state=state, terminal=True)
-            buf.cards[cid] = slot
-            self._schedule_send(buf, slot, finalize=True)
-            return
-        if kind == "attach_options":
-            cands_raw = payload.get("candidates") or ()
-            cands = tuple((str(rid), str(lbl)) for rid, lbl in cands_raw)
-            cid = self._next_menu_card_id(sid, prefix="attach")
-            state = build_attach_menu(card_id=cid, candidates=cands)
-            slot = _CardSlot(state=state, terminal=True)
-            buf.cards[cid] = slot
-            self._schedule_send(buf, slot, finalize=True)
+        if kind in ("menu_response", "attach_options"):
+            if kind == "menu_response":
+                specs = tuple(
+                    (str(n), str(d)) for n, d in (payload.get("specs") or ())
+                )
+                cid = self._next_menu_card_id(sid, prefix="help")
+                state = build_help_menu(card_id=cid, specs=specs)
+            else:
+                cands = tuple(
+                    (str(r), str(l)) for r, l in (payload.get("candidates") or ())
+                )
+                cid = self._next_menu_card_id(sid, prefix="attach")
+                state = build_attach_menu(card_id=cid, candidates=cands)
+            card = self._make_card(buf, state)
+            card.terminal = True
+            buf.cards[cid] = card
+            self._spawn_task(self._deliver(buf, card))
             return
         rid = str(payload.get("run_id") or "")
         if not rid:
             return
-        slot = self._ensure_slot(buf, rid, ph_run_id=rid)
-        if slot.terminal:
-            return
+        card = self._ensure_card(buf, rid, ph_run_id=rid)
         pe = ProgressEvent(
-            session_id=sid,
-            run_id=rid,
-            message=str(kind or ""),
-            payload=dict(payload),
+            session_id=sid, run_id=rid,
+            message=str(kind or ""), payload=dict(payload),
         )
-        apply_event(slot.state, pe)
-        finalize = kind in ("ph_replaced", "run_completed_bg")
-        if finalize:
-            slot.terminal = True
-        if finalize or kind == "run_detached":
-            self._schedule_send(buf, slot, finalize=True)
-        else:
-            slot.coalescer.flush(self._make_send(buf, slot))
+        card.dispatch(pe)
 
-    def _schedule_send(
-        self, buf: _SessionBuffer, slot: _CardSlot, *, finalize: bool
-    ) -> None:
-        async def _runner() -> None:
-            if finalize:
-                await slot.coalescer.finalize(
-                    lambda: self._send_or_patch(buf, slot, finalize=True)
-                )
-            else:
-                await self._send_or_patch(buf, slot, finalize=False)
+    def _spawn_task(self, coro) -> None:
         try:
-            task = asyncio.create_task(_runner())
+            t = asyncio.create_task(coro)
         except RuntimeError:
             return
-        self._pending_tasks.append(task)
+        self._pending_tasks.append(t)
 
     # ------------------------------------------------------------------
     # Health
