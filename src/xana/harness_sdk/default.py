@@ -554,7 +554,11 @@ class DefaultHarness(Harness):
 
         if context.state_repository is not None:
             await context.state_repository.runs().create(
-                RunRecord(run_id=run_id, session_id=session_id, agent_name=agent_name, status="running")
+                RunRecord(
+                    run_id=run_id, session_id=session_id, agent_name=agent_name,
+                    status="running",
+                    input_request={"text": getattr(request, "text", "") or ""},
+                )
             )
 
         ext = self._extensions
