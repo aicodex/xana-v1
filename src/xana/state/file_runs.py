@@ -149,6 +149,17 @@ class RunJsonlWriter:
         with self._path(run_id).open("a", encoding="utf-8") as f:
             f.write(_row_to_json(row) + "\n")
 
+    def rename_to_aborted(self, run_id: str) -> None:
+        """把 runs/{run_id}.jsonl 改名为 runs/{run_id}.aborted.jsonl(P5.3)。
+
+        文件不存在时静默 noop —— resume 路径在已 aborted 的 run 上不应失败。
+        """
+        src = self._path(run_id)
+        if not src.exists():
+            return
+        dst = self._dir / f"{run_id}.aborted.jsonl"
+        src.rename(dst)
+
     async def finalize(self, run_id: str, status: RunTerminalStatus) -> None:
         marker = json.dumps(
             {"marker": "run_completed", "status": status, "ts": time.time()},
