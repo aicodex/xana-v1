@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import AsyncGenerator, AsyncIterator
+from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.contracts import (
     InboundMessage,
@@ -35,6 +35,10 @@ class DefaultAgentGateway(AgentGateway):
         self._cmd_seq = 0
         self._inflight: dict[str, list[InflightRun]] = {}  # session_id → 倒序(新在前)
         self._run_seq = 0
+        # P5 — RunStore + RunJsonlWriter injected post-construction (boot wiring).
+        self.run_store: Any = None
+        self.run_jsonl_writer: Any = None
+        self._resume_inflight: set[str] = set()
 
     async def register_adapter(self, adapter_id: str, adapter: Adapter) -> None:
         self.adapters[adapter_id] = adapter
@@ -228,6 +232,65 @@ class DefaultAgentGateway(AgentGateway):
         self._cancel_flags[session_id] = True
         for agent in self.agents.values():
             await agent.cancel(session_id, run_id)
+
+    async def resume(self, session_id: str, run_id: str) -> None:
+        """续跑 = (1) 把原 run JSONL 改名 .aborted.jsonl
+                 (2) 用原 input_request fork 新 run。
+
+        防重入:同一 run_id 同时只能 resume 一次。
+        """
+        if run_id in self._resume_inflight:
+            return
+        self._resume_inflight.add(run_id)
+        try:
+            rec = await self.run_store.get(run_id) if self.run_store is not None else None
+            if rec is None:
+                return
+            if self.run_jsonl_writer is not None:
+                self.run_jsonl_writer.rename_to_aborted(run_id)
+            text = rec.input_request.get("text", "") if rec.input_request else ""
+            # Fork a new run via the normal submit path. Adapter routing is
+            # picked from any registered adapter for this session — fallback
+            # to the first adapter we know about.
+            adapter_id = ""
+            for aid in self.adapters:
+                adapter_id = aid
+                break
+            inbound = InboundMessage(
+                adapter_id=adapter_id, session_id=session_id, text=text,
+            )
+            async for _ in self._submit(inbound):
+                pass
+        finally:
+            self._resume_inflight.discard(run_id)
+
+    async def cancel_all(self) -> None:
+        """SIGTERM 入口 — 翻所有 inflight runs 的 abort,标 exit_reason=shutdown_graceful。"""
+        from xana.state.contracts import RunRecord  # local to avoid boot cycles
+        for sid, runs in list(self._inflight.items()):
+            for ir in list(runs):
+                await self.cancel(ir.session_id, ir.run_id)
+                if self.run_store is None:
+                    continue
+                rec = await self.run_store.get(ir.run_id)
+                if rec is None:
+                    continue
+                from dataclasses import replace as _replace
+                updated = _replace(rec, exit_reason="shutdown_graceful")
+                try:
+                    await self.run_store.update_status(
+                        ir.run_id, updated.status,
+                        fields={"exit_reason": "shutdown_graceful"},
+                    )
+                except Exception:
+                    pass
+
+    def has_background(self) -> bool:
+        for runs in self._inflight.values():
+            for ir in runs:
+                if ir.task is not None and not ir.task.done():
+                    return True
+        return False
 
     def is_cancel_requested(self, session_id: str) -> bool:
         return self._cancel_flags.get(session_id, False)

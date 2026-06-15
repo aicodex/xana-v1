@@ -76,6 +76,7 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/cancel",   description="取消当前 turn"),
             CommandSpec(name="/project",  description="项目管理"),
             CommandSpec(name="/search_provider", description="搜索引擎切换"),
+            CommandSpec(name="/resume",  description="列出可恢复的后台 run,或 /resume <run_id> 续跑"),
         )
         self._handlers: dict[str, _HandlerFn] = {
             "/help":            DefaultCommandRouter._cmd_help,
@@ -91,6 +92,7 @@ class DefaultCommandRouter(CommandRouter):
             "/cancel":          DefaultCommandRouter._cmd_cancel,
             "/attach":          DefaultCommandRouter._cmd_attach,
             "/project":         DefaultCommandRouter._cmd_project,
+            "/resume":          DefaultCommandRouter._cmd_resume,
             # 隐藏命令:卡片取消按钮触发,不进 _specs(/help 不显示)。
             "/compact_cancel":  DefaultCommandRouter._cmd_compact_cancel,
         }
@@ -458,6 +460,26 @@ class DefaultCommandRouter(CommandRouter):
                 "attach_choices": choices,
             },
         )
+
+    async def _cmd_resume(self, inbound: InboundMessage, args: str) -> CommandResult:
+        """/resume(无参) → 列出当前 session 可恢复的 run;/resume <run_id> → 续跑。"""
+        if self.gateway is None or getattr(self.gateway, "run_store", None) is None:
+            return CommandResult(ok=False, message="gateway/run_store 未注入")
+        rid = (args or "").strip()
+        if not rid:
+            records = await self.gateway.run_store.list_unfinished()
+            recs = [r for r in records if r.session_id == inbound.session_id]
+            if not recs:
+                return CommandResult(ok=True, message="无可恢复的 run")
+            lines = ["可恢复的 run:"]
+            for r in recs:
+                label = (r.input_request.get("text") or "")[:40] or "(无 label)"
+                reason = r.exit_reason or r.status
+                lines.append(f"  {r.run_id}  · {reason}  · {label}")
+            lines.append("\n用 /resume <run_id> 续跑")
+            return CommandResult(ok=True, message="\n".join(lines))
+        await self.gateway.resume(inbound.session_id, rid)
+        return CommandResult(ok=True, message=f"[resume] 续跑 {rid}")
 
     async def _cmd_project(self, inbound: InboundMessage, args: str) -> CommandResult:
         target = args.strip()
