@@ -1,51 +1,38 @@
 """TelegramAdapter: Telegram channel adapter via Bot API long-polling.
 
-Polls getUpdates, allocates session bindings, and renders AgentEvents back
-as Telegram HTML messages.
+Unified PH card edition (T11). Mirrors the feishu adapter structure:
+each PH (or menu card) owns one ``UnifiedCardState`` keyed by card_id.
+Events flow through ``unified_card_events.apply_event(state, event)`` and the
+result is rendered via ``unified_card_telegram.render(state)``; the adapter
+sends (first time) or edits (subsequent) a single Telegram message per card.
+Throttle = DraftCoalescer 0.25s.
 
-渲染侧是 per-run 状态机(同 feishu.py Task 5):每个 run_id 一份 _TurnState
-(TurnDraft + 流式 message_id + 自己的 DraftCoalescer),事件按
-harness_event.run_id 路由;新轮开新气泡。Telegram 特有形态:
+Replaces the prior per-turn streaming + dual-card model (build_fg / bg
+placeholder / frozen PH renderers). Callback data:
 
-- 流式 = 单消息原地 edit 增长;
-- 工具块 = 独立 sealed 消息(tool_started 立即 send ⏳ 占位,不走 coalescer;
-  tool_finished 对同 call_id 的占位 edit 成结果);finalize 不再重发工具块;
-- finalize 拆分(yuxu adapters/telegram.py:313-395):有 thinking → 流式消息
-  edit 成 thinking 气泡,answer(正文+脚标+按钮)新 send;无 thinking →
-  流式消息原地 edit 成 answer;answer 空且有流式消息 → edit 成 " " 清殻。
-  final 路径只渲染一次,严防 yuxu 2026-05-29 的重复 answer bug;
-- 按钮 = inline keyboard,callback_data='btn:{r}:{c}'(64 字节限制),真实
-  send 文本存 _TurnState.last_buttons,callback_query 反查后合成
-  InboundMessage 入队(与普通消息共用 pairing/allowed gate)。
+- Top "停止" button -> ``/cancel <run_id>`` (synthesized inbound message).
+- Top "后台" button -> synthetic ``__detach__:<run_id>`` -> gateway.detach_foreground.
+- Bottom attach menu -> ``/attach <run_id>``.
+- Bottom help-menu commands -> the command string (e.g. ``/clear``).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.channels._bindings import BindingStore
-from xana.agent_adapter.channels._draft import (
-    TurnDraft,
-    build_footer_meta,
-    extract_buttons,
-    footer_from_progress,
-)
 from xana.agent_adapter.channels._pairing import PairingStore
-from xana.agent_adapter.channels._render_state import BgCardState, SessionRenderState
 from xana.agent_adapter.channels._throttle import DraftCoalescer
-from xana.agent_adapter.channels.telegram_html import (
-    bg_panel_md,
-    buttons_to_reply_markup,
-    render_answer,
-    render_bg_text,
-    render_streaming,
-    render_thinking,
-    render_tool_block,
+from xana.agent_adapter.channels.unified_card import (
+    UnifiedCardState,
+    build_attach_menu,
+    build_help_menu,
+    compute_top_buttons,
 )
+from xana.agent_adapter.channels.unified_card_events import apply_event
+from xana.agent_adapter.channels.unified_card_telegram import render as render_unified
 from xana.agent_adapter.contracts import (
     AdapterHealth,
     InboundMessage,
@@ -54,13 +41,12 @@ from xana.agent_adapter.contracts import (
 )
 from xana.agent_adapter.interfaces import Adapter
 from xana.agents.contracts import AgentEvent
+from xana.harness_sdk.contracts import ProgressEvent
 
 _logger = logging.getLogger(__name__)
 
 # Backoff after a getUpdates failure. Module constant so tests can zero it.
 _POLL_BACKOFF_S = 3.0
-
-_MAX_TURNS_KEPT = 4
 
 
 # ---------------------------------------------------------------------------
@@ -120,27 +106,25 @@ class TelegramApiClient:
 
 
 # ---------------------------------------------------------------------------
-# Per-session / per-run state
+# Per-card slot
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class _TurnState:
-    draft: TurnDraft
-    message_id: int | None = None  # 流式消息(后被 finalize 改写)
-    coalescer: DraftCoalescer = field(default_factory=lambda: DraftCoalescer(min_interval_s=0.25))
-    tool_msg_ids: dict[str, int] = field(default_factory=dict)  # call_id → sealed 消息
-    tool_started_ts: dict = field(default_factory=dict)
-    last_buttons: list[list[dict]] = field(default_factory=list)
-    finalized: bool = False
-    last_progress: dict | None = None
+class _CardSlot:
+    state: UnifiedCardState
+    coalescer: DraftCoalescer = field(
+        default_factory=lambda: DraftCoalescer(min_interval_s=0.25)
+    )
+    terminal: bool = False
 
 
 @dataclass
 class _SessionBuffer:
     chat_id: str | None = None
     session_id: str = ""
-    turns: "OrderedDict[str, _TurnState]" = field(default_factory=OrderedDict)
+    # card_id -> slot. card_id == run_id for PH cards; dedicated id for menus.
+    cards: dict[str, _CardSlot] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -167,25 +151,17 @@ class TelegramAdapter(Adapter):
         self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._buffers: dict[str, _SessionBuffer] = {}
         self._poll_task: asyncio.Task[None] | None = None
-        self._last_progress: dict[str, Any] | None = None
-        # Phase 4 / Task 5: PH-driven per-session render state.
-        self._render_states: dict[str, SessionRenderState] = {}
         self._pending_tasks: list[asyncio.Task] = []
-        # Optional gateway hook for switch:<rid> callback routing.
         self._gateway: Any | None = None
+        self._menu_seq: dict[str, int] = {}
 
     def set_gateway(self, gateway: Any) -> None:
-        """Inject a gateway reference so switch:<rid> callbacks can call
-        switch_foreground. Optional; if unset, switch callbacks silently no-op."""
         self._gateway = gateway
 
     def rotate_session(self, external_thread_id: str) -> str:
-        """Rotate the binding for a chat — used by /clear to start truly fresh.
-        Next inbound from this chat resolves to the new session_id."""
         return self._bindings.rotate(external_thread_id, prefix="tg")
 
     async def _drain_pending(self) -> None:
-        """Test helper: await all scheduled state-machine actions."""
         while self._pending_tasks:
             pending = self._pending_tasks
             self._pending_tasks = []
@@ -211,7 +187,6 @@ class TelegramAdapter(Adapter):
         self._status = "healthy"
 
     async def sync_command_menu(self, commands: list[dict]) -> bool:
-        """把命令清单推到 Telegram 的「/」菜单(输入框左侧)。serve 在注册后调一次。"""
         if self._api_client is None:
             return False
         return await self._api_client.set_my_commands(commands)
@@ -242,7 +217,6 @@ class TelegramAdapter(Adapter):
             except Exception as exc:
                 # Redact the bot token: it is embedded in the request URL,
                 # so str(exc) (httpx errors include the URL) may leak it.
-                # No .exception()/traceback either — tracebacks embed the URL.
                 _logger.warning(
                     "telegram: getUpdates failed (%s): %s — retrying in %ss",
                     type(exc).__name__,
@@ -257,7 +231,6 @@ class TelegramAdapter(Adapter):
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    # One bad update must not kill the poll loop.
                     _logger.warning(
                         "telegram: dispatch_update failed (%s): %s",
                         type(exc).__name__,
@@ -268,7 +241,6 @@ class TelegramAdapter(Adapter):
                 offset = max(offset or 0, batch_max + 1)
 
     def _redact(self, s: str) -> str:
-        """Replace the bot token with a placeholder before logging."""
         token = self._config.bot_token
         return s.replace(token, "<token>") if token else s
 
@@ -310,8 +282,6 @@ class TelegramAdapter(Adapter):
         await self._inbound.put(inbound)
 
     async def _gate(self, user_id_int: Any, chat_id: str, text: str) -> bool:
-        """allowed_user_ids + pairing gate, shared by messages and
-        callback_query. True = allowed."""
         if self._config.allowed_user_ids and user_id_int not in self._config.allowed_user_ids:
             return False
         if self._pairing is None:
@@ -335,113 +305,60 @@ class TelegramAdapter(Adapter):
         return False
 
     async def _handle_callback_query(self, cq: dict[str, Any]) -> None:
-        """按钮点击:btn:{r}:{c} 反查该 session 最新一轮的真实 send 文本,
-        过与普通消息一致的 gate,合成 InboundMessage 入队。"""
+        """Unified card buttons emit:
+
+        - ``/cancel <run_id>`` -> synthesize inbound + ack.
+        - ``/attach <run_id>``, ``/help`` etc. -> synthesize inbound + ack.
+        - ``__detach__:<run_id>`` -> gateway.detach_foreground (adapter-local).
+        """
         data = str(cq.get("data") or "")
         chat = (cq.get("message") or {}).get("chat") or {}
         chat_id = str(chat.get("id", ""))
-        # Group F: fg controls — stop / detach.
-        if data == "stop_foreground" and chat_id and self._gateway is not None:
-            session_id = self._bindings.allocate(chat_id, prefix="tg")
-            runs = getattr(self._gateway, "_inflight", {}).get(session_id, [])
-            fg = next((ir for ir in runs if getattr(ir, "is_attached", False)), None)
-            if fg is not None:
+        from_info = cq.get("from") or {}
+        user_id_int = from_info.get("id")
+        cq_id = cq.get("id")
+
+        async def _ack() -> None:
+            if self._api_client is not None and cq_id:
                 try:
-                    await self._gateway.cancel(session_id, fg.run_id)
-                except Exception as exc:
-                    _logger.debug(
-                        "telegram: cancel failed (%s): %s",
-                        type(exc).__name__, self._redact(str(exc)),
+                    await self._api_client.answer_callback_query(
+                        callback_query_id=str(cq_id)
                     )
-            if self._api_client is not None and cq.get("id"):
-                try:
-                    await self._api_client.answer_callback_query(
-                        callback_query_id=str(cq["id"]))
                 except Exception:
                     pass
+
+        if not chat_id:
+            await _ack()
             return
-        if data == "detach_foreground" and chat_id and self._gateway is not None:
-            session_id = self._bindings.allocate(chat_id, prefix="tg")
-            try:
-                await self._gateway.detach_foreground(session_id)
-            except Exception as exc:
-                _logger.debug(
-                    "telegram: detach_foreground failed (%s): %s",
-                    type(exc).__name__, self._redact(str(exc)),
-                )
-            if self._api_client is not None and cq.get("id"):
-                try:
-                    await self._api_client.answer_callback_query(
-                        callback_query_id=str(cq["id"]))
-                except Exception:
-                    pass
-            return
-        # Group D / I attach: legacy 'switch:<rid>' or new 'attach:<rid>'.
-        if (data.startswith("switch:") or data.startswith("attach:")) and chat_id:
-            target_rid = data.split(":", 1)[1]
-            if target_rid and self._gateway is not None:
+
+        if data.startswith("__detach__:"):
+            if self._gateway is not None:
                 session_id = self._bindings.allocate(chat_id, prefix="tg")
                 try:
-                    await self._gateway.attach(session_id, target_rid)
+                    await self._gateway.detach_foreground(session_id)
                 except Exception as exc:
                     _logger.debug(
-                        "telegram: attach failed (%s): %s",
+                        "telegram: detach_foreground failed (%s): %s",
                         type(exc).__name__, self._redact(str(exc)),
                     )
-            if self._api_client is not None and cq.get("id"):
-                try:
-                    await self._api_client.answer_callback_query(
-                        callback_query_id=str(cq["id"]))
-                except Exception:
-                    pass
+            await _ack()
             return
-        send_text = self._resolve_button_text(chat_id, data) if chat_id else None
-        if send_text:
-            user_id_int = (cq.get("from") or {}).get("id")
-            if await self._gate(user_id_int, chat_id, send_text):
+
+        # All other callback_data values are command strings (e.g. /cancel r1,
+        # /attach r1, /help). Run through the same gate as direct messages.
+        if data:
+            if await self._gate(user_id_int, chat_id, data):
                 session_id = self._bindings.allocate(chat_id, prefix="tg")
                 self._get_or_create_buffer(session_id).chat_id = chat_id
                 user_id = str(user_id_int) if user_id_int is not None else ""
                 await self._inbound.put(InboundMessage(
                     adapter_id=self.adapter_id,
                     session_id=session_id,
-                    text=send_text,
+                    text=data,
                     user_id=user_id or None,
                     metadata={"chat_id": chat_id, "source": "callback_query"},
                 ))
-        # 必须应答,否则客户端按钮一直转圈;失败仅 debug 级吞掉。
-        if self._api_client is not None and cq.get("id"):
-            try:
-                await self._api_client.answer_callback_query(
-                    callback_query_id=str(cq["id"])
-                )
-            except Exception as exc:
-                _logger.debug(
-                    "telegram: answerCallbackQuery failed (%s): %s",
-                    type(exc).__name__, self._redact(str(exc)),
-                )
-
-    def _resolve_button_text(self, chat_id: str, data: str) -> str | None:
-        if not data.startswith("btn:"):
-            return None
-        try:
-            _, r_s, c_s = data.split(":", 2)
-            r, c = int(r_s), int(c_s)
-        except ValueError:
-            return None
-        if r < 0 or c < 0:
-            return None
-        session_id = self._bindings.allocate(chat_id, prefix="tg")
-        buf = self._buffers.get(session_id)
-        if buf is None:
-            return None
-        for ts in reversed(buf.turns.values()):
-            if ts.last_buttons:
-                try:
-                    return str(ts.last_buttons[r][c]["send"])
-                except (IndexError, KeyError):
-                    return None
-        return None
+        await _ack()
 
     # ------------------------------------------------------------------
     # Receive
@@ -460,660 +377,219 @@ class TelegramAdapter(Adapter):
     # ------------------------------------------------------------------
 
     async def bind_session_for_chat(self, chat_id: str, session_id: str) -> None:
-        """Explicitly map chat_id → session_id and create a buffer."""
         self._bindings.put(chat_id, session_id)
         self._get_or_create_buffer(session_id).chat_id = chat_id
 
     async def bind_session(self, binding: SessionBinding) -> None:
-        """Called by gateway with SessionBinding; maps external_thread_id → session."""
         chat_id = binding.external_thread_id
         session_id = binding.session_id
         self._bindings.put(chat_id, session_id)
         self._get_or_create_buffer(session_id).chat_id = chat_id
 
     # ------------------------------------------------------------------
-    # Render
+    # Render (AgentEvent path)
     # ------------------------------------------------------------------
 
     async def render(self, event: AgentEvent) -> RenderedMessage:
         buf = self._get_or_create_buffer(event.session_id)
-        # /attach 菜单:独立短消息 inline_keyboard,不进 turn 状态机。
+        # /attach menu detour: payload may carry attach_choices.
         choices = event.payload.get("attach_choices") if event.payload else None
         if isinstance(choices, list) and choices:
-            rows = []
-            for c in choices:
-                rid = str(c.get("run_id") or "")
-                if not rid:
-                    continue
-                label = str(c.get("label") or rid)
-                short = rid[-8:]
-                rows.append([{
-                    "text": f"{label} · {short}",
-                    "callback_data": f"attach:{rid}",
-                }])
-            markup = {"inline_keyboard": rows}
-            text = str(event.payload.get("text", "") or "选择要切回前台的后台运行")
-            if buf.chat_id is not None and self._api_client is not None:
-                try:
-                    await self._api_client.send_message(
-                        chat_id=buf.chat_id, text=text,
-                        parse_mode=None, reply_markup=markup,
-                    )
-                except Exception:
-                    pass
+            cands = tuple(
+                (str(c.get("run_id") or ""), str(c.get("label") or c.get("run_id") or ""))
+                for c in choices
+                if c.get("run_id")
+            )
+            card_id = self._next_menu_card_id(event.session_id, prefix="attach")
+            state = build_attach_menu(card_id=card_id, candidates=cands)
+            slot = _CardSlot(state=state, terminal=True)
+            buf.cards[card_id] = slot
+            await self._send_or_patch(buf, slot, finalize=True)
             return RenderedMessage(
                 adapter_id=self.adapter_id,
                 session_id=event.session_id,
-                text=text,
+                text=str(event.payload.get("text", "") or ""),
                 metadata={"event_kind": event.kind, "attach_menu": True},
             )
-        ts = self._turn_for(buf, event)
-        # Phase 4 / Task 5: frozen background runs accumulate into draft only;
-        # no API calls until the next ph_replaced.
-        state = self._render_states.get(event.session_id)
-        rid_hkind = event.payload.get("run_id") or (
-            event.harness_event.run_id if event.harness_event else ""
-        )
-        # Group F dual-card: only fg run's events touch the fg streaming
-        # message. Non-fg / frozen runs accumulate into draft only.
-        # Only apply fg-guard for tracked runs; command/menu events with
-        # synthetic run_id (cmd-...) aren't in state.runs and must pass through.
-        is_tracked_run = (
-            state is not None and rid_hkind and rid_hkind in state.runs
-        )
-        if is_tracked_run and state.fg_run_id is not None \
-                and rid_hkind != state.fg_run_id:
-            return await self._render_into_draft_only(event, ts)
-        if (state is not None and rid_hkind and rid_hkind in state.runs
-                and state.runs[rid_hkind].is_frozen):
-            return await self._render_into_draft_only(event, ts)
-        hkind = self._harness_kind(event)
-        payload = event.payload
-        text = str(payload.get("text", "") or "")
 
-        if hkind == "model_delta":
-            if payload.get("channel") == "thinking":
-                ts.draft.append_thinking(text)
-            else:
-                ts.draft.append_content(text)
-            ts.coalescer.flush(self._make_stream_send(buf, ts))
-        elif hkind == "tool_started":
-            call_id = str(payload.get("call_id", ""))
-            ts.draft.start_tool(
-                call_id=call_id,
-                name=str(payload.get("tool_name", "")),
-                args=payload.get("input", {}) or {},
+        card_id = self._card_id_for(event)
+        if not card_id:
+            return RenderedMessage(
+                adapter_id=self.adapter_id,
+                session_id=event.session_id,
+                text="",
+                metadata={"event_kind": event.kind},
             )
-            ts.tool_started_ts[call_id] = time.monotonic()
-            # sealed 占位消息:立即 send,不走 coalescer
-            await self._send_tool_message(buf, ts, call_id)
-        elif hkind == "tool_finished":
-            call_id = str(payload.get("call_id", ""))
-            started = ts.tool_started_ts.pop(call_id, None)
-            elapsed_ms = int((time.monotonic() - started) * 1000) if started is not None else None
-            # call_id 失配的同名兜底在 TurnDraft.finish_tool 内部完成;
-            # 用返回块的 call_id 回查占位 sealed 消息再 edit。
-            blk = ts.draft.finish_tool(
-                call_id=call_id,
-                name=str(payload.get("tool_name", "")),
-                ok=bool(payload.get("ok", True)),
-                result=str(payload.get("text", "")),
-                elapsed_ms=elapsed_ms,
+        slot = self._ensure_slot(buf, card_id, ph_run_id=card_id)
+        if slot.terminal:
+            return RenderedMessage(
+                adapter_id=self.adapter_id,
+                session_id=event.session_id,
+                text=slot.state.answer.answer_text if slot.state.answer else "",
+                metadata={"event_kind": event.kind, "drop": "terminal"},
             )
-            await self._send_tool_message(buf, ts, blk.call_id)
-        elif hkind == "final":
-            for blk in ts.draft.close_running_tools():
-                await self._send_tool_message(buf, ts, blk.call_id)
-            if text:
-                ts.draft.content = text
-            # /compact 最终事件携带完整摘要 → 折叠块;普通模型 final 无这两个键,不受影响
-            if isinstance(payload.get("thinking"), str) and payload.get("thinking") \
-                    and payload.get("thinking_title"):
-                ts.draft.thinking = str(payload["thinking"])
-                ts.draft.thinking_title = str(payload["thinking_title"])
-            ts.draft.content, extracted = extract_buttons(ts.draft.content)
-            # payload 行优先,与正文标记解析的结果并存(payload 在前)。
-            # linkify_commands:正文里的 /命令 在 TG 本就可点击发送 → 不重复出按钮。
-            if payload.get("linkify_commands"):
-                payload_rows = None
-            else:
-                payload_rows = payload.get("buttons")
-            ts.draft.buttons = (list(payload_rows) if isinstance(payload_rows, list) else []) + extracted
-            ts.last_buttons = ts.draft.buttons
-            usage = event.harness_event.usage if event.harness_event else None
-            footer = (
-                footer_from_progress(ts.last_progress)
-                if ts.last_progress and ts.last_progress.get("kind") == "usage_progress"
-                else build_footer_meta(usage)
-            )
-            if not footer and ts.draft.footer_meta:
-                # compact 答案卡: 无 usage — 保留 model,丢上下文(此时不好算)
-                footer = [p for p in ts.draft.footer_meta if p[0] == "model"]
-            ts.draft.footer_meta = footer
-            ts.finalized = True
-            await ts.coalescer.finalize(self._make_finalize_send(buf, ts))
-            if state is not None and state.fg_run_id == ts.draft.run_id:
-                state.fg_run_id = None
-                state.fg_message_id = None
-        elif hkind == "error":
-            for blk in ts.draft.close_running_tools():
-                await self._send_tool_message(buf, ts, blk.call_id)
-            err = text or str(payload.get("error", "") or "")
-            ts.draft.content += f"\n[error] {err}" if err else "\n[error]"
-            payload_rows = payload.get("buttons")
-            if isinstance(payload_rows, list) and payload_rows:
-                ts.draft.buttons = list(payload_rows)
-                ts.last_buttons = ts.draft.buttons
-            ts.finalized = True
-            await ts.coalescer.finalize(self._make_finalize_send(buf, ts))
-            if state is not None and state.fg_run_id == ts.draft.run_id:
-                state.fg_run_id = None
-                state.fg_message_id = None
-        elif hkind == "cancelled":
-            # Stop-button click — finalize the card so any streaming-state UI
-            # (e.g. inline stop button) drops off and user sees the cancel.
-            for blk in ts.draft.close_running_tools():
-                await self._send_tool_message(buf, ts, blk.call_id)
-            reason = str(payload.get("reason", "") or "user_cancel")
-            tail = f"\n[已取消 · {reason}]" if reason else "\n[已取消]"
-            ts.draft.content = (ts.draft.content or "") + tail
-            ts.finalized = True
-            await ts.coalescer.finalize(self._make_finalize_send(buf, ts))
-            if state is not None and state.fg_run_id == ts.draft.run_id:
-                state.fg_run_id = None
-                state.fg_message_id = None
-        # 其他 harness kind(turn_started/paused 等):不渲染。
-
+        apply_event(slot.state, event)
+        hkind = (
+            event.harness_event.kind
+            if event.harness_event is not None
+            else event.kind
+        )
+        finalize = hkind in ("final", "error", "cancelled")
+        if finalize:
+            slot.terminal = True
+            slot.state.top_buttons = ()
+            await slot.coalescer.finalize(self._make_send(buf, slot))
+        else:
+            slot.coalescer.flush(self._make_send(buf, slot))
+        text_out = slot.state.answer.answer_text if slot.state.answer else ""
         return RenderedMessage(
             adapter_id=self.adapter_id,
             session_id=event.session_id,
-            text=ts.draft.content,
+            text=text_out,
             metadata={"event_kind": event.kind},
         )
 
-    async def _render_into_draft_only(
-        self, event: AgentEvent, ts: _TurnState
-    ) -> RenderedMessage:
-        """Phase 4 / Task 5: accumulate into draft, no API calls.
-        Used while a run is frozen (background)."""
-        hkind = self._harness_kind(event)
-        payload = event.payload
-        text = str(payload.get("text", "") or "")
-        if hkind == "model_delta":
-            if payload.get("channel") == "thinking":
-                ts.draft.append_thinking(text)
-            else:
-                ts.draft.append_content(text)
-        elif hkind == "tool_started":
-            ts.draft.start_tool(
-                call_id=str(payload.get("call_id", "")),
-                name=str(payload.get("tool_name", "")),
-                args=payload.get("input", {}) or {},
-            )
-        elif hkind == "tool_finished":
-            ts.draft.finish_tool(
-                call_id=str(payload.get("call_id", "")),
-                name=str(payload.get("tool_name", "")),
-                ok=bool(payload.get("ok", True)),
-                result=str(payload.get("text", "")),
-                elapsed_ms=None,
-            )
-        elif hkind in ("final", "error"):
-            ts.draft.close_running_tools()
-            if text:
-                ts.draft.content = text
-            ts.finalized = True
-        return RenderedMessage(
-            adapter_id=self.adapter_id,
-            session_id=event.session_id,
-            text=ts.draft.content,
-            metadata={"event_kind": event.kind, "frozen": True},
-        )
-
-    @staticmethod
-    def _harness_kind(event: AgentEvent) -> str:
-        if event.harness_event is not None:
-            return event.harness_event.kind
-        # 无 harness_event 时由 AgentEvent.kind 推断
-        return {"draft": "model_delta", "tool": "tool_finished",
-                "final": "final", "error": "error"}.get(event.kind, event.kind)
-
-    def _turn_for(self, buf: _SessionBuffer, event: AgentEvent) -> _TurnState:
+    def _card_id_for(self, event: AgentEvent) -> str:
         if event.harness_event is not None and event.harness_event.run_id:
-            run_id = event.harness_event.run_id
-        elif event.harness_event is None and event.payload.get("run_id"):
-            # 命令 final/error:无 harness_event,按 gateway 注入的 run_id 落同卡
-            run_id = str(event.payload["run_id"])
-        elif buf.turns:
-            run_id = next(reversed(buf.turns))
-        else:
-            run_id = "?"
-        return self._ensure_turn(buf, run_id)
+            return event.harness_event.run_id
+        rid = (event.payload or {}).get("run_id")
+        if rid:
+            return str(rid)
+        return ""
 
-    def _ensure_turn(self, buf: _SessionBuffer, run_id: str) -> _TurnState:
-        ts = buf.turns.get(run_id)
-        if ts is None:
-            ts = _TurnState(draft=TurnDraft(run_id=run_id))
-            # 脚标常驻:turn 第一个事件就带上次已知的 model/context
-            if self._last_progress is not None:
-                ts.draft.footer_meta = footer_from_progress(self._last_progress)
-            buf.turns[run_id] = ts
-            while len(buf.turns) > _MAX_TURNS_KEPT:
-                buf.turns.popitem(last=False)
-        return ts
+    def _ensure_slot(
+        self, buf: _SessionBuffer, card_id: str, *, ph_run_id: str | None = None
+    ) -> _CardSlot:
+        slot = buf.cards.get(card_id)
+        if slot is None:
+            state = UnifiedCardState(card_id=card_id, ph_run_id=ph_run_id)
+            slot = _CardSlot(state=state)
+            buf.cards[card_id] = slot
+        return slot
 
-    def note_progress(self, payload: dict) -> None:
-        """AdapterProgressSink hook(sync):usage_progress / compact_progress
-        实时刷新当前 turn 脚标。_last_progress 只存 usage_progress,
-        避免 compact_progress 把新 turn 的 model/context 种子冲掉。
+    def _next_menu_card_id(self, session_id: str, *, prefix: str) -> str:
+        n = self._menu_seq.get(session_id, 0) + 1
+        self._menu_seq[session_id] = n
+        return f"{prefix}-{session_id}-{n}"
 
-        Phase 4 / Task 5: PH 状态机分支(run_started / run_detached /
-        foreground_changed / ph_replaced / run_completed_bg)优先;命中即返回。"""
-        kind = payload.get("kind")
-        if kind == "usage_progress":
-            self._last_progress = dict(payload)
-        sid = str(payload.get("session_id") or "")
-        if kind in ("run_started", "run_detached", "attached",
-                    "foreground_changed", "ph_replaced", "run_completed_bg"):
-            self._handle_ph_event(sid, payload)
-            return
-        buf = self._buffers.get(sid)
-        if buf is None:
-            return
-        if payload.get("kind") == "command_progress":
-            # 命令卡始终按 payload.run_id 取/建,绝不落到当前活跃 harness turn
-            run_id = str(payload.get("run_id") or "")
-            if not run_id:
-                return
-            ts = self._ensure_turn(buf, run_id)
-        else:
-            ts = buf.turns[next(reversed(buf.turns))] if buf.turns else None
-        if ts is None or ts.finalized:
-            # auto-compact 先于新 run 的第一个 harness 事件触发:
-            # 用 payload.run_id 提前建 turn,让 压缩中… 立即出消息。
-            run_id = str(payload.get("run_id") or "")
-            if payload.get("kind") != "compact_progress" or not run_id:
-                return
-            ts = self._ensure_turn(buf, run_id)
-        if payload.get("kind") == "usage_progress":
-            ts.last_progress = dict(payload)
-        if payload.get("kind") == "command_progress" and payload.get("text"):
-            ts.draft.content = str(payload["text"])
-        if payload.get("kind") == "compact_progress" and payload.get("text"):
-            # /compact 命令流式进度:进度条直接进消息正文;部分摘要进折叠块
-            ts.draft.content = str(payload["text"])
-            ts.draft.thinking = str(payload.get("thinking") or "")
-            if "thinking_title" in payload:
-                ts.draft.thinking_title = payload.get("thinking_title")
-        # 进度卡也可带按钮(如 compact 取消按钮);payload 行写进 draft + last_buttons
-        payload_rows = payload.get("buttons")
-        if isinstance(payload_rows, list):
-            ts.draft.buttons = list(payload_rows)
-            ts.last_buttons = ts.draft.buttons
-        ts.draft.footer_meta = footer_from_progress(payload)
-        ts.coalescer.flush(self._make_stream_send(buf, ts))
-
-    # ------------------------------------------------------------------
-    # Phase 4 / Task 5: PH state machine
-    # ------------------------------------------------------------------
-
-    def _handle_ph_event(self, sid: str, payload: dict) -> None:
-        """Group F dual-card semantics (mirrors feishu).
-
-        - run_started: set fg, clear fg_message_id.
-        - run_detached: freeze fg (drop keyboard) + lazy-create bg text-message.
-        - attached / foreground_changed: freeze prev fg + lazy-create its bg
-          message; reset new fg message_id; immediate send if draft has content.
-        - ph_replaced: if bg message exists → edit to ✅ completed; else noop
-          (fg-finalize already wrote the final answer).
-        - run_completed_bg: noop (ph_replaced does the work).
-        """
-        kind = payload.get("kind")
-        rid = str(payload.get("run_id") or "")
-        state = self._render_states.setdefault(sid, SessionRenderState())
-        if kind == "run_started":
-            label = str(payload.get("label") or rid or "")
-            state.start_run(rid, label)
-            state.fg_run_id = rid
-            state.fg_message_id = None
-            return
-        if kind == "run_detached":
-            run = state.runs.get(rid)
-            label = run.label if run is not None else str(payload.get("label") or rid)
-            if run is not None and not run.is_frozen:
-                state.detach(rid)
-            was_fg = (state.fg_run_id == rid)
-            if was_fg:
-                state.fg_run_id = None
-                self._schedule(self._freeze_fg_message(sid, rid))
-            if rid not in state.bg_cards:
-                self._schedule(self._create_bg_message(sid, rid, label))
-            return
-        if kind in ("attached", "foreground_changed"):
-            # DEPRECATED: 'foreground_changed' alias for back-compat with adapters
-            # that haven't migrated; remove after Group L.
-            prev_fg = state.fg_run_id
-            label = str(payload.get("label") or "")
-            if rid not in state.runs:
-                state.start_run(rid, label or rid)
-            if prev_fg and prev_fg != rid:
-                prev_label = (
-                    state.runs[prev_fg].label if prev_fg in state.runs else prev_fg
-                )
-                self._schedule(self._freeze_fg_message(sid, prev_fg))
-                if prev_fg not in state.bg_cards:
-                    self._schedule(self._create_bg_message(sid, prev_fg, prev_label))
-            # Clear is_frozen so render() events flow through to fg patches
-            # (detach had set is_frozen=True; attach must reverse it).
-            if rid in state.runs:
-                state.runs[rid].is_frozen = False
-                state.runs[rid].is_foreground = True
-            state.fg_run_id = rid
-            state.fg_message_id = None
-            buf = self._buffers.get(sid)
-            if buf is not None and rid in buf.turns:
-                buf.turns[rid].message_id = None
-                if (buf.turns[rid].draft.content or buf.turns[rid].draft.tool_blocks
-                        or buf.turns[rid].draft.thinking):
-                    self._schedule(self._send_fg_message(sid, rid))
-            return
-        if kind == "ph_replaced":
-            if rid in state.bg_cards:
-                self._schedule(self._complete_bg_message(sid, rid))
-            # Clear stale fg pointer so subsequent slash-command events
-            # (run_id=cmd-{sid}-N) aren't gated by the fg-guard.
-            if state.fg_run_id == rid:
-                state.fg_run_id = None
-                state.fg_message_id = None
-            return
-        if kind == "run_completed_bg":
-            return
-
-    # -- fg keyboard ----------------------------------------------------
-
-    @staticmethod
-    def _fg_keyboard() -> dict:
-        """Inline keyboard attached to the fg streaming message: [⏹][➡]."""
-        return {"inline_keyboard": [[
-            {"text": "⏹ 停止", "callback_data": "stop_foreground"},
-            {"text": "➡ 后台", "callback_data": "detach_foreground"},
-        ]]}
-
-    async def _freeze_fg_message(self, sid: str, rid: str) -> None:
-        """Edit the previous fg streaming message to drop its inline keyboard
-        (text untouched — coalescer already wrote the latest streaming view)."""
-        buf = self._buffers.get(sid)
-        if buf is None or buf.chat_id is None or self._api_client is None:
-            return
-        ts = buf.turns.get(rid)
-        if ts is None or ts.message_id is None:
-            return
-        html = render_streaming(ts.draft)
-        try:
-            await self._api_client.edit_message_text(
-                chat_id=buf.chat_id, message_id=ts.message_id,
-                text=html, parse_mode="HTML", reply_markup=None,
-            )
-        except Exception as exc:
-            msg = str(exc).lower()
-            if "message is not modified" in msg:
-                return
-            _logger.warning(
-                "telegram: freeze fg edit failed (%s): %s",
-                type(exc).__name__, self._redact(str(exc)),
-            )
-
-    async def _create_bg_message(self, sid: str, rid: str, label: str) -> None:
-        """Lazily send the bg placeholder text-message for a detached run.
-        Idempotent: skips if one already exists for this run."""
-        state = self._render_states.get(sid)
-        if state is None or rid in state.bg_cards:
-            return
-        buf = self._buffers.get(sid)
-        if buf is None or buf.chat_id is None or self._api_client is None:
-            return
-        ts = buf.turns.get(rid)
-        draft = ts.draft if ts is not None else TurnDraft(run_id=rid)
-        panel = bg_panel_md(draft)
-        text = render_bg_text(
-            label=label, state="running", progress_pct=0, panel_md=panel,
-        )
-        try:
-            mid = await self._api_client.send_message(
-                chat_id=buf.chat_id, text=text, parse_mode="Markdown",
-                reply_markup=None,
-            )
-        except Exception as exc:
-            _logger.warning(
-                "telegram: bg send failed (%s): %s",
-                type(exc).__name__, self._redact(str(exc)),
-            )
-            return
-        state.bg_cards[rid] = BgCardState(
-            message_id=str(mid), label=label, state="running",
-            progress_pct=0, panel_md=panel,
-        )
-
-    async def _complete_bg_message(self, sid: str, rid: str) -> None:
-        state = self._render_states.get(sid)
-        if state is None:
-            return
-        bg = state.bg_cards.get(rid)
-        if bg is None or self._api_client is None:
-            return
-        buf = self._buffers.get(sid)
-        if buf is None or buf.chat_id is None:
-            return
-        ts = buf.turns.get(rid)
-        draft = ts.draft if ts is not None else TurnDraft(run_id=rid)
-        bg.state = "completed"
-        bg.progress_pct = 100
-        bg.panel_md = bg_panel_md(draft)
-        text = render_bg_text(
-            label=bg.label, state=bg.state, progress_pct=bg.progress_pct,
-            panel_md=bg.panel_md, compacted_n=bg.compacted_n,
-        )
-        try:
-            await self._api_client.edit_message_text(
-                chat_id=buf.chat_id, message_id=int(bg.message_id),
-                text=text, parse_mode="Markdown", reply_markup=None,
-            )
-        except Exception as exc:
-            msg = str(exc).lower()
-            if "message is not modified" in msg:
-                return
-            _logger.warning(
-                "telegram: bg complete edit failed (%s): %s",
-                type(exc).__name__, self._redact(str(exc)),
-            )
-
-    async def _send_fg_message(self, sid: str, rid: str) -> None:
-        """Send a fresh fg streaming message (used on attach to make the
-        switch visible immediately)."""
-        buf = self._buffers.get(sid)
-        if buf is None or buf.chat_id is None or self._api_client is None:
-            return
-        ts = self._ensure_turn(buf, rid)
-        state = self._render_states.get(sid)
-        if state is None or state.fg_run_id != rid:
-            return
-        if ts.message_id is not None:
-            return
-        html = render_streaming(ts.draft)
-        try:
-            ts.message_id = await self._api_client.send_message(
-                chat_id=buf.chat_id, text=html, parse_mode="HTML",
-                reply_markup=self._fg_keyboard(),
-            )
-        except Exception as exc:
-            _logger.warning(
-                "telegram: send fg failed (%s): %s",
-                type(exc).__name__, self._redact(str(exc)),
-            )
-            return
-        state.fg_message_id = str(ts.message_id)
-
-    # -- outbound senders ------------------------------------------------
-
-    def _make_stream_send(self, buf: _SessionBuffer, ts: _TurnState):
-        """Group F: fg streaming message uses [⏹ 停止][➡ 后台] inline keyboard.
-        Only the current fg run patches the fg message; non-fg runs accumulate
-        into draft only (gated upstream)."""
+    def _make_send(self, buf: _SessionBuffer, slot: _CardSlot):
         async def _send() -> None:
-            if buf.chat_id is None or self._api_client is None:
-                return
-            rid = ts.draft.run_id
-            state = self._render_states.get(buf.session_id)
-            # Dual-card: only fg run is allowed to patch its streaming message.
-            # Untracked rids (command/menu cmd-...) bypass this guard.
-            is_tracked = state is not None and rid in state.runs
-            if is_tracked and state.fg_run_id is not None and rid != state.fg_run_id:
-                return
-            html = render_streaming(ts.draft)
-            markup = self._fg_keyboard()
-            # Keep last_buttons empty for fg streaming — finalize/error path
-            # will rewrite ts.draft.buttons with the model-extracted rows.
-            await self._send_or_edit_anchor(buf, ts, html, markup)
-            # Track fg_message_id when this run is the fg run.
-            if state is not None and rid == state.fg_run_id and ts.message_id is not None:
-                state.fg_message_id = str(ts.message_id)
+            await self._send_or_patch(buf, slot, finalize=False)
         return _send
 
-    async def _send_or_edit_anchor(
-        self,
-        buf: _SessionBuffer,
-        ts: _TurnState,
-        html: str,
-        markup: dict | None,
+    async def _send_or_patch(
+        self, buf: _SessionBuffer, slot: _CardSlot, *, finalize: bool
     ) -> None:
-        """Send (first time) or edit (subsequent) the per-run anchor message.
-
-        Phase 4 / Task 5: on 48h edit failure (BadRequest message can't be
-        edited / not found), fall back to a fresh send_message and overwrite
-        the anchor message_id."""
-        if self._api_client is None or buf.chat_id is None:
-            return
-        if ts.message_id is None:
-            ts.message_id = await self._api_client.send_message(
-                chat_id=buf.chat_id, text=html, parse_mode="HTML",
-                reply_markup=markup,
-            )
-            return
-        await self._edit_or_resend(
-            ts, buf.chat_id, html, parse_mode="HTML", reply_markup=markup,
-        )
-
-    async def _edit_or_resend(
-        self, ts: "_TurnState", chat_id: str, text: str, *,
-        parse_mode: str | None = "HTML", reply_markup=None,
-    ) -> None:
-        """Edit anchor; on benign 'not modified' swallow silently; on any
-        other exception fall back to a fresh send_message and rebind anchor."""
-        if self._api_client is None or ts.message_id is None:
-            return
-        try:
-            await self._api_client.edit_message_text(
-                chat_id=chat_id, message_id=ts.message_id, text=text,
-                parse_mode=parse_mode, reply_markup=reply_markup,
-            )
-        except Exception as exc:
-            msg = str(exc).lower()
-            if "message is not modified" in msg:
-                return
-            _logger.warning(
-                "telegram: edit_message_text failed (%s): %s — sending new anchor",
-                type(exc).__name__, self._redact(str(exc)),
-            )
-            ts.message_id = await self._api_client.send_message(
-                chat_id=chat_id, text=text,
-                parse_mode=parse_mode, reply_markup=reply_markup,
-            )
-
-    async def _send_tool_message(
-        self, buf: _SessionBuffer, ts: _TurnState, call_id: str
-    ) -> None:
-        """工具块 = 独立 sealed 消息:占位 send 一次,结果对同 call_id edit。"""
         if buf.chat_id is None or self._api_client is None:
             return
-        blk = next(
-            (b for b in reversed(ts.draft.tool_blocks) if b.call_id == call_id), None
-        )
-        if blk is None:
-            return
-        html = render_tool_block(blk)
-        mid = ts.tool_msg_ids.get(call_id)
-        try:
-            if mid is None:
+        if not slot.terminal and not finalize:
+            slot.state.top_buttons = compute_top_buttons(slot.state)
+        else:
+            slot.state.top_buttons = ()
+        html, kb = render_unified(slot.state)
+        markup: dict | None = {"inline_keyboard": kb} if kb else None
+        if slot.state.message_id is None:
+            try:
                 mid = await self._api_client.send_message(
-                    chat_id=buf.chat_id, text=html, parse_mode="HTML"
+                    chat_id=buf.chat_id, text=html,
+                    parse_mode="HTML", reply_markup=markup,
                 )
-                ts.tool_msg_ids[call_id] = mid
-            else:
-                await self._api_client.edit_message_text(
-                    chat_id=buf.chat_id, message_id=mid, text=html, parse_mode="HTML"
+            except Exception as exc:
+                _logger.warning(
+                    "telegram: send_message failed (%s): %s",
+                    type(exc).__name__, self._redact(str(exc)),
                 )
-        except Exception as exc:
-            _logger.warning(
-                "telegram: _send_tool_message failed (%s): %s",
-                type(exc).__name__,
-                self._redact(str(exc)),
-            )
-
-    def _make_finalize_send(self, buf: _SessionBuffer, ts: _TurnState):
-        """finalize 拆分(yuxu :313-395)。answer 在此恰好 send/edit 一次;
-        工具块已 live sealed,不重发。"""
-        async def _send() -> None:
-            if buf.chat_id is None or self._api_client is None:
                 return
-            markup = buttons_to_reply_markup(ts.draft.buttons)
-            answer = render_answer(ts.draft)
-            has_answer = bool(answer.strip())
-            if ts.draft.thinking_title:
-                # /compact 形态:进度条正文 + 折叠摘要块同在一条消息,布局不跳变
-                combined = render_thinking(ts.draft.thinking, ts.draft.thinking_title) \
-                    + ("\n" + answer if has_answer else "")
-                if ts.message_id is not None:
-                    await self._edit_or_resend(
-                        ts, buf.chat_id, combined,
+            slot.state.message_id = str(mid)
+        else:
+            try:
+                await self._api_client.edit_message_text(
+                    chat_id=buf.chat_id,
+                    message_id=int(slot.state.message_id),
+                    text=html, parse_mode="HTML",
+                    reply_markup=markup,
+                )
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "message is not modified" in msg:
+                    return
+                _logger.warning(
+                    "telegram: edit_message_text failed (%s): %s — sending new anchor",
+                    type(exc).__name__, self._redact(str(exc)),
+                )
+                try:
+                    mid = await self._api_client.send_message(
+                        chat_id=buf.chat_id, text=html,
                         parse_mode="HTML", reply_markup=markup,
                     )
-                else:
-                    ts.message_id = await self._api_client.send_message(
-                        chat_id=buf.chat_id, text=combined,
-                        parse_mode="HTML", reply_markup=markup,
-                    )
-            elif ts.draft.thinking:
-                thinking_html = render_thinking(ts.draft.thinking)
-                if ts.message_id is not None:
-                    await self._edit_or_resend(
-                        ts, buf.chat_id, thinking_html, parse_mode="HTML",
-                    )
-                else:
-                    ts.message_id = await self._api_client.send_message(
-                        chat_id=buf.chat_id, text=thinking_html, parse_mode="HTML"
-                    )
-                if has_answer:
-                    await self._api_client.send_message(
-                        chat_id=buf.chat_id, text=answer,
-                        parse_mode="HTML", reply_markup=markup,
-                    )
+                    slot.state.message_id = str(mid)
+                except Exception:
+                    pass
+
+    # ------------------------------------------------------------------
+    # ProgressEvent path (note_progress)
+    # ------------------------------------------------------------------
+
+    def note_progress(self, payload: dict) -> None:
+        sid = str(payload.get("session_id") or "")
+        if not sid:
+            return
+        buf = self._get_or_create_buffer(sid)
+        kind = payload.get("kind")
+        if kind == "menu_response":
+            specs_raw = payload.get("specs") or ()
+            specs = tuple((str(n), str(d)) for n, d in specs_raw)
+            cid = self._next_menu_card_id(sid, prefix="help")
+            state = build_help_menu(card_id=cid, specs=specs)
+            slot = _CardSlot(state=state, terminal=True)
+            buf.cards[cid] = slot
+            self._schedule_send(buf, slot, finalize=True)
+            return
+        if kind == "attach_options":
+            cands_raw = payload.get("candidates") or ()
+            cands = tuple((str(rid), str(lbl)) for rid, lbl in cands_raw)
+            cid = self._next_menu_card_id(sid, prefix="attach")
+            state = build_attach_menu(card_id=cid, candidates=cands)
+            slot = _CardSlot(state=state, terminal=True)
+            buf.cards[cid] = slot
+            self._schedule_send(buf, slot, finalize=True)
+            return
+        rid = str(payload.get("run_id") or "")
+        if not rid:
+            return
+        slot = self._ensure_slot(buf, rid, ph_run_id=rid)
+        if slot.terminal:
+            return
+        pe = ProgressEvent(
+            session_id=sid,
+            run_id=rid,
+            message=str(kind or ""),
+            payload=dict(payload),
+        )
+        apply_event(slot.state, pe)
+        finalize = kind in ("ph_replaced", "run_completed_bg")
+        if finalize:
+            slot.terminal = True
+        if finalize or kind == "run_detached":
+            self._schedule_send(buf, slot, finalize=True)
+        else:
+            slot.coalescer.flush(self._make_send(buf, slot))
+
+    def _schedule_send(
+        self, buf: _SessionBuffer, slot: _CardSlot, *, finalize: bool
+    ) -> None:
+        async def _runner() -> None:
+            if finalize:
+                await slot.coalescer.finalize(
+                    lambda: self._send_or_patch(buf, slot, finalize=True)
+                )
             else:
-                if has_answer and ts.message_id is not None:
-                    await self._edit_or_resend(
-                        ts, buf.chat_id, answer,
-                        parse_mode="HTML", reply_markup=markup,
-                    )
-                elif has_answer:
-                    ts.message_id = await self._api_client.send_message(
-                        chat_id=buf.chat_id, text=answer,
-                        parse_mode="HTML", reply_markup=markup,
-                    )
-                elif ts.message_id is not None:
-                    # 没东西可展示但留着流式殻 → 清殻。
-                    await self._edit_or_resend(
-                        ts, buf.chat_id, " ", parse_mode="HTML",
-                    )
-        return _send
+                await self._send_or_patch(buf, slot, finalize=False)
+        try:
+            task = asyncio.create_task(_runner())
+        except RuntimeError:
+            return
+        self._pending_tasks.append(task)
 
     # ------------------------------------------------------------------
     # Health

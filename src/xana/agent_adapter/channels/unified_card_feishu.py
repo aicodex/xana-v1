@@ -33,7 +33,7 @@ def _panel(title: str, body_md: str, *, folded: bool = True) -> dict:
     }
 
 
-def _btn(b: Button) -> dict:
+def _btn(b: Button, *, ph_run_id: str | None) -> dict:
     out: dict = {
         "tag": "button",
         "type": "default",
@@ -41,14 +41,19 @@ def _btn(b: Button) -> dict:
     }
     if b.send:
         out["value"] = {"send": b.send}
+    else:
+        # send=None buttons (e.g. "后台") are adapter-local detach actions.
+        # Encode ph_run_id so the card-action handler can route to
+        # gateway.detach_foreground via value["detach"].
+        out["value"] = {"detach": ph_run_id or ""}
     return out
 
 
-def _btn_row(row: ButtonRow) -> dict:
+def _btn_row(row: ButtonRow, *, ph_run_id: str | None) -> dict:
     return {
         "tag": "column_set",
         "columns": [
-            {"tag": "column", "elements": [_btn(b)]}
+            {"tag": "column", "elements": [_btn(b, ph_run_id=ph_run_id)]}
             for b in row.buttons
         ],
     }
@@ -120,7 +125,7 @@ def render(state: UnifiedCardState) -> dict:
     """Render a UnifiedCardState to a feishu interactive card message dict."""
     elements: list[dict] = []
     for row in state.top_buttons:
-        elements.append(_btn_row(row))
+        elements.append(_btn_row(row, ph_run_id=state.ph_run_id))
     if state.compact is not None:
         elements.extend(_render_compact(state.compact))
     if state.answer is not None:
@@ -128,6 +133,6 @@ def render(state: UnifiedCardState) -> dict:
     if state.menu is not None:
         elements.append(_md(state.menu.body_md))
     for row in state.bottom_buttons:
-        elements.append(_btn_row(row))
+        elements.append(_btn_row(row, ph_run_id=state.ph_run_id))
     elements.append(_md(f"_{state.footer.render()}_"))
     return {"msg_type": "interactive", "card": {"elements": elements}}

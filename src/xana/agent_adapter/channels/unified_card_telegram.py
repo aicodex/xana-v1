@@ -77,12 +77,20 @@ def _render_answer(sec: AnswerSection) -> str:
     return "\n".join(parts)
 
 
-def _kb_row(row: ButtonRow) -> list[dict]:
+_TG_CALLBACK_DATA_LIMIT = 64
+
+
+def _kb_row(row: ButtonRow, *, ph_run_id: str | None) -> list[dict]:
     out: list[dict] = []
     for b in row.buttons:
         item: dict = {"text": b.text}
         if b.send:
-            item["callback_data"] = b.send
+            item["callback_data"] = b.send[:_TG_CALLBACK_DATA_LIMIT]
+        else:
+            # send=None button (e.g. "后台") -> adapter-local detach action.
+            item["callback_data"] = f"__detach__:{ph_run_id or ''}"[
+                :_TG_CALLBACK_DATA_LIMIT
+            ]
         out.append(item)
     return out
 
@@ -101,7 +109,7 @@ def render(state: UnifiedCardState) -> tuple[str, list[list[dict]]]:
 
     kb: list[list[dict]] = []
     for row in state.top_buttons:
-        kb.append(_kb_row(row))
+        kb.append(_kb_row(row, ph_run_id=state.ph_run_id))
     for row in state.bottom_buttons:
-        kb.append(_kb_row(row))
+        kb.append(_kb_row(row, ph_run_id=state.ph_run_id))
     return html, kb
