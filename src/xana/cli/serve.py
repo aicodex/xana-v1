@@ -261,8 +261,34 @@ async def _run_inner(argv: argparse.Namespace) -> int:
         print("[xana serve] scheduler runner started")
 
     print(f"[xana serve] running adapters: {', '.join(a.adapter_id for a in adapters)}")
+
+    # P5.6 — SIGTERM graceful drain: abort inflight runs, wait ≤2s, then exit.
+    import signal as _signal
+    from xana.cli.shutdown import graceful_shutdown as _graceful_shutdown
+    _shutdown_evt = asyncio.Event()
+
+    async def _on_sigterm() -> None:
+        timed_out = await _graceful_shutdown(boot_result.gateway, grace_seconds=2.0)
+        if timed_out:
+            import logging as _logging
+            _logging.warning(
+                "graceful shutdown 2s 超时 — 强制退出,未完 run 下次启动按 shutdown_force 处理"
+            )
+        _shutdown_evt.set()
+
     try:
-        await asyncio.gather(*pumps)
+        asyncio.get_event_loop().add_signal_handler(
+            _signal.SIGTERM, lambda: asyncio.create_task(_on_sigterm())
+        )
+    except (NotImplementedError, RuntimeError):
+        pass  # platform without signal handler support (e.g. Windows)
+    try:
+        gather_pumps = asyncio.create_task(asyncio.gather(*pumps))
+        shutdown_wait = asyncio.create_task(_shutdown_evt.wait())
+        await asyncio.wait(
+            {gather_pumps, shutdown_wait},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
     finally:
         if runner is not None:
             runner.stop()

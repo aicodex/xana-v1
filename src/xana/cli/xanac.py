@@ -61,6 +61,19 @@ async def _run(args: argparse.Namespace) -> int:
 
     renderer = StdoutRenderer()
     boot_result, adapter, _root = await _build_pipeline(args, renderer)
+    # P5.6 — SIGTERM graceful drain.
+    import signal as _signal
+    from xana.cli.shutdown import graceful_shutdown as _graceful_shutdown
+
+    async def _on_sigterm() -> None:
+        await _graceful_shutdown(boot_result.gateway, grace_seconds=2.0)
+
+    try:
+        asyncio.get_event_loop().add_signal_handler(
+            _signal.SIGTERM, lambda: asyncio.create_task(_on_sigterm())
+        )
+    except (NotImplementedError, RuntimeError):
+        pass
     try:
         if not text:
             # Fallback to legacy prompt_toolkit REPL when stdin is piped /
