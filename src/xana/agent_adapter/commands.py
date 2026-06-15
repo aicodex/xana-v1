@@ -188,8 +188,7 @@ class DefaultCommandRouter(CommandRouter):
         last_emitted: list[tuple[str, str, str]] = [("", "", "")]
         cancel_event = asyncio.Event()
         self._compact_cancels[run_id] = cancel_event
-        # P5.8 — compact 不可取消:卡片不再渲染按钮。键盘 /compact_cancel
-        # 命令仍可触发 cancel_event(隐藏命令保留)。
+        cancel_button = [[{"text": "取消", "send": f"/compact_cancel {run_id}"}]]
 
         async def _emit(text_so_far: str = "", phase: str = "running") -> None:
             if cancel_event.is_set():
@@ -207,7 +206,8 @@ class DefaultCommandRouter(CommandRouter):
                 payload={"kind": "compact_progress", "session_id": inbound.session_id,
                          "run_id": run_id, "model": model, "phase": phase, "text": bar,
                          "thinking": partial,
-                         "thinking_title": f"🗜 正在压缩 · {status}"},
+                         "thinking_title": f"🗜 正在压缩 · {status}",
+                         "buttons": cancel_button},
             ))
 
         try:
