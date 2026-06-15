@@ -51,6 +51,10 @@ class ToolSpec:
     component: ComponentSpec
     input_schema: dict[str, Any]
     output_schema: dict[str, Any] | None = None
+    # `read_only` 也用于 cancel/取消 语义(P5.1):
+    #   True  → 取消时立即 abort tool,resume = 重跑该工具
+    #   False → 取消时等 2 秒宽限,完成则正常写,超时强杀 + 注入
+    #           synthetic warning(P5.2),resume = fork 新 run
     read_only: bool = False
     destructive: bool = False
     open_world: bool = False
