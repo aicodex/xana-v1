@@ -262,6 +262,53 @@ def apply_ph_replaced(
     state.top_buttons = ()
 
 
+# --- menu section builders (Task 6) ----------------------------------------
+
+
+def build_help_menu(
+    *, card_id: str, specs: tuple[tuple[str, str], ...]
+) -> "UnifiedCardState":
+    """Build a /help-style menu card.
+
+    Body lists ``name  desc`` lines; bottom buttons replay each command,
+    laid out two per row.
+    """
+    lines = ["可用命令:"]
+    for name, desc in specs:
+        lines.append(f"  {name:<20} {desc}")
+    body = "\n".join(lines)
+    sends = [Button(text=name, send=name) for name, _ in specs]
+    rows = tuple(
+        ButtonRow(buttons=tuple(sends[i : i + 2])) for i in range(0, len(sends), 2)
+    )
+    return UnifiedCardState(
+        card_id=card_id,
+        menu=MenuSection(body_md=body),
+        bottom_buttons=rows,
+    )
+
+
+def build_attach_menu(
+    *, card_id: str, candidates: tuple[tuple[str, str], ...]
+) -> "UnifiedCardState":
+    """Build an /attach candidate-list menu card.
+
+    Body lists each candidate run_id + label; bottom buttons (one per row)
+    send ``/attach <run_id>``.
+    """
+    lines = ["可恢复的后台 run:"]
+    btns: list[Button] = []
+    for run_id, label in candidates:
+        lines.append(f"  {run_id}  · {label[:30]}")
+        btns.append(Button(text=f"切回 {label[:20]}", send=f"/attach {run_id}"))
+    rows = tuple(ButtonRow(buttons=(b,)) for b in btns)
+    return UnifiedCardState(
+        card_id=card_id,
+        menu=MenuSection(body_md="\n".join(lines)),
+        bottom_buttons=rows,
+    )
+
+
 @dataclass
 class UnifiedCardState:
     card_id: str
