@@ -74,7 +74,10 @@ async def replace_completed_placeholders(
             messages = runs_jsonl_to_memory_messages(jsonl_path)
         except Exception:
             continue
-        await store.replace_placeholder(session_id, agent_name, rid, messages)
+        # ActiveContextStore.replace_placeholder takes (run_id, replace_with)
+        # only — session_id/agent_name are not forwarded; keep them in the
+        # helper signature for boot-time call sites that still pass them.
+        await store.replace_placeholder(rid, tuple(messages))
 
 
 async def mark_unfinished_as_resumable(
