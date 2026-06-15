@@ -152,13 +152,17 @@ class FooterText:
                 parts.append(
                     f"上下文 {_fmt_k(self.ctx_used)}/{_fmt_k(self.ctx_max)}"
                 )
-        # 2) 回答用时:🟡 进行中 / 🟢 已完成。menu 卡无此段。
-        if not is_menu:
-            dot = "🟢" if self.state == "terminal" else "🟡"
+        # 2) 回答用时:仅 fg_running / terminal 出 (bg 不显示,因为冻结值不准且
+        #    没有 3s 定时刷新);🟢 已完成 / 🟡 进行中。menu 卡也不出此段。
+        if self.state == "terminal":
             parts.append(
-                f"{dot} 回答用时 {_format_elapsed(self.elapsed_s)}"
+                f"🟢 回答用时 {_format_elapsed(self.elapsed_s)}"
             )
-        # 3) 后台运行中(无 🟡,已转移到回答段)
+        elif self.state == "fg_running":
+            parts.append(
+                f"🟡 回答用时 {_format_elapsed(self.elapsed_s)}"
+            )
+        # 3) 后台运行中(纯标识,无时间)
         if self.state == "bg_frozen":
             parts.append("后台运行中")
         # 4) menu only:仅 menu 态出 model(替换 group)
