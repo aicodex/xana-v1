@@ -43,13 +43,12 @@ class RunStore(ABC):
     async def list_unfinished(self) -> tuple[RunRecord, ...]:
         """返回可恢复(/resume 候选)的 run 记录。
 
-        过滤规则(P5.4):
-          - status 在 {"running","paused"} **或** exit_reason 在
+        过滤规则(P5 tightened):
+          - 仅 exit_reason 在
             {"user_cancel","tool_kill_timeout","shutdown_graceful","shutdown_force"}
             的记录进入候选。
-          - exit_reason 在
-            {"network_error","llm_timeout","session_lost","tool_error","unknown"}
-            的一律排除(无论 status)。
+          - 其它(包括 status==running/paused 但无 exit_reason 的孤儿)一律排除。
+            孤儿应由 startup_scan 打上 shutdown_force 后再出现在这里。
         """
         ...
 

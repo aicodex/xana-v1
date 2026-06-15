@@ -120,16 +120,24 @@ class FileRunStore(RunStore):
         return out
 
     async def list_unfinished(self) -> tuple[RunRecord, ...]:
+        # P5 tightening: only records with a RESUMABLE exit_reason qualify.
+        # status=="running" without exit_reason is an orphan from a crash —
+        # startup_scan stamps shutdown_force on those before they show up here.
         out: list[RunRecord] = []
         for rec in await self._iter():
             if rec.exit_reason in EXCLUDED_EXIT_REASONS:
                 continue
-            if rec.status in ("running", "paused") or rec.exit_reason in RESUMABLE_EXIT_REASONS:
+            if rec.exit_reason in RESUMABLE_EXIT_REASONS:
                 out.append(rec)
         return tuple(out)
 
     async def list_by_session(self, session_id: str) -> tuple[RunRecord, ...]:
         return tuple(r for r in await self._iter() if r.session_id == session_id)
+
+    async def list_all(self) -> tuple[RunRecord, ...]:
+        """Return every record. Not on the RunStore ABC — used by startup_scan
+        to find orphan running/paused records that lack an exit_reason."""
+        return tuple(await self._iter())
 
 
 RunTerminalStatus = Literal["completed", "cancelled", "failed"]

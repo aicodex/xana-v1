@@ -103,3 +103,17 @@ async def mark_unfinished_as_resumable(
             await store.update_status(
                 rid, "paused", fields={"exit_reason": "shutdown_force"},
             )
+    # Orphan sweep: any RunRecord with status running/paused but no exit_reason
+    # and no corresponding jsonl in runs/ (pre-jsonl crash or lost log) is also
+    # an orphan. Mark them shutdown_force so list_unfinished surfaces them.
+    list_all = getattr(store, "list_all", None)
+    if list_all is None:
+        return
+    for rec in await list_all():
+        if rec.exit_reason is not None:
+            continue
+        if rec.status not in ("running", "paused"):
+            continue
+        await store.update_status(
+            rec.run_id, "paused", fields={"exit_reason": "shutdown_force"},
+        )

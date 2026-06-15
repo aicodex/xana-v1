@@ -64,16 +64,25 @@ class InMemoryRunStore(RunStore):
         self._store[run_id] = replace(current, usage=usage)
 
     async def list_unfinished(self) -> tuple[RunRecord, ...]:
+        # P5 tightening: only records with a RESUMABLE exit_reason qualify.
+        # A bare status=="running"/"paused" record with no exit_reason is an
+        # orphan from a crash — startup_scan is responsible for stamping
+        # shutdown_force on those; until then they MUST NOT leak into /resume.
         out: list[RunRecord] = []
         for rec in self._store.values():
             if rec.exit_reason in EXCLUDED_EXIT_REASONS:
                 continue
-            if rec.status in ("running", "paused") or rec.exit_reason in RESUMABLE_EXIT_REASONS:
+            if rec.exit_reason in RESUMABLE_EXIT_REASONS:
                 out.append(rec)
         return tuple(out)
 
     async def list_by_session(self, session_id: str) -> tuple[RunRecord, ...]:
         return tuple(r for r in self._store.values() if r.session_id == session_id)
+
+    async def list_all(self) -> tuple[RunRecord, ...]:
+        """Return every record. Not on the RunStore ABC — used by startup_scan
+        to find orphan running/paused records that lack an exit_reason."""
+        return tuple(self._store.values())
 
 
 class InMemoryStateRepository(StateRepository):
