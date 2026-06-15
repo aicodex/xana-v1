@@ -135,8 +135,9 @@ class Card:
         return self._schedule(finalize=finalize)
 
     def reveal_tools(self) -> asyncio.Task[Any] | None:
-        """加载剩余工具按钮回调。"""
-        if self.terminal or self.state.answer is None:
+        """加载剩余工具按钮回调。终态卡也允许 reveal(用户在已完成任务的卡片上
+        点'显示剩余 N 工具结果',应当展开。)"""
+        if self.state.answer is None:
             return None
         load_pending_tools(self.state.answer)
         return self._schedule(finalize=True)
@@ -185,12 +186,15 @@ class Card:
             self.terminal = True
             self.state.top_buttons = ()
             return True
-        # harness final/error/cancelled → terminal,同时把 footer 切到 terminal
-        # 才能让 🟢 绿点出现(否则停在 fg_running → 🟡)。
+        # harness final/error/cancelled → terminal。
+        # 仅在有 answer section 时把 footer 切到 "terminal"(让 🟢 绿点出现);
+        # 菜单卡(answer is None,state.menu 已被 _apply_agent_only 设为 menu 段)
+        # 保持 footer.state="menu",否则会被覆盖成 terminal,跳出 🟢 + 回答用时。
         if kind in _FINALIZE_HARNESS_KINDS:
             self.terminal = True
             self.state.top_buttons = ()
-            self.state.footer.state = "terminal"
+            if self.state.answer is not None:
+                self.state.footer.state = "terminal"
             return True
         # run_detached:一次 finalize patch 后进入 frozen
         if kind == "run_detached":
