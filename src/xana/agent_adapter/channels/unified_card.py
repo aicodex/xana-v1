@@ -21,6 +21,22 @@ def _fmt_k(n: int) -> str:
     return f"{n // 1000}k"
 
 
+def _fmt_short_time(secs: float) -> str:
+    """Format short elapsed for menu/command segments. <1s → '0.Ns'."""
+    if secs < 0:
+        secs = 0.0
+    if secs < 1:
+        return f"{secs:.1f}s"
+    s = int(secs)
+    if s < 60:
+        return f"{s}s"
+    m, r = divmod(s, 60)
+    if m < 60:
+        return f"{m}m {r}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m {r}s"
+
+
 @dataclass
 class ToolBlock:
     name: str
@@ -101,28 +117,43 @@ def _format_elapsed(secs: int) -> str:
 
 @dataclass
 class FooterText:
+    """分段脚标。固定顺序拼接,空段跳过:
+
+        modelname · 上下文 Nk/Mk · 回答 T · 🟡 后台运行中 · 菜单 <label> <t>
+
+    - 模型名永远在第一位(空字符串就跳)
+    - 上下文 / 回答 只在非 menu 态出现(bg_frozen 隐藏 ctx)
+    - 🟡 后台运行中 当 state=bg_frozen 时出
+    - 菜单 <label> <t> 当 menu_label 非空时出(永远在最后,解决 compact 与后台
+      竞态:菜单段固定排尾)
+    """
     model: str = ""
     ctx_used: int = 0
     ctx_max: int = 0
-    elapsed_s: int = 0
+    elapsed_s: int = 0                # 回答(主 turn)用时
     state: FooterState = "fg_running"
+    menu_label: str = ""              # 例 "compact" / "clear" / "cancel"
+    menu_elapsed_s: float = 0.0       # 菜单/命令用时
 
     def render(self) -> str:
-        """Render footer line per state.
-
-        - fg_running / terminal: ``model · 上下文 Nk/Mk · 用时 T``
-        - bg_frozen: ``model · 🟡 后台运行中 · 用时 T`` (frozen ctx hidden)
-        - menu: ``model · 用时 T`` (no ctx — 菜单卡无 ctx 意义)
-        """
-        t = _format_elapsed(self.elapsed_s)
-        if self.state == "bg_frozen":
-            return f"{self.model} · 🟡 后台运行中 · 用时 {t}"
-        if self.state == "menu":
-            return f"{self.model} · 用时 {t}"
-        return (
-            f"{self.model} · 上下文 "
-            f"{_fmt_k(self.ctx_used)}/{_fmt_k(self.ctx_max)} · 用时 {t}"
-        )
+        parts: list[str] = []
+        if self.model:
+            parts.append(self.model)
+        if self.state != "menu":
+            if self.ctx_max > 0 and self.state != "bg_frozen":
+                parts.append(
+                    f"上下文 {_fmt_k(self.ctx_used)}/{_fmt_k(self.ctx_max)}"
+                )
+            if self.elapsed_s > 0 or self.state in ("fg_running", "terminal",
+                                                     "bg_frozen"):
+                parts.append(f"回答 {_format_elapsed(self.elapsed_s)}")
+            if self.state == "bg_frozen":
+                parts.append("🟡 后台运行中")
+        if self.menu_label:
+            parts.append(
+                f"菜单 {self.menu_label} {_fmt_short_time(self.menu_elapsed_s)}"
+            )
+        return " · ".join(parts)
 
 
 # --- compact section state machine ---------------------------------------

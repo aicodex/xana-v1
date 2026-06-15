@@ -7,7 +7,33 @@ in their event loop and then hand `state` to the platform renderer.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
+
+
+# 菜单/命令计时:command_progress 启动,final/error/compact_finalized 停止。
+# key = (session_id, card_id)。模块级 dict 简单(单进程 OK,测试隔离用 clear)。
+_menu_start_ts: dict[tuple[str, str], float] = {}
+
+
+def _menu_started_at(state: UnifiedCardState, session_id: str) -> None:
+    _menu_start_ts[(session_id, state.card_id)] = time.monotonic()
+
+
+def _menu_elapsed(state: UnifiedCardState, session_id: str) -> float:
+    started = _menu_start_ts.pop((session_id, state.card_id), None)
+    if started is None:
+        return 0.0
+    return max(0.0, time.monotonic() - started)
+
+
+def _parse_menu_label(text: str) -> str:
+    """从 '⏳ /clear' / '⏳ /compact' 解析出 label='clear' / 'compact'。"""
+    txt = (text or "").strip()
+    for token in txt.replace("⏳", " ").split():
+        if token.startswith("/"):
+            return token.lstrip("/")
+    return txt[:20] if txt else ""
 
 from xana.agent_adapter.channels.unified_card import (
     AnswerSection,
@@ -171,6 +197,9 @@ def _apply_agent_only(state: UnifiedCardState, ev: AgentEvent) -> None:
         state.terminal = True
         state.footer.state = "menu"
         state.top_buttons = ()
+        # 菜单/命令计时落点:command_progress 起 → final/error 停。
+        if state.footer.menu_label:
+            state.footer.menu_elapsed_s = _menu_elapsed(state, ev.session_id or "")
         return
     if ev.kind == "cancelled":
         if state.answer is not None:
@@ -239,6 +268,10 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
         # compact section 出现 → 清掉 loading menu(command_progress 占位),
         # spec §3:section 互斥,只 compact 或 compact+回答,不应同时有菜单。
         state.menu = None
+        # 启动 "compact" 菜单段计时;footer 同时维持 fg/bg/terminal 状态,
+        # 菜单段渲染在最右(解决 compact + bg 竞态)。
+        state.footer.menu_label = "compact"
+        _menu_started_at(state, ev.session_id or "")
         state.top_buttons = compute_top_buttons(state)
         return
     if kind == "compact_progress":
@@ -278,13 +311,17 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
             state.compact = CompactSection()
         if payload.get("cancelled"):
             cancel_compact(state.compact)
-            return
-        try:
-            n = int(payload.get("compacted_n", 0) or 0)
-        except (TypeError, ValueError):
-            n = 0
-        summary = str(payload.get("summary", "") or "")
-        finalize_compact(state.compact, compacted_n=n, summary_text=summary)
+        else:
+            try:
+                n = int(payload.get("compacted_n", 0) or 0)
+            except (TypeError, ValueError):
+                n = 0
+            summary = str(payload.get("summary", "") or "")
+            finalize_compact(
+                state.compact, compacted_n=n, summary_text=summary)
+        # 菜单段 "compact" 计时落点。
+        if state.footer.menu_label == "compact":
+            state.footer.menu_elapsed_s = _menu_elapsed(state, ev.session_id or "")
         return
     if kind == "usage_progress":
         # Live usage updates the footer running model/ctx/elapsed; once the
@@ -322,6 +359,10 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
             else:
                 state.menu.body_md = str(text)
             state.footer.state = "menu"
+        label = _parse_menu_label(str(text or ""))
+        if label:
+            state.footer.menu_label = label
+            _menu_started_at(state, ev.session_id or "")
         return
     if kind == "menu_response":
         specs_raw = payload.get("specs") or ()
@@ -331,6 +372,8 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
         built = build_help_menu(card_id=state.card_id, specs=specs)
         state.menu = built.menu
         state.bottom_buttons = built.bottom_buttons
+        state.footer.state = "menu"
+        state.footer.menu_label = "help"
         return
     if kind == "attach_options":
         cands_raw = payload.get("candidates") or ()
@@ -340,6 +383,8 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
         built = build_attach_menu(card_id=state.card_id, candidates=cands)
         state.menu = built.menu
         state.bottom_buttons = built.bottom_buttons
+        state.footer.state = "menu"
+        state.footer.menu_label = "attach"
         return
 
 
