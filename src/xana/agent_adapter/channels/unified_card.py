@@ -136,19 +136,35 @@ class FooterText:
     menu_elapsed_s: float = 0.0       # 菜单/命令用时
 
     def render(self) -> str:
+        """脚标段(固定顺序,空段跳):
+            [model · 上下文 Nk/Mk]   只在 fg/terminal,model+ctx 一整组
+            🟡/🟢 回答用时 T          🟡=进行中 / 🟢=已完成
+            后台运行中                只在 bg_frozen,无小黄点
+            菜单 <label> <t>          永远排最尾(解决 compact+bg 竞态)
+        """
         parts: list[str] = []
-        if self.model:
-            parts.append(self.model)
-        if self.state != "menu":
-            if self.ctx_max > 0 and self.state != "bg_frozen":
+        is_menu = self.state == "menu"
+        # 1) model + ctx 一组,bg/menu 都不出
+        if not is_menu and self.state != "bg_frozen":
+            if self.model:
+                parts.append(self.model)
+            if self.ctx_max > 0:
                 parts.append(
                     f"上下文 {_fmt_k(self.ctx_used)}/{_fmt_k(self.ctx_max)}"
                 )
-            if self.elapsed_s > 0 or self.state in ("fg_running", "terminal",
-                                                     "bg_frozen"):
-                parts.append(f"回答 {_format_elapsed(self.elapsed_s)}")
-            if self.state == "bg_frozen":
-                parts.append("🟡 后台运行中")
+        # 2) 回答用时:🟡 进行中 / 🟢 已完成。menu 卡无此段。
+        if not is_menu:
+            dot = "🟢" if self.state == "terminal" else "🟡"
+            parts.append(
+                f"{dot} 回答用时 {_format_elapsed(self.elapsed_s)}"
+            )
+        # 3) 后台运行中(无 🟡,已转移到回答段)
+        if self.state == "bg_frozen":
+            parts.append("后台运行中")
+        # 4) menu only:仅 menu 态出 model(替换 group)
+        if is_menu and self.model:
+            parts.insert(0, self.model)
+        # 5) 菜单段排尾
         if self.menu_label:
             parts.append(
                 f"菜单 {self.menu_label} {_fmt_short_time(self.menu_elapsed_s)}"
@@ -249,9 +265,14 @@ def detach_answer(sec: AnswerSection) -> None:
 
 
 def finalize_answer(sec: AnswerSection, *, final_text: str) -> None:
-    """Terminal transition; replace answer_text with final."""
+    """Terminal transition; replace answer_text with final.
+
+    If ``final_text`` is empty, preserve whatever has been accumulated
+    (后台 run 在 detach 期间通过 model_delta 累积的答案不应被空 ph_replaced 抹掉)。
+    """
     sec.state = "terminal"
-    sec.answer_text = final_text
+    if final_text:
+        sec.answer_text = final_text
 
 
 def cancel_answer(sec: AnswerSection) -> None:

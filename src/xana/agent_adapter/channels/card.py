@@ -39,8 +39,12 @@ Deliver = Callable[["Card"], Awaitable[None]]
 TaskSink = Callable[[asyncio.Task[Any]], None]
 
 
-# 解冻事件(detached 卡只允许这些过):
+# 解冻事件(detached 卡终态/退出冻结):
 _THAW_KINDS = frozenset({"ph_replaced", "run_completed_bg"})
+# 即使 detached 也仍要渲染的事件(compact 段挂到 PH 卡上,用户要看进度):
+_DETACHED_RENDER_KINDS = frozenset({
+    "compact_started", "compact_progress", "compact_finalized",
+})
 _FINALIZE_HARNESS_KINDS = frozenset({"final", "error", "cancelled"})
 
 
@@ -97,16 +101,35 @@ class Card:
     # ------------------------------------------------------------------
 
     def dispatch(self, event: Any) -> asyncio.Task[Any] | None:
-        """收到一条事件:守门 → apply → 重算按钮 → schedule。
+        """收到一条事件 — MVVM 数据绑定语义:
 
-        终态事件 (final/error/cancelled/ph_replaced/run_completed_bg/
-        run_detached) 返回 spawn 出的 finalize task,adapter 可 await 以等
-        delivery 完成(测试与命令路径都依赖这点);其它返回 None(走 throttle)。
+        1) state 总是被 apply(数据保真,后台 run 仍在累积答案/工具),除非已 terminal
+        2) 是否渲染由"detach + 事件 kind"决定:
+           - terminal 卡:丢弃
+           - detached 卡:只渲 compact_* (用户要看 compact 段) 与 thaw kinds
+             (ph_replaced/run_completed_bg);其它仅累积,不刷视图
+           - 否则:正常渲染
+        3) 终态事件返回 finalize task,adapter await 后立即落地;其它返回 None(throttle)。
         """
-        if not self._accepts(event):
+        if self.terminal:
             return None
         kind = _event_kind(event)
+        # 用 apply 前的 detached 判断,避免漏掉"detach 事件本身"的渲染。
+        was_detached = self.state.detached
+        # 守门:终态拒绝(上面已挡)、detached 拒绝那些不能跨冻结的事件 — 但只是不让
+        # apply_event 跑也不行,因为后台 run 的 model_delta/tool_finished 必须累积,
+        # 否则 ph_replaced 终态卡显示空回答。所以 apply 永远跑,渲染另判。
         apply_event(self.state, event)
+        # 是否要渲染:
+        #  - apply 前不是 detached → 总渲(包括 run_detached 自身)
+        #  - apply 前已 detached → 只允许 compact_* 和 thaw 解冻
+        should_render = (
+            not was_detached
+            or kind in _THAW_KINDS
+            or kind in _DETACHED_RENDER_KINDS
+        )
+        if not should_render:
+            return None
         self._refresh_top_buttons()
         finalize = self._is_finalize_after(kind)
         return self._schedule(finalize=finalize)
@@ -154,14 +177,6 @@ class Card:
     # ------------------------------------------------------------------
     # 内部:守门 / 渲染调度
     # ------------------------------------------------------------------
-
-    def _accepts(self, event: Any) -> bool:
-        if self.terminal:
-            return False
-        if self.is_detached:
-            # 冻结后只放解冻事件通过。
-            return _event_kind(event) in _THAW_KINDS
-        return True
 
     def _is_finalize_after(self, kind: str) -> bool:
         # ph_replaced / run_completed_bg → terminal
