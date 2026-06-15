@@ -142,36 +142,43 @@ class FooterText:
             后台运行中                只在 bg_frozen,无小黄点
             菜单 <label> <t>          永远排最尾(解决 compact+bg 竞态)
         """
+        """脚标格式(dot 永远在最左):
+            fg_running: 🟡 model · 上下文 Nk/Mk · 回答用时 T [· 菜单 X 用时 t]
+            terminal:   🟢 model · 上下文 Nk/Mk · 回答用时 T [· 菜单 X 用时 t]
+            bg_frozen:  🟡 正在后台回答                        [· 菜单 X 用时 t]
+            menu:       model · 菜单 X 用时 t
+        """
         parts: list[str] = []
-        is_menu = self.state == "menu"
-        # 1) model + ctx 一组,bg/menu 都不出
-        if not is_menu and self.state != "bg_frozen":
+        if self.state == "menu":
             if self.model:
                 parts.append(self.model)
-            if self.ctx_max > 0:
+            if self.menu_label:
                 parts.append(
-                    f"上下文 {_fmt_k(self.ctx_used)}/{_fmt_k(self.ctx_max)}"
+                    f"菜单 {self.menu_label} 用时 "
+                    f"{_fmt_short_time(self.menu_elapsed_s)}"
                 )
-        # 2) 回答用时:仅 fg_running / terminal 出 (bg 不显示,因为冻结值不准且
-        #    没有 3s 定时刷新);🟢 已完成 / 🟡 进行中。menu 卡也不出此段。
-        if self.state == "terminal":
-            parts.append(
-                f"🟢 回答用时 {_format_elapsed(self.elapsed_s)}"
-            )
-        elif self.state == "fg_running":
-            parts.append(
-                f"🟡 回答用时 {_format_elapsed(self.elapsed_s)}"
-            )
-        # 3) 后台运行中(纯标识,无时间)
+            return " · ".join(parts)
         if self.state == "bg_frozen":
-            parts.append("后台运行中")
-        # 4) menu only:仅 menu 态出 model(替换 group)
-        if is_menu and self.model:
-            parts.insert(0, self.model)
-        # 5) 菜单段排尾
+            parts.append("🟡 正在后台回答")
+            if self.menu_label:
+                parts.append(
+                    f"菜单 {self.menu_label} 用时 "
+                    f"{_fmt_short_time(self.menu_elapsed_s)}"
+                )
+            return " · ".join(parts)
+        # fg_running / terminal:dot 黏在第一段(model 或纯 dot)
+        dot = "🟢" if self.state == "terminal" else "🟡"
+        head = f"{dot} {self.model}" if self.model else dot
+        parts.append(head)
+        if self.ctx_max > 0:
+            parts.append(
+                f"上下文 {_fmt_k(self.ctx_used)}/{_fmt_k(self.ctx_max)}"
+            )
+        parts.append(f"回答用时 {_format_elapsed(self.elapsed_s)}")
         if self.menu_label:
             parts.append(
-                f"菜单 {self.menu_label} {_fmt_short_time(self.menu_elapsed_s)}"
+                f"菜单 {self.menu_label} 用时 "
+                f"{_fmt_short_time(self.menu_elapsed_s)}"
             )
         return " · ".join(parts)
 

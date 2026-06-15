@@ -53,8 +53,8 @@ def _render_answer(sec: AnswerSection, *, extra_kb: list[list[dict]],
                    card_id: str) -> str:
     """渲染回答段。tools-overflow 按钮通过 ``extra_kb`` 追加(TG 不能 mid-text)。"""
     parts: list[str] = []
-    # thinking
-    think_title = "思考过程" if sec.thinking_text else "正在思考"
+    # thinking — TG <blockquote expandable> 默认折叠,这里就保持一致
+    think_title = "思考过程" if sec.thinking_text else "思考中"
     parts.append(_fold(think_title, sec.thinking_text or " "))
     # tools — 全渲染。buf 在按钮里。
     for t in sec.tools:

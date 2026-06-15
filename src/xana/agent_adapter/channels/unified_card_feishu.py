@@ -84,18 +84,10 @@ def _render_compact(sec: CompactSection) -> list[dict]:
 
 def _render_answer(sec: AnswerSection, *, card_id: str) -> list[dict]:
     out: list[dict] = []
-    # thinking
-    if sec.thinking_text:
-        think_title = "思考过程"
-    else:
-        think_title = "正在思考"
-    out.append(
-        _panel(
-            think_title,
-            sec.thinking_text or " ",
-            folded=(sec.state != "streaming"),
-        )
-    )
+    # thinking — 默认折叠(用户主动展开后,本侧推送的 expanded=False 可能让飞书
+    # 重新折叠,这是平台限制;先按"默认折叠"实现,用户体验上比"自动展开占地方"好)
+    think_title = "思考过程" if sec.thinking_text else "思考中"
+    out.append(_panel(think_title, sec.thinking_text or " ", folded=True))
     # tools — 全渲染。buf 里的不在这里出,等点按钮 reveal 才进 tools。
     for t in sec.tools:
         out.append(_panel(t.header, t.body_md or " ", folded=True))
