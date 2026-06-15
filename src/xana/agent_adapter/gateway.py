@@ -21,6 +21,7 @@ from xana.agent_adapter.interfaces import (
 )
 from xana.agents.contracts import AgentEvent
 from xana.agents.interfaces import Agent
+from xana.harness_sdk.contracts import AbortSignal
 
 
 class DefaultAgentGateway(AgentGateway):
@@ -35,6 +36,10 @@ class DefaultAgentGateway(AgentGateway):
         self.command_router: CommandRouter | None = None
         self.bindings: dict[str, SessionBinding] = {}
         self._cancel_flags: dict[str, bool] = {}
+        # P5 fix — live abort signal per run_id. cancel() flips this in-place
+        # so an already-running turn's tool poll loop sees it. Cleaned up in
+        # _submit finally.
+        self._abort_signals: dict[str, AbortSignal] = {}
         self._cmd_seq = 0
         self._inflight: dict[str, list[InflightRun]] = {}  # session_id → 倒序(新在前)
         self._run_seq = 0
@@ -148,11 +153,20 @@ class DefaultAgentGateway(AgentGateway):
             label=(inbound.text or "").strip()[:40] or "run",
         )
         self._inflight.setdefault(inbound.session_id, []).insert(0, new_run)
+        # P5 fix — register a live AbortSignal for this run BEFORE handing off
+        # to the agent. cancel(run_id) flips this same instance in-place so
+        # the harness's tool-abort poll sees it on the currently-running turn.
+        abort_signal = AbortSignal()
+        self._abort_signals[new_run.run_id] = abort_signal
         # gateway 的 run_id 必须传给 harness,否则 adapter 端 _render_states 用
         # gateway run_id 建 key,但 render() 收到的事件 run_id 是 harness 自产的
         # uuid 形式,frozen 检查永远 miss → detach 后旧卡还在刷流。
         inbound = replace(
-            inbound, metadata={**inbound.metadata, "gateway_run_id": new_run.run_id},
+            inbound, metadata={
+                **inbound.metadata,
+                "gateway_run_id": new_run.run_id,
+                "abort_signal": abort_signal,
+            },
         )
         request = await self.router.route(inbound)
         target = request.target_agent or ""
@@ -185,6 +199,7 @@ class DefaultAgentGateway(AgentGateway):
                 ir for ir in self._inflight.get(inbound.session_id, [])
                 if ir.run_id != new_run.run_id
             ]
+            self._abort_signals.pop(new_run.run_id, None)
             note = getattr(adapter, "note_progress", None)
             if note is not None:
                 note({
@@ -233,6 +248,22 @@ class DefaultAgentGateway(AgentGateway):
 
     async def cancel(self, session_id: str, run_id: str | None = None) -> None:
         self._cancel_flags[session_id] = True
+        # P5 fix — flip the live AbortSignal so an in-flight tool's poll loop
+        # in DefaultHarness._run_tool_with_abort sees abort.aborted == True.
+        # Without this, cancel only took effect on the NEXT turn (via
+        # ChatAgent._pending_cancel_sessions), so e.g. SlowWrite ran to
+        # completion despite the stop click.
+        if run_id is not None:
+            signal = self._abort_signals.get(run_id)
+            if signal is not None:
+                signal.trigger("user_cancel")
+        else:
+            # Whole-session cancel — trigger every signal for this session's
+            # inflight runs (cancel_all path or run_id-less callers).
+            for ir in self._inflight.get(session_id, []):
+                signal = self._abort_signals.get(ir.run_id)
+                if signal is not None:
+                    signal.trigger("user_cancel")
         for agent in self.agents.values():
             await agent.cancel(session_id, run_id)
         # P5: mark exit_reason=user_cancel so list_unfinished/RunRecord reflect

@@ -16,7 +16,7 @@ from xana.agents.interfaces import (
     AgentRequestMapper,
 )
 from xana.component.contracts import ComponentSource, ComponentSpec
-from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest
+from xana.harness_sdk.contracts import AbortSignal, HarnessContext, HarnessEvent, HarnessRequest
 from xana.harness_sdk.interfaces import Harness, ProgressSink
 from xana.llm_driver.interfaces import ModelRegistry
 from xana.memory.interfaces import (
@@ -145,6 +145,13 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
                 runs_dir = getattr(jw, "_dir", None)
                 if runs_dir is not None:
                     metadata["runs_dir"] = runs_dir
+        # P5 fix — gateway owns AbortSignal lifecycle. If it pre-registered
+        # one for this run, reuse the same instance so gateway.cancel() flips
+        # the bool the harness's tool-abort poll is watching. Fall back to a
+        # fresh instance for tests / direct ChatAgent invocations.
+        abort_signal = request.metadata.get("abort_signal")
+        if not isinstance(abort_signal, AbortSignal):
+            abort_signal = AbortSignal()
         return HarnessContext(
             session_id=request.session_id,
             agent_name=spec.component.name,
@@ -153,6 +160,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             effort=effort,
             run_id=run_id,
             permission=PermissionContext(mode="default", session_id=request.session_id),
+            abort=abort_signal,
             state_repository=self.state_repository,
             active_context_store=self.active_context_store,
             history_mirror=self.history_mirror,
@@ -246,9 +254,11 @@ class ChatAgent(Agent):
         harness_request = await self.request_mapper.to_harness_request(self._spec, request)
         harness_context = await self.request_mapper.to_harness_context(self._spec, request)
         if request.session_id in self._pending_cancel_sessions:
-            from dataclasses import replace as _dc_replace
-            from xana.harness_sdk.contracts import AbortSignal
-            harness_context = _dc_replace(harness_context, abort=AbortSignal(aborted=True, reason="user_cancel"))
+            # Next-turn semantics: a cancel arrived between turns. Trigger
+            # the live abort signal so the new turn aborts at the first
+            # poll-point. AbortSignal is now mutable (P5 fix), so we flip
+            # in-place rather than swapping in a new frozen instance.
+            harness_context.abort.trigger("user_cancel")
             self._pending_cancel_sessions.discard(request.session_id)
         async for harness_event in self.harness.invoke(harness_request, harness_context):
             yield await self.event_mapper.map(request.session_id, harness_event)
