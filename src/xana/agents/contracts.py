@@ -11,7 +11,7 @@ from xana.component.contracts import ComponentSpec
 from xana.harness_sdk.contracts import HarnessEvent
 from xana.policy.contracts import SandboxPolicySpec
 
-AgentEventKind = Literal["draft", "tool", "final", "control_result", "error"]
+AgentEventKind = Literal["draft", "tool", "final", "control_result", "error", "cancelled"]
 MemoryScope = Literal["user", "project", "agent", "session"]
 IsolationMode = Literal["none", "worktree", "process", "remote"]
 DelegationMode = Literal["inline", "background", "isolated"]

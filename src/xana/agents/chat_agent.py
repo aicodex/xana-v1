@@ -179,6 +179,7 @@ _HARNESS_TO_AGENT_KIND: dict[str, AgentEventKind] = {
     "final": "final",
     "error": "error",
     "tool_finished": "tool",
+    "cancelled": "cancelled",
 }
 
 
@@ -274,4 +275,10 @@ class ChatAgent(Agent):
         )
 
     async def cancel(self, session_id: str, run_id: str | None = None) -> None:
-        self._pending_cancel_sessions.add(session_id)
+        # Only mark a between-turn pending cancel when no specific run_id was
+        # given. When the gateway knows the run, it has already flipped the
+        # live AbortSignal for the in-flight turn — adding to the pending set
+        # would cause the NEXT user submit to immediately abort at the
+        # harness's first poll (yielding nothing visible to the user).
+        if run_id is None:
+            self._pending_cancel_sessions.add(session_id)
