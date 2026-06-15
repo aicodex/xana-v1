@@ -1,8 +1,11 @@
 """DefaultAgentGateway: wires Adapter <-> Agent."""
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import Any, AsyncGenerator, AsyncIterator
+
+logger = logging.getLogger(__name__)
 
 from xana.agent_adapter.contracts import (
     InboundMessage,
@@ -253,6 +256,11 @@ class DefaultAgentGateway(AgentGateway):
         防重入:同一 run_id 同时只能 resume 一次。
         """
         if run_id in self._resume_inflight:
+            return
+        if not self.adapters:
+            logger.warning(
+                "resume failed: no adapters registered for run %s", run_id,
+            )
             return
         self._resume_inflight.add(run_id)
         try:
