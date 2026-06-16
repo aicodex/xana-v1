@@ -42,15 +42,27 @@ def _md(text: str) -> dict:
 
 
 def _panel(title: str, body_md: str, *, folded: bool = True) -> dict:
-    # 视觉提示:折叠时前缀 ▸,展开时前缀 ▾,让用户一眼看出能点。
-    # 注:lark v2 collapsible_panel 不接受 background_color/border/padding。
+    # 视觉提示:灰底卡片 + header 右侧 chevron(down-bold_outlined),
+    # 展开旋转 -180° 变上箭头 → 用户一眼看出能点。
     # body 走 _sanitize_md:避开飞书 markdown 把 ![](url) 当 image_key 触发 400。
-    arrow = "▸" if folded else "▾"
-    decorated = f"{arrow} {title}"
     return {
         "tag": "collapsible_panel",
         "expanded": not folded,
-        "header": {"title": {"tag": "markdown", "content": decorated}},
+        "background_color": "grey-50",
+        "header": {
+            "title": {"tag": "plain_text", "content": title},
+            "background_color": "grey-50",
+            "vertical_align": "center",
+            "padding": "4px 8px 4px 8px",
+            "icon": {
+                "tag": "standard_icon",
+                "token": "down-bold_outlined",
+                "color": "grey",
+                "size": "16px 16px",
+            },
+            "icon_position": "follow_text",
+            "icon_expanded_angle": -180,
+        },
         "elements": [_md(_sanitize_md(body_md or " "))],
     }
 
