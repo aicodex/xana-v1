@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Awaitable, Callable
+from typing import Any, Callable, Coroutine
 
 from aiohttp import web
 
@@ -22,7 +22,7 @@ def build_daemon_app(
     *,
     bridge: DaemonBridgeAdapter,
     token: str,
-    on_action: Callable[[str, str, dict], Awaitable[None]] | None = None,
+    on_action: Callable[[str, str, dict], Coroutine[Any, Any, None]] | None = None,
 ) -> web.Application:
     """Build the aiohttp app for the xana daemon.
 
