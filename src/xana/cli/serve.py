@@ -303,6 +303,13 @@ async def _run_inner(argv: argparse.Namespace) -> int:
     pumps: list[asyncio.Task] = []
     webhook_runner = None
 
+    # daemon_bridge needs an inbound pump just like feishu/tg adapters —
+    # without it, /sessions/{sid}/submit POSTs land on bridge._inbound but
+    # the gateway never reads them, so SSE clients hang forever waiting
+    # for harness events.
+    pumps.append(asyncio.create_task(
+        _run_inbound_pump(daemon_bridge, boot_result.gateway)))
+
     for adapter in adapters:
         await adapter.start()
         await boot_result.gateway.register_adapter(adapter.adapter_id, adapter)
