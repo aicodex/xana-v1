@@ -59,8 +59,12 @@ class DaemonBridgeAdapter(Adapter):
         return self._receive()
 
     async def _receive(self):
-        msg = await self._inbound.get()
-        yield msg
+        # Forever-loop — pump in serve.py iterates `async for inbound in
+        # adapter.receive()` and would stop after the first yield if we
+        # broke out. Multi-turn sessions need every submit to dispatch.
+        while True:
+            msg = await self._inbound.get()
+            yield msg
 
     async def submit_inbound(self, session_id: str, text: str,
                              metadata: dict | None = None) -> None:
