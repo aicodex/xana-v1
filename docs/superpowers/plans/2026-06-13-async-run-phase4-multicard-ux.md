@@ -1,5 +1,14 @@
 # Async Run Phase 4 — 后台 Run 多卡 UX (tab 切换 + 完成弹卡 + PH 不渲染) Implementation Plan
 
+> ⚠️ **SUPERSEDED (2026-06-14)** —— 本 plan 中途 pivot,实际落地以下列新 spec 为准,本文件仅作历史参考。
+>
+> - 数据模型 + 双卡渲染:[`../specs/2026-06-14-async-chat-design.md`](../specs/2026-06-14-async-chat-design.md)
+> - PH-driven 渲染契约:[`../specs/2026-06-14-ph-driven-rendering-design.md`](../specs/2026-06-14-ph-driven-rendering-design.md)
+> - 卡片内容布局(next):[`../specs/2026-06-14-card-content-tail3-design.md`](../specs/2026-06-14-card-content-tail3-design.md)
+> - 配套实现 plan:[`./2026-06-14-async-chat-implementation.md`](./2026-06-14-async-chat-implementation.md)、[`./2026-06-14-ph-driven-rendering.md`](./2026-06-14-ph-driven-rendering.md)
+>
+> **关键偏离**:Tab 键 / `format_tabs` / `bg_runs` / `build_pure_answer_card` / `switch_foreground` / `run_completed_bg` 等已在 `cc79c4d` 全部 purge;改用 PH-first 双卡 + `/attach` 命令 + `detach_foreground` / `attach` / `replace_range` 接口;PH 反而**要**渲染(作为占位卡数据源),原 `filter_renderable` 防御失效。`InflightRun.detached` 已改名 `is_attached`(`ff4edeb`)。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** P3 已让后台 run 跑起来,P4 把多 run 在 adapter 层的"卡片/底部 tab/切换"做出来,让用户看到"旧 run 已转后台、新 run 在前台、可切换、完成时不抢焦点"。

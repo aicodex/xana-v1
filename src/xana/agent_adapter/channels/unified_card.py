@@ -12,6 +12,7 @@ from typing import Literal
 CompactState = Literal["input", "streaming", "completed", "cancelled"]
 AnswerState = Literal["streaming", "detached", "terminal", "cancelled"]
 FooterState = Literal["fg_running", "bg_frozen", "terminal", "menu"]
+ExpandMode = Literal["default", "thinking", "tools", "answer"]
 
 
 def _fmt_k(n: int) -> str:
@@ -40,10 +41,12 @@ def _fmt_short_time(secs: float) -> str:
 @dataclass
 class ToolBlock:
     name: str
-    header: str                  # 例 "Read /foo/bar.py"
+    header: str                  # 例 "🛠 read /foo/bar.py"
     body_md: str
     ok: bool = True
     call_id: str = ""            # 对应 harness tool_started/finished 的 call_id
+    started_at: float = 0.0      # monotonic 起点,用于算 elapsed
+    summary: str = ""            # 短摘要(图标无关,生成 header 时拼)
 
 
 @dataclass
@@ -68,6 +71,7 @@ class AnswerSection:
     tools: tuple[ToolBlock, ...] = ()
     tools_pending: int = 0                    # = len(_pending_tools_buf)
     answer_text: str = ""
+    page: int = 0                              # 答案翻页用(TG 单消息长度有限)
     _pending_tools_buf: tuple[ToolBlock, ...] = ()
 
 
@@ -134,6 +138,7 @@ class FooterText:
     state: FooterState = "fg_running"
     menu_label: str = ""              # 例 "compact" / "clear" / "cancel"
     menu_elapsed_s: float = 0.0       # 菜单/命令用时
+    cancelled: bool = False           # 用户已取消 → 终态显示 🔴 而非 🟢
 
     def render(self) -> str:
         """脚标段(固定顺序,空段跳):
@@ -149,15 +154,15 @@ class FooterText:
             menu:       model · 菜单 X 用时 t
         """
         parts: list[str] = []
+        # 1) menu 卡: {label} 用时 T (无 dot, 无 ctx, 无回答用时)
         if self.state == "menu":
-            if self.model:
-                parts.append(self.model)
             if self.menu_label:
                 parts.append(
                     f"{self.menu_label} 用时 "
                     f"{_fmt_short_time(self.menu_elapsed_s)}"
                 )
             return " · ".join(parts)
+        # 2) bg_frozen: 🟡 正在后台回答 [· compact 用时 T]
         if self.state == "bg_frozen":
             parts.append("🟡 正在后台回答")
             if self.menu_label:
@@ -166,20 +171,22 @@ class FooterText:
                     f"{_fmt_short_time(self.menu_elapsed_s)}"
                 )
             return " · ".join(parts)
-        # fg_running / terminal:dot 黏在第一段(model 或纯 dot)
-        dot = "🟢" if self.state == "terminal" else "🟡"
-        head = f"{dot} {self.model}" if self.model else dot
-        parts.append(head)
-        if self.ctx_max > 0:
-            parts.append(
-                f"上下文 {_fmt_k(self.ctx_used)}/{_fmt_k(self.ctx_max)}"
-            )
+        # 3) fg_running / 4) terminal: 🟡/🟢 model · 上下文 · 回答用时
+        # **三者绑定出现**:任何一个还没就绪就不渲染 footer(避免出现裸的
+        # "🟡 · 回答用时 0s")。**不带 menu 段**。
+        if not self.model or self.ctx_max <= 0:
+            return ""
+        if self.cancelled:
+            dot = "🔴"
+        elif self.state == "terminal":
+            dot = "🟢"
+        else:
+            dot = "🟡"
+        parts.append(f"{dot} {self.model}")
+        parts.append(
+            f"上下文 {_fmt_k(self.ctx_used)}/{_fmt_k(self.ctx_max)}"
+        )
         parts.append(f"回答用时 {_format_elapsed(self.elapsed_s)}")
-        if self.menu_label:
-            parts.append(
-                f"菜单 {self.menu_label} 用时 "
-                f"{_fmt_short_time(self.menu_elapsed_s)}"
-            )
         return " · ".join(parts)
 
 
@@ -280,8 +287,10 @@ def finalize_answer(sec: AnswerSection, *, final_text: str) -> None:
 
     If ``final_text`` is empty, preserve whatever has been accumulated
     (后台 run 在 detach 期间通过 model_delta 累积的答案不应被空 ph_replaced 抹掉)。
+    若已被 cancel,保留 cancelled 状态 — finalize 不能把"已取消"覆盖成"完成"。
     """
-    sec.state = "terminal"
+    if sec.state != "cancelled":
+        sec.state = "terminal"
     if final_text:
         sec.answer_text = final_text
 
@@ -295,29 +304,33 @@ def cancel_answer(sec: AnswerSection) -> None:
 
 
 def compute_top_buttons(state: "UnifiedCardState") -> tuple[ButtonRow, ...]:
-    """Top button rules per spec §5.
+    """Top button rules。
 
-    - detached / terminal: no buttons.
-    - answer.streaming (regardless of compact): ⏹ 停止 / ➡ 后台.
-      compact cancel is suppressed because cancelling re-wakes the run.
-    - compact.input|streaming alone (no answer running): single 取消.
-    - otherwise: none.
+    - terminal: 无按钮
+    - 前台 + answer.streaming: "取消回答" + "后台回答"
+    - 后台(detached) + answer 未终止: "取消回答"(用户可取消后台 run)
+    - compact 单独运行: "取消"
+    - otherwise: 无
     """
-    if state.detached or state.terminal:
+    if state.terminal:
         return ()
-    a_running = state.answer is not None and state.answer.state == "streaming"
+    a_alive = (state.answer is not None
+               and state.answer.state in ("streaming", "detached"))
     c_running = (
         state.compact is not None
         and state.compact.state in ("input", "streaming")
     )
-    if a_running:
-        run_id = state.ph_run_id or ""
+    run_id = state.ph_run_id or ""
+    if a_alive:
+        cancel_btn = Button(
+            text="取消回答", send=f"/cancel {run_id}".strip())
+        if state.detached:
+            return (ButtonRow(buttons=(cancel_btn,)),)
         return (ButtonRow(buttons=(
-            Button(text="⏹ 停止", send=f"/cancel {run_id}".strip()),
-            Button(text="➡ 后台", send=None),
+            cancel_btn,
+            Button(text="后台回答", send=None),
         )),)
     if c_running:
-        run_id = state.ph_run_id or ""
         return (ButtonRow(buttons=(
             Button(text="取消", send=f"/compact_cancel {run_id}".strip()),
         )),)
@@ -325,16 +338,14 @@ def compute_top_buttons(state: "UnifiedCardState") -> tuple[ButtonRow, ...]:
 
 
 def apply_detach(state: "UnifiedCardState") -> None:
-    """Detach transition: clear top buttons, freeze footer, mark answer detached.
-
-    Content preserved; renderer collapses based on state. Compact section
-    untouched (a parallel compact run continues to update independently).
+    """Detach transition: mark answer detached, freeze footer, refresh buttons。
+    保留"取消回答"按钮在 bg 卡顶部(用户可取消后台 run)。
     """
     state.detached = True
     if state.answer is not None:
         detach_answer(state.answer)
     state.footer.state = "bg_frozen"
-    state.top_buttons = ()
+    state.top_buttons = compute_top_buttons(state)
 
 
 def apply_ph_replaced(
@@ -343,14 +354,20 @@ def apply_ph_replaced(
     final_answer: str,
     ctx_used: int,
     elapsed_s: int,
+    cancelled: bool = False,
 ) -> None:
     """Terminal transition triggered by ph_replaced.
 
     Replaces answer with final text, restores ctx in footer, clears buttons.
     Compact section is left as-is (if completed it stays completed).
+    cancelled=True 时 footer 红点 + answer 状态保留 cancelled。
     """
+    if state.detached:
+        state.terminal_from_bg = True
     state.terminal = True
     state.detached = False
+    if cancelled:
+        state.footer.cancelled = True
     if state.answer is not None:
         finalize_answer(state.answer, final_text=final_answer)
     state.footer.state = "terminal"
@@ -421,3 +438,7 @@ class UnifiedCardState:
     footer: FooterText = field(default_factory=FooterText)
     detached: bool = False
     terminal: bool = False
+    terminal_from_bg: bool = False   # 后台回写终态(用于 renderer 默认折叠回答)
+    linkify_commands: bool = False   # True = 正文 /cmd 原生可点(TG),renderer 可隐 bottom_buttons
+    expand_mode: ExpandMode = "default"   # 全屏 thinking/tools/answer
+    expand_page: int = 0                  # expand 模式翻页

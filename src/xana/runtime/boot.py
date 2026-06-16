@@ -177,6 +177,9 @@ async def boot(
     await tools.register(GlobTool())
     await tools.register(GrepTool())
     await tools.register(BashTool())
+    # P5 e2e 测试用,验证完删除
+    from xana.tools.builtin.slow_write import SlowWriteTool
+    await tools.register(SlowWriteTool())
     await tools.register(ToolSearchTool(tool_registry=tools))
     scheduler = FileSchedulerService(
         path=Path.home() / ".xana" / "scheduled_tasks.json", session_id="default")

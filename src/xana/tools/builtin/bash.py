@@ -9,6 +9,8 @@ with ``failure_kind="timeout"``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import signal
 
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
@@ -64,6 +66,13 @@ _SPEC = ToolSpec(
 
 
 class BashTool(Tool):
+    # write 类工具:内部维护活跃子进程 + 2s grace。cancel() 发 SIGTERM,2s 未退则 SIGKILL。
+    _GRACE_S = 2.0
+
+    def __init__(self) -> None:
+        # call_id → 活跃子进程。execute 进入即登记,完成即清。
+        self._procs: dict[str, asyncio.subprocess.Process] = {}
+
     def spec(self) -> ToolSpec:
         return _SPEC
 
@@ -87,18 +96,29 @@ class BashTool(Tool):
             stderr=asyncio.subprocess.PIPE,
             cwd=context.cwd,
         )
+        self._procs[invocation.call_id] = proc
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return ToolResult(
-                ok=False, content=None,
-                error=f"timeout after {timeout}s",
-                failure_kind="timeout",
-                rendered=f"[Bash timeout] command exceeded {timeout}s",
-                exit_code=-1,
-            )
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return ToolResult(
+                    ok=False, content=None,
+                    error=f"timeout after {timeout}s",
+                    failure_kind="timeout",
+                    rendered=f"[Bash timeout] command exceeded {timeout}s",
+                    exit_code=-1,
+                )
+            except asyncio.CancelledError:
+                # 外层 task.cancel() 兜底强杀(grace 已过期或 read_only 路径)。
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                await proc.wait()
+                raise
+        finally:
+            self._procs.pop(invocation.call_id, None)
 
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")
@@ -130,7 +150,19 @@ class BashTool(Tool):
         return result.rendered or ""
 
     async def cancel(self, call_id: str) -> None:
-        return None
+        """SIGTERM → 等 grace → SIGKILL。子进程退出后 execute 的 wait_for/
+        communicate 会自然返回,ToolExecutor 拿到带 exit_code 的结果。"""
+        proc = self._procs.get(call_id)
+        if proc is None or proc.returncode is not None:
+            return
+        with contextlib.suppress(ProcessLookupError):
+            proc.send_signal(signal.SIGTERM)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=self._GRACE_S)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            await proc.wait()
 
 
 def _render_bash_result(stdout: str, stderr: str, exit_code: int, truncated: bool) -> str:

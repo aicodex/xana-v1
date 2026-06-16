@@ -13,6 +13,7 @@ dependencies = [
     "croniter>=2.0",
     "ddgs>=9.0",
     "textual>=0.85",
+    "telegramify-markdown>=1.2.0",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +23,10 @@ feishu-ws = ["lark-oapi>=1.4"]
 [project.scripts]
 xana = "xana.cli.xana:main"
 xanac = "xana.cli.xanac:main"
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [build-system]
 requires = ["setuptools>=61"]

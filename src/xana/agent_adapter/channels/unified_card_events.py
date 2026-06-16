@@ -111,11 +111,13 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
         name = str(payload.get("tool_name", "") or "")
         call_id = str(payload.get("call_id", "") or "")
         args = payload.get("input") or {}
-        header = _tool_header(name, args)
+        summary = _tool_summary(args)
+        header = _make_tool_header(name, summary, None)
         append_tool(
             state.answer,
             ToolBlock(name=name, header=header, body_md="",
-                      ok=True, call_id=call_id),
+                      ok=True, call_id=call_id,
+                      started_at=time.monotonic(), summary=summary),
         )
         return
     if kind == "tool_finished":
@@ -148,11 +150,28 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
                         target = i
                         break
             if target >= 0:
+                old = items[target]
+                cancelled = bool(payload.get("cancelled"))
+                if cancelled:
+                    status = "cancel"
+                elif ok:
+                    status = "ok"
+                else:
+                    status = "fail"
+                # harness 报的 elapsed_ms 优先,缺则用 card 自记起点。
+                ems = payload.get("elapsed_ms")
+                if isinstance(ems, (int, float)) and ems >= 0:
+                    elapsed_s = float(ems) / 1000.0
+                elif old.started_at:
+                    elapsed_s = time.monotonic() - old.started_at
+                else:
+                    elapsed_s = 0.0
+                new_header = _make_tool_header(
+                    old.name, old.summary, elapsed_s, status)
                 items[target] = ToolBlock(
-                    name=items[target].name,
-                    header=items[target].header,
-                    body_md=body, ok=ok,
-                    call_id=items[target].call_id,
+                    name=old.name, header=new_header,
+                    body_md=body, ok=ok, call_id=old.call_id,
+                    started_at=old.started_at, summary=old.summary,
                 )
                 setattr(state.answer, collection_name, tuple(items))
                 return
@@ -163,6 +182,8 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
     if kind == "cancelled":
         if state.answer is not None:
             cancel_answer(state.answer)
+            _mark_running_tools_cancelled(state.answer)
+        state.footer.cancelled = True   # footer 终态 dot 改 🔴
         state.top_buttons = compute_top_buttons(state)
         return
     if kind == "final":
@@ -197,6 +218,23 @@ def _apply_agent_only(state: UnifiedCardState, ev: AgentEvent) -> None:
         state.terminal = True
         state.footer.state = "menu"
         state.top_buttons = ()
+        # 命令结果可带 buttons(/help /model /effort 等):转 bottom_buttons。
+        # 飞书只能靠按钮回发命令;TG 也用按钮(linkify 由 TG 适配器在 render 时
+        # 决定是否隐去)。每项 = {"text": str, "send": str}。
+        rows_raw = payload.get("buttons") or ()
+        if rows_raw:
+            rows: list[ButtonRow] = []
+            for row in rows_raw:
+                btns = tuple(
+                    Button(text=str(b.get("text") or ""),
+                           send=str(b.get("send") or "") or None)
+                    for b in row if isinstance(b, dict)
+                )
+                if btns:
+                    rows.append(ButtonRow(buttons=btns))
+            state.bottom_buttons = tuple(rows)
+        if payload.get("linkify_commands"):
+            state.linkify_commands = True
         # 菜单/命令计时落点:command_progress 起 → final/error 停。
         if state.footer.menu_label:
             state.footer.menu_elapsed_s = _menu_elapsed(state, ev.session_id or "")
@@ -244,16 +282,21 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
             elapsed_s = int(payload.get("elapsed_s", state.footer.elapsed_s) or 0)
         except (TypeError, ValueError):
             elapsed_s = state.footer.elapsed_s
+        # cancelled 优先看 payload,再看 footer.cancelled(之前 HarnessEvent 已设)
+        was_cancelled = bool(payload.get("cancelled")) or state.footer.cancelled
         apply_ph_replaced(
             state,
             final_answer=final_text,
             ctx_used=ctx_used,
             elapsed_s=elapsed_s,
+            cancelled=was_cancelled,
         )
         return
     if kind == "run_completed_bg":
         # ph_replaced typically already fired; ensure terminal state.
         if not state.terminal and state.answer is not None:
+            if state.detached:
+                state.terminal_from_bg = True
             finalize_answer(state.answer, final_text=state.answer.answer_text)
             state.footer.state = "terminal"
             state.terminal = True
@@ -268,6 +311,18 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
         # compact section 出现 → 清掉 loading menu(command_progress 占位),
         # spec §3:section 互斥,只 compact 或 compact+回答,不应同时有菜单。
         state.menu = None
+        # /compact 单独卡:answer 段空(run_started 会预建 AnswerSection,
+        # 但 compact 没有真实回答内容)→ 抹掉 answer + footer 走 menu 态。
+        # 避免出现 "🟡 · 回答用时 0s"。
+        empty_answer = (
+            state.answer is None
+            or (not state.answer.answer_text
+                and not state.answer.thinking_text
+                and not state.answer.tools)
+        )
+        if empty_answer:
+            state.answer = None
+            state.footer.state = "menu"
         # 启动 "compact" 菜单段计时;footer 同时维持 fg/bg/terminal 状态,
         # 菜单段渲染在最右(解决 compact + bg 竞态)。
         state.footer.menu_label = "compact"
@@ -391,12 +446,105 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
 # --- helpers --------------------------------------------------------------
 
 
-def _tool_header(name: str, args: dict[str, Any]) -> str:
-    """Best-effort 'Read /foo.py' style header from tool name + arg hint."""
-    if not args:
-        return name
-    # common arg keys to surface
-    for key in ("path", "file", "cmd", "command", "url", "query", "pattern"):
+def _mark_running_tools_cancelled(sec: AnswerSection) -> None:
+    """把所有还没拿到 body 的 tool 改成 🚫(用 run cancel 兜底)。"""
+    now = time.monotonic()
+    for coll in ("tools", "_pending_tools_buf"):
+        items = list(getattr(sec, coll))
+        changed = False
+        for i, t in enumerate(items):
+            if t.body_md:
+                continue
+            elapsed = now - t.started_at if t.started_at else 0.0
+            new_header = _make_tool_header(
+                t.name, t.summary, elapsed, "cancel")
+            items[i] = ToolBlock(
+                name=t.name, header=new_header,
+                body_md=t.body_md, ok=False, call_id=t.call_id,
+                started_at=t.started_at, summary=t.summary,
+            )
+            changed = True
+        if changed:
+            setattr(sec, coll, tuple(items))
+
+
+_SUMMARY_MAX = 30  # 移动端 ~40 字/行,留出 emoji+name+elapsed 余量,保单行
+
+
+def _trim_path_like(s: str, cap: int) -> str:
+    """长字符串截前半段:`/home/xzp/project/long/path/file.py` → `…/long/path/file.py`。
+    优先保后部(用户更关心末段标识)。无 `/` 时退回末段截断。"""
+    if len(s) <= cap:
+        return s
+    if "/" in s:
+        keep = cap - 2  # 给 "…/" 留 2 位
+        tail = s[-keep:]
+        # 截到最近的 `/` 边界,避免砍在路径段中间
+        i = tail.find("/")
+        if 0 < i < keep - 4:
+            tail = tail[i:]
+        return "…" + tail
+    # 无路径分隔符 → 普通末段省略
+    return s[:cap - 1] + "…"
+
+
+def _tool_summary(args: dict[str, Any]) -> str:
+    """工具标题摘要(< 56 字)。
+    优先级:description(prompt 让模型给的一句话) > 关键路径/命令字段 > 第一个 kv。
+    路径长时从前半截断保末段。"""
+    # 1) description(bash/edit 等 prompt 里要求模型给的一行简述)
+    desc = str(args.get("description") or "").strip()
+    if desc:
+        desc = " ".join(desc.split())
+        if len(desc) > _SUMMARY_MAX:
+            desc = desc[:_SUMMARY_MAX - 1] + "…"
+        return desc
+    # 2) 路径/命令字段
+    s = ""
+    for key in ("path", "file_path", "file", "cmd", "command",
+                "url", "query", "pattern"):
         if key in args and args[key]:
-            return f"{name} {args[key]}"
-    return name
+            s = str(args[key])
+            break
+    if not s and args:
+        # 跳过已读过的 description 取第一个 kv
+        for k, v in args.items():
+            if k != "description" and v:
+                s = f"{k}={v}"
+                break
+    s = " ".join(s.split())
+    return _trim_path_like(s, _SUMMARY_MAX)
+
+
+def _fmt_tool_elapsed(secs: float) -> str:
+    """< 1s → Xms;1–60s → Xs / X.Ys;> 60s → XmYs。"""
+    if secs < 0:
+        secs = 0.0
+    if secs < 1.0:
+        return f"{int(secs * 1000)}ms"
+    if secs < 60.0:
+        return f"{secs:.1f}s" if secs < 10 else f"{int(secs)}s"
+    m, s = divmod(int(secs), 60)
+    return f"{m}m{s}s"
+
+
+def _make_tool_header(name: str, summary: str,
+                      elapsed_s: float | None,
+                      status: str = "") -> str:
+    """组合: ``<name>[ · <summary>][ · <elapsed>][ · <status>]``。
+    status ∈ {"", "ok", "fail", "cancel"};运行中传空串。"""
+    head = f"{name or '?'}"
+    if summary:
+        head += f" · {summary}"
+    if elapsed_s is not None:
+        head += f" · {_fmt_tool_elapsed(elapsed_s)}"
+    if status:
+        head += f" · {status}"
+    return head
+
+
+def _tool_header(name: str, args: dict[str, Any]) -> str:  # noqa: F841
+    """请求态标题(已废弃,现走 _make_tool_header(name, summary, None))。"""
+    return _make_tool_header(name, _tool_summary(args), None)
+
+

@@ -58,7 +58,10 @@ class FeishuConfig:
 
 
 class FeishuApiSender:
-    async def send_card(self, *, receive_id: str, card: dict) -> str:  # pragma: no cover
+    async def send_card(
+        self, *, receive_id: str, card: dict,
+        reply_message_id: str | None = None,
+    ) -> str:  # pragma: no cover
         raise NotImplementedError
 
     async def patch_card(self, *, message_id: str, card: dict) -> None:  # pragma: no cover
@@ -76,6 +79,8 @@ class _SessionBuffer:
     session_id: str = ""
     # card_id -> Card. card_id == run_id for PH cards; dedicated id for menus.
     cards: dict[str, Card] = field(default_factory=dict)
+    # 待用于下一次新卡片首次 send 的 reply_to(飞书原话引用框)。
+    pending_reply_to: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +173,10 @@ class FeishuAdapter(Adapter):
         if not await self._gate_pairing(sender_id, parsed.chat_id, parsed.text):
             return
         session_id = self._bindings.allocate(parsed.chat_id, prefix="feishu")
-        self._get_or_create_buffer(session_id).chat_id = parsed.chat_id
+        buf = self._get_or_create_buffer(session_id)
+        buf.chat_id = parsed.chat_id
+        # 记下用户消息 id,下一张新卡 send 时用 reply_to 引用
+        buf.pending_reply_to = parsed.message_id or None
         msg = InboundMessage(
             adapter_id=self.adapter_id,
             session_id=session_id,
@@ -281,8 +289,27 @@ class FeishuAdapter(Adapter):
         buf = self._get_or_create_buffer(session_id)
         card = buf.cards.get(card_id)
         if card is None:
+            await self._send_stale_notice(chat_id)
             return
         card.reveal_tools()
+
+    async def _send_stale_notice(self, chat_id: str) -> None:
+        """卡片不存在(/clear 后或重启后)→ 发个小卡告诉用户。
+        飞书没原生 toast,只能发一条新消息。"""
+        if self._api_sender is None:
+            return
+        notice = {
+            "schema": "2.0",
+            "config": {"width_mode": "compact"},
+            "body": {"elements": [
+                {"tag": "markdown",
+                 "content": "_此卡片已过期(/clear 后旧会话不可恢复)_"},
+            ]},
+        }
+        try:
+            await self._api_sender.send_card(receive_id=chat_id, card=notice)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Session binding helpers
@@ -388,8 +415,12 @@ class FeishuAdapter(Adapter):
             return
         schema = render_unified(card.state)
         if card.message_id is None:
+            # 首次 send 用 reply_to(显示用户原话引用框);后续 patch 不需要。
+            reply_to = buf.pending_reply_to
+            buf.pending_reply_to = None
             mid = await self._api_sender.send_card(
-                receive_id=buf.chat_id, card=schema
+                receive_id=buf.chat_id, card=schema,
+                reply_message_id=reply_to,
             )
             card.message_id = mid
         else:

@@ -164,16 +164,26 @@ class DefaultHarness(Harness):
         *,
         abort,
         read_only: bool,
+        tool: "Tool | None" = None,
+        call_id: str = "",
     ) -> ToolResult:
         """abort 触发时:
-           - read_only=True → 立即取消;返回 cancelled ToolResult
+           - 先调用 ``tool.cancel(call_id)`` 让工具做协作式清理(write 工具可在
+             此设内部 flag 触发自身的 grace + 强杀循环;read_only 工具默认 no-op,
+             由下方 task.cancel 兜底)。
+           - read_only=True → 立即取消 task;返回 cancelled ToolResult
            - read_only=False → 等 2.0s 宽限;完成则正常写,超时强杀 + 注入 synthetic warning
         """
         task = asyncio.create_task(execute_coro_factory())
         poll = 0.02
-        # Phase 1: wait for completion or abort.
+        signaled = False
         while not task.done():
             if getattr(abort, "aborted", False):
+                # 先发协作式取消信号(只发一次)。
+                if not signaled and tool is not None:
+                    signaled = True
+                    with contextlib.suppress(Exception):
+                        await tool.cancel(call_id)
                 if read_only:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -184,7 +194,6 @@ class DefaultHarness(Harness):
                         failure_kind="cancelled",
                         error="abort during read-only tool",
                     )
-                # Non-read-only: 2s grace, finished result writes normally.
                 try:
                     result = await asyncio.wait_for(
                         asyncio.shield(task), _TOOL_ABORT_GRACE_SECONDS
@@ -312,6 +321,8 @@ class DefaultHarness(Harness):
                     lambda: tool.execute(prepared, tool_ctx),
                     abort=context.abort,
                     read_only=bool(getattr(tool.spec(), "read_only", False)),
+                    tool=tool,
+                    call_id=call_id,
                 )
                 result = await tool.post_tool_use(prepared, tool_ctx, result)
             rendered = await tool.render_result(result)
@@ -677,6 +688,23 @@ class DefaultHarness(Harness):
         turn_start = time.monotonic()
         compact_attempted = False
 
+        # 早发一次 usage_progress:让 adapter footer 立刻拿到 model+ctx_max
+        # (否则要等模型首个 usage 事件,footer 会有几秒空窗只有"🟡 回答用时 0s")。
+        if context.progress_sink is not None:
+            await context.progress_sink.report(ProgressEvent(
+                session_id=session_id, run_id=run_id,
+                message="usage_progress",
+                payload={
+                    "kind": "usage_progress",
+                    "session_id": session_id,
+                    "model": context.model,
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "elapsed_s": 0,
+                    "context_window": context.config_snapshot.get("context_window"),
+                },
+            ))
+
         for turn_index in range(_MAX_TURNS):
             if context.abort.aborted:
                 await self._fire_turn_end(
@@ -820,6 +848,10 @@ class DefaultHarness(Harness):
 
             try:
                 async for event in client.stream(model_request):
+                    # 用户在 model streaming 中点取消 → 立刻退出生成循环,
+                    # 否则要等模型自己 done 才被 outer loop 抓到,体感很慢。
+                    if context.abort.aborted:
+                        break
                     if event.kind == "text_delta":
                         delta = event.payload.get("text", "")
                         # thinking-channel deltas stream out as model_delta
@@ -915,11 +947,14 @@ class DefaultHarness(Harness):
                         "input": dict(tc["input"]),
                     },
                 )
+                _tool_t0 = time.monotonic()
                 result, rendered = await self._dispatch_tool(
                     tc, context, session_id, agent_name, run_id,
                     ext_tools=ext_tools, ext=ext,
                     thread_store=thread_store, turn_store=turn_store,
                 )
+                _tool_elapsed_ms = int(
+                    (time.monotonic() - _tool_t0) * 1000)
                 tool_meta: dict[str, Any] = {
                     "tool_use_id": tc["call_id"],
                     "tool_name": tc["tool_name"],
@@ -952,6 +987,8 @@ class DefaultHarness(Harness):
                         "call_id": tc["call_id"],
                         "input": dict(tc["input"]),
                         "ok": result.ok,
+                        "cancelled": result.failure_kind == "cancelled",
+                        "elapsed_ms": _tool_elapsed_ms,
                     },
                 )
         else:

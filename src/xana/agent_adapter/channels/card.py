@@ -134,21 +134,64 @@ class Card:
         finalize = self._is_finalize_after(kind)
         return self._schedule(finalize=finalize)
 
+    def set_answer_page(self, page: int) -> asyncio.Task[Any] | None:
+        """翻页:更新 answer.page,触发一次 patch。"""
+        if self.state.answer is None:
+            return None
+        self.state.answer.page = max(0, page)
+        return self._schedule(finalize=True)
+
+    def set_expand(self, section: str) -> asyncio.Task[Any] | None:
+        """切到 expand 模式 (thinking/tools/answer);其它段隐藏。"""
+        if section not in ("thinking", "tools", "answer"):
+            return None
+        self.state.expand_mode = section  # type: ignore[assignment]
+        self.state.expand_page = 0
+        return self._schedule(finalize=True)
+
+    def set_expand_page(self, page: int) -> asyncio.Task[Any] | None:
+        """expand 模式下翻页。"""
+        if self.state.expand_mode == "default":
+            return None
+        self.state.expand_page = max(0, page)
+        return self._schedule(finalize=True)
+
+    def clear_expand(self) -> asyncio.Task[Any] | None:
+        """从 expand 模式返回默认视图。"""
+        self.state.expand_mode = "default"
+        self.state.expand_page = 0
+        return self._schedule(finalize=True)
+
     def reveal_tools(self) -> asyncio.Task[Any] | None:
-        """加载剩余工具按钮回调。终态卡也允许 reveal(用户在已完成任务的卡片上
-        点'显示剩余 N 工具结果',应当展开。)"""
+        """加载剩余工具按钮回调:数据落地 + finalize 强制 patch。
+        finalize 只重置 _last_flush_mono,后续 model_delta 仍按节流刷新。"""
         if self.state.answer is None:
             return None
         load_pending_tools(self.state.answer)
         return self._schedule(finalize=True)
 
     def freeze(self) -> asyncio.Task[Any] | None:
-        """detach 瞬间:折叠骨架,冻结后续刷新直到 terminalize。"""
+        """detach 瞬间:折叠骨架,冻结后续刷新直到 terminalize。
+        top_buttons 由 apply_detach 内部调 compute_top_buttons 决定。
+        用户感受要求"瞬时" → 不等当前 in-flight patch 完成,立刻发 freeze。"""
         if self.terminal:
             return None
         apply_detach(self.state)
-        self.state.top_buttons = ()
-        return self._schedule(finalize=True)
+        if self._deliver is None:
+            return None
+        deliver = self._deliver
+
+        async def _runner() -> None:
+            await self.coalescer.finalize(
+                lambda: deliver(self), wait_inflight=False)
+
+        try:
+            task = asyncio.create_task(_runner())
+        except RuntimeError:
+            return None
+        if self._task_sink is not None:
+            self._task_sink(task)
+        return task
 
     def terminalize(
         self,
@@ -202,7 +245,8 @@ class Card:
         return False
 
     def _refresh_top_buttons(self) -> None:
-        if self.terminal or self.state.detached:
+        # terminal → 无按钮;detached → 由 compute_top_buttons 决定(保留取消)。
+        if self.terminal:
             self.state.top_buttons = ()
         else:
             self.state.top_buttons = compute_top_buttons(self.state)

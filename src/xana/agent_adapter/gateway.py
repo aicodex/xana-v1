@@ -202,6 +202,9 @@ class DefaultAgentGateway(AgentGateway):
                 ir for ir in self._inflight.get(inbound.session_id, [])
                 if ir.run_id != new_run.run_id
             ]
+            # 先看 abort 是否被触发(决定 ph_replaced 该不该带 cancelled 标记),
+            # 再 pop 信号 — pop 顺序反了会丢标记。
+            was_cancelled = bool(abort_signal.aborted)
             self._abort_signals.pop(new_run.run_id, None)
             note = getattr(adapter, "note_progress", None)
             if note is not None:
@@ -210,6 +213,7 @@ class DefaultAgentGateway(AgentGateway):
                     "session_id": inbound.session_id,
                     "run_id": new_run.run_id,
                     "mode": "full",
+                    "cancelled": was_cancelled,
                 })
                 if not new_run.is_attached:
                     # 这个 run 在跑的过程中被新的 submit detach 掉了 → 完成时通知 adapter

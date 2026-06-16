@@ -30,17 +30,30 @@ class HttpxTelegramClient(TelegramApiClient):
         text: str,
         parse_mode: str | None = None,
         reply_markup: dict | None = None,
+        reply_to_message_id: int | None = None,
+        reply_quote: str | None = None,
     ) -> int:
-        resp = await self._client.post(
-            "/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": text,
-                "link_preview_options": {"is_disabled": True},
-                **({"parse_mode": parse_mode} if parse_mode else {}),
-                **({"reply_markup": reply_markup} if reply_markup else {}),
-            },
-        )
+        body: dict = {
+            "chat_id": chat_id,
+            "text": text,
+            "link_preview_options": {"is_disabled": True},
+        }
+        if parse_mode:
+            body["parse_mode"] = parse_mode
+        if reply_markup:
+            body["reply_markup"] = reply_markup
+        if reply_to_message_id is not None:
+            rp: dict = {
+                "message_id": reply_to_message_id,
+                "allow_sending_without_reply": True,
+            }
+            if reply_quote:
+                # 客户端引用框只显示前 100 字(避免长消息引用框压屏幕)。
+                # quote 上限 1024 字,quote_position=0 从原消息头开始截。
+                rp["quote"] = reply_quote[:100]
+                rp["quote_position"] = 0
+            body["reply_parameters"] = rp
+        resp = await self._client.post("/sendMessage", json=body)
         resp.raise_for_status()
         data = resp.json()
         if not data.get("ok"):
@@ -70,9 +83,14 @@ class HttpxTelegramClient(TelegramApiClient):
         # Telegram answers 400 when the new text equals the current text;
         # that's a no-op for us, not an error.
         if resp.status_code == 400:
-            desc = resp.json().get("description") or ""
+            desc = ""
+            try:
+                desc = resp.json().get("description") or ""
+            except Exception:
+                desc = resp.text[:300]
             if "message is not modified" in desc:
                 return
+            raise RuntimeError(f"Telegram editMessageText 400: {desc}")
         resp.raise_for_status()
         data = resp.json()
         if not data.get("ok"):
@@ -123,6 +141,22 @@ class HttpxTelegramClient(TelegramApiClient):
             _logger.warning("telegram: setMyCommands not ok: %s", data.get("description"))
             return False
         return True
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def delete_webhook(self, *, drop_pending_updates: bool = False) -> None:
+        """无 webhook 时也安全调用:它会清服务端 long-poll 锁 + 可选丢 pending,
+        快速恢复 sync 重启之后的 409 Conflict 状态。"""
+        resp = await self._client.post(
+            "/deleteWebhook",
+            json={"drop_pending_updates": drop_pending_updates},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        _logger.warning(
+            "telegram: deleteWebhook ok=%s desc=%s",
+            data.get("ok"), data.get("description"))
 
     async def get_updates(self, *, offset: int | None, timeout: int) -> list[dict]:
         params: dict = {"timeout": timeout}

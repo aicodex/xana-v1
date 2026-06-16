@@ -171,7 +171,15 @@ class DefaultCommandRouter(CommandRouter):
         snapshot = await self.active_context_store.get(inbound.session_id, "chat")
         live = messages_since_boundary(snapshot.messages) if snapshot else ()
         if not live:
-            return CommandResult(ok=False, message="无可压缩内容")
+            # 空上下文(常见于 /clear 之后)→ 给个 run_id 让 gateway 渲菜单卡,
+            # 否则 /compact 是 silent_cmd 不预建卡,error 路径会 card_id 空 → 用户看不到。
+            self._compact_seq += 1
+            empty_rid = f"compactcmd-{inbound.session_id}-{self._compact_seq}"
+            return CommandResult(
+                ok=False,
+                message="无可压缩内容(请先发条消息再 /compact)",
+                payload={"run_id": empty_rid},
+            )
         model = self.model
         if self.session_config_store is not None:
             cfg = await self.session_config_store.get(inbound.session_id)
@@ -309,6 +317,7 @@ class DefaultCommandRouter(CommandRouter):
                     "session_id": inbound.session_id,
                     "run_id": run_id,
                     "summary": summary,
+                    "compacted_n": len(live),
                 })
             # compact 完成:visual 已由 compact_finalized note_progress 落到
             # PH 卡上(compact 段切完成态)。
@@ -460,10 +469,42 @@ class DefaultCommandRouter(CommandRouter):
         return CommandResult(ok=True, message=f"搜索引擎切换为 {new.search_provider}")
 
     async def _cmd_cancel(self, inbound: InboundMessage, args: str) -> CommandResult:
+        """/cancel <run_id> → 取消该 run。
+        /cancel(无参) → 列出当前 session 所有 running Placeholder,渲染菜单。
+        每项点击 send `/cancel <run_id>` 取消该后台 run(类比 /attach)。"""
         if self.gateway is None:
             return CommandResult(ok=False, message="gateway 未注入")
-        await self.gateway.cancel(inbound.session_id, None)
-        return CommandResult(ok=True, message="[cancel] 已请求取消当前 turn")
+        rid = (args or "").strip()
+        if rid:
+            await self.gateway.cancel(inbound.session_id, rid)
+            return CommandResult(
+                ok=True, message=f"[cancel] 已请求取消 {rid}")
+        # 无参 → 列出可取消的后台 run
+        from xana.memory.contracts import Placeholder
+        if self.active_context_store is None:
+            return CommandResult(ok=False, message="active_context_store 未配置")
+        snap = await self.active_context_store.snapshot(
+            inbound.session_id, "chat")
+        sends: list[dict[str, Any]] = []
+        labels: list[str] = []
+        for m in snap:
+            if isinstance(m, Placeholder) and m.status == "running":
+                sends.append({
+                    "text": f"取消 {m.label[:30]}",
+                    "send": f"/cancel {m.run_id}",
+                })
+                labels.append(m.label)
+        if not sends:
+            return CommandResult(
+                ok=True, message="没有后台运行可取消",
+                payload={"triggers_turn": False})
+        # 一列一个按钮
+        rows = [[s] for s in sends]
+        text_lines = ["选择要取消的后台运行:"] + [f"  {l}" for l in labels]
+        return CommandResult(
+            ok=True, message="\n".join(text_lines),
+            payload={"triggers_turn": False, "buttons": rows},
+        )
 
     async def _cmd_attach(self, inbound: InboundMessage, args: str) -> CommandResult:
         """列出当前 session 所有 running Placeholder,渲染为菜单(payload.attach_choices)。

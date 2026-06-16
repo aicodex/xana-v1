@@ -105,6 +105,9 @@ P1 持久化地基 ── P2 单写者+Run/PH 模型 ── P3 双模+/async+后
 
 ### Phase 5 —— Cancel / Resume / 重启恢复未完成 run + /resume
 
+> 📌 **空白点已拍板(2026-06-14)** → 见 [`../specs/2026-06-14-p5-p6-decisions.md`](../specs/2026-06-14-p5-p6-decisions.md) §P5。
+> 关键修订:`/compact` **本期不可取消**(原 §Phase 5 "compact_cancel 特殊 turn" 段作废);不引入 `triggers_turn` 通用字段,/compact 由菜单拦截器特判分流。
+
 **目标**:turn 级 cancel(无工具→止 LLM;只读工具→立即 abort,resume=重跑该工具;写入工具→等 2s,完成则正常写,超时强杀+synthetic warning,resume=fork 新 run);冻结回写 main(partial+打断原因+warning);`/resume` 列表 + 恢复(防重入);启动扫 `runs/`(completed 未消费→替换 PH;跑一半→续跑或标记中断)+ main 中断 PH;graceful shutdown(SIGTERM 先 cancel 后台 run ≤2s 再 flush);非用户异常(network/timeout/session_lost)不入 /resume。
 
 **命令卡的取消按钮策略(本期一并定):**
@@ -117,6 +120,13 @@ P1 持久化地基 ── P2 单写者+Run/PH 模型 ── P3 双模+/async+后
 ---
 
 ### Phase 6 —— async 感知 compact
+
+> 📌 **空白点已拍板(2026-06-14)** → 见 [`../specs/2026-06-14-p5-p6-decisions.md`](../specs/2026-06-14-p5-p6-decisions.md) §P6。
+> 关键修订:
+> - **PH 存储改两节点**(MemoryMessage(user, label) + Placeholder),fork_before 卡在 Placeholder 之前 — 仅普通 chat run 适用,compact run 永不追加 user。
+> - 手动 `/compact` 分两种:有 PH → 不创任何节点直接 replace_range;无 PH → 只创 Placeholder 末尾占位防插队,完成时替换为 summary。
+> - **fork_point 未前移则跳过 main compact**,改触发子分支 compact;后者不限次,触发即打 logger.warning(原 30min PH warning 作废)。
+> - post-compact 引用 main.jsonl 原样抄 CC(纯文本提示)。
 
 **目标**:compact 走 write queue 做 `replace_range`(按 msg_id 不按索引,避免与 PH 替换并发冲突);fork_before = 最早 running PH 位置,每次全量覆盖;每个 run 只触发一次 fork_before compact;手动 `/compact` = 开一个无 user 问题的空 run(同子分支 compact 流程);前置 PH 超 30min 未完成 → warning 日志(纯观测);post-compact 消息引用 main.jsonl(抄 CC)。
 

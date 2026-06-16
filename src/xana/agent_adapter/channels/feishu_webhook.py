@@ -109,18 +109,32 @@ class _HttpxFeishuSender:
             self._token_expires_at = time.monotonic() + int(data.get("expire", 7200))
             return self._token
 
-    async def send_card(self, *, receive_id: str, card: dict) -> str:
+    async def send_card(
+        self, *, receive_id: str, card: dict,
+        reply_message_id: str | None = None,
+    ) -> str:
         token = await self._ensure_token()
-        resp = await self._client.post(
-            "/open-apis/im/v1/messages",
-            params={"receive_id_type": "chat_id"},
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "receive_id": receive_id,
-                "msg_type": "interactive",
-                "content": json.dumps(card),
-            },
-        )
+        if reply_message_id:
+            # Reply 端点:把卡片作为对原消息的回复发出,客户端自动显示 quote 框。
+            resp = await self._client.post(
+                f"/open-apis/im/v1/messages/{reply_message_id}/reply",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "msg_type": "interactive",
+                    "content": json.dumps(card),
+                },
+            )
+        else:
+            resp = await self._client.post(
+                "/open-apis/im/v1/messages",
+                params={"receive_id_type": "chat_id"},
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "receive_id": receive_id,
+                    "msg_type": "interactive",
+                    "content": json.dumps(card),
+                },
+            )
         resp.raise_for_status()
         data = resp.json()
         if data.get("code", 0) != 0:
@@ -136,7 +150,10 @@ class _HttpxFeishuSender:
             headers={"Authorization": f"Bearer {token}"},
             json={"content": json.dumps(card)},
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"Feishu patch_card HTTP {resp.status_code}: {resp.text[:500]}"
+            )
         data = resp.json()
         if data.get("code", 0) != 0:
             raise RuntimeError(

@@ -75,6 +75,8 @@ class TelegramApiClient:
         text: str,
         parse_mode: str | None = None,
         reply_markup: dict | None = None,
+        reply_to_message_id: int | None = None,
+        reply_quote: str | None = None,
     ) -> int:  # pragma: no cover
         raise NotImplementedError
 
@@ -102,6 +104,11 @@ class TelegramApiClient:
     async def set_my_commands(self, commands: list[dict]) -> bool:  # pragma: no cover
         raise NotImplementedError
 
+    async def delete_webhook(
+        self, *, drop_pending_updates: bool = False,
+    ) -> None:  # pragma: no cover
+        raise NotImplementedError
+
 
 # ---------------------------------------------------------------------------
 # Per-card slot
@@ -114,6 +121,10 @@ class _SessionBuffer:
     session_id: str = ""
     # card_id -> Card. card_id == run_id for PH cards; dedicated id for menus.
     cards: dict[str, Card] = field(default_factory=dict)
+    # 待用于下一次新卡片首次 send 的 reply_to(用户原话引用框)。
+    pending_reply_to: int | None = None
+    # 引用框只显示前 100 字(长消息引用框压屏幕)。
+    pending_reply_quote: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +215,6 @@ class TelegramAdapter(Adapter):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                # Redact the bot token: it is embedded in the request URL,
-                # so str(exc) (httpx errors include the URL) may leak it.
                 _logger.warning(
                     "telegram: getUpdates failed (%s): %s — retrying in %ss",
                     type(exc).__name__,
@@ -214,6 +223,12 @@ class TelegramAdapter(Adapter):
                 )
                 await asyncio.sleep(_POLL_BACKOFF_S)
                 continue
+            if updates:
+                _logger.warning(
+                    "telegram: got %d update(s) — first kind=%s",
+                    len(updates),
+                    next(iter(updates[0].keys() - {"update_id"}), "?"),
+                )
             for upd in updates:
                 try:
                     await self._dispatch_update(upd)
@@ -258,7 +273,15 @@ class TelegramAdapter(Adapter):
             return
 
         session_id = self._bindings.allocate(chat_id, prefix="tg")
-        self._get_or_create_buffer(session_id).chat_id = chat_id
+        buf = self._get_or_create_buffer(session_id)
+        buf.chat_id = chat_id
+        # 记下用户消息 id 和前 100 字引用片段,下一张新卡 send 时设 reply_to
+        try:
+            buf.pending_reply_to = (
+                int(message_id) if message_id is not None else None)
+        except (TypeError, ValueError):
+            buf.pending_reply_to = None
+        buf.pending_reply_quote = (text[:100] if text else None) or None
 
         user_id = str(user_id_int) if user_id_int is not None else ""
         inbound = InboundMessage(
@@ -307,14 +330,16 @@ class TelegramAdapter(Adapter):
         user_id_int = from_info.get("id")
         cq_id = cq.get("id")
 
-        async def _ack() -> None:
+        async def _ack(text: str = "") -> None:
             if self._api_client is not None and cq_id:
                 try:
                     await self._api_client.answer_callback_query(
-                        callback_query_id=str(cq_id)
+                        callback_query_id=str(cq_id), text=text or None,
                     )
                 except Exception:
                     pass
+
+        _STALE_MSG = "此卡片已过期(/clear 后旧会话不可恢复)"
 
         if not chat_id:
             await _ack()
@@ -340,6 +365,75 @@ class TelegramAdapter(Adapter):
             card = buf.cards.get(card_id)
             if card is not None:
                 card.reveal_tools()
+                await _ack()
+            else:
+                await _ack(_STALE_MSG)
+            return
+
+        if data.startswith("__page__:"):
+            try:
+                _, card_id, n_str = data.split(":", 2)
+                n = int(n_str)
+            except (ValueError, TypeError):
+                await _ack()
+                return
+            session_id = self._bindings.allocate(chat_id, prefix="tg")
+            buf = self._get_or_create_buffer(session_id)
+            card = buf.cards.get(card_id)
+            if card is not None:
+                card.set_answer_page(n)
+                await _ack()
+            else:
+                await _ack(_STALE_MSG)
+            return
+
+        if data.startswith("__expand__:"):
+            # __expand__:<card_id>:<section>
+            try:
+                _, card_id, section = data.split(":", 2)
+            except ValueError:
+                await _ack()
+                return
+            session_id = self._bindings.allocate(chat_id, prefix="tg")
+            buf = self._get_or_create_buffer(session_id)
+            card = buf.cards.get(card_id)
+            if card is not None:
+                card.set_expand(section)
+                await _ack()
+            else:
+                await _ack(_STALE_MSG)
+            return
+
+        if data.startswith("__expand_page__:"):
+            try:
+                _, card_id, n_str = data.split(":", 2)
+                n = int(n_str)
+            except (ValueError, TypeError):
+                await _ack()
+                return
+            session_id = self._bindings.allocate(chat_id, prefix="tg")
+            buf = self._get_or_create_buffer(session_id)
+            card = buf.cards.get(card_id)
+            if card is not None:
+                card.set_expand_page(n)
+                await _ack()
+            else:
+                await _ack(_STALE_MSG)
+            return
+
+        if data.startswith("__expand_back__:"):
+            card_id = data.split(":", 1)[1]
+            session_id = self._bindings.allocate(chat_id, prefix="tg")
+            buf = self._get_or_create_buffer(session_id)
+            card = buf.cards.get(card_id)
+            if card is not None:
+                card.clear_expand()
+                await _ack()
+            else:
+                await _ack(_STALE_MSG)
+            return
+
+        if data == "__noop__":
             await _ack()
             return
 
@@ -473,10 +567,17 @@ class TelegramAdapter(Adapter):
         html, kb = render_unified(card.state)
         markup: dict | None = {"inline_keyboard": kb} if kb else None
         if card.message_id is None:
+            # 首次 send 用 reply_to(显示用户原话 quote 框);随后 edit 不带。
+            reply_to = buf.pending_reply_to
+            reply_quote = buf.pending_reply_quote
+            buf.pending_reply_to = None
+            buf.pending_reply_quote = None
             try:
                 mid = await self._api_client.send_message(
                     chat_id=buf.chat_id, text=html,
-                    parse_mode="HTML", reply_markup=markup,
+                    parse_mode="MarkdownV2", reply_markup=markup,
+                    reply_to_message_id=reply_to,
+                    reply_quote=reply_quote,
                 )
             except Exception as exc:
                 _logger.warning(
@@ -490,7 +591,7 @@ class TelegramAdapter(Adapter):
                 await self._api_client.edit_message_text(
                     chat_id=buf.chat_id,
                     message_id=int(card.message_id),
-                    text=html, parse_mode="HTML",
+                    text=html, parse_mode="MarkdownV2",
                     reply_markup=markup,
                 )
             except Exception as exc:
@@ -504,7 +605,7 @@ class TelegramAdapter(Adapter):
                 try:
                     mid = await self._api_client.send_message(
                         chat_id=buf.chat_id, text=html,
-                        parse_mode="HTML", reply_markup=markup,
+                        parse_mode="MarkdownV2", reply_markup=markup,
                     )
                     card.message_id = str(mid)
                 except Exception:

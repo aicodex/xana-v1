@@ -2,17 +2,34 @@
 
 独立模块,不导入 feishu_card.py;输出可直接喂 lark send_message / patch_message。
 Section 顺序固定:top buttons -> compact -> answer -> menu -> bottom buttons -> footer。
+
+飞书卡内容上限约 30KB,本 renderer 给每 tool body 限 800 字,避免超限。
+不实现 expand 模式(TG-only)—— state.expand_mode 字段在飞书侧直接忽略。
 """
 from __future__ import annotations
+
+import re
 
 from xana.agent_adapter.channels.unified_card import (
     AnswerSection,
     Button,
     ButtonRow,
     CompactSection,
-    TOOLS_VISIBLE_LIMIT,
     UnifiedCardState,
 )
+
+
+# 飞书 markdown 会把 ![alt](url) / 单独 URL 当 image_key 解析,带未知 URL 直接
+# patch 400(200570 invalid image keys)。在 body 进卡前替换成纯文本链接。
+_RE_MD_IMAGE = re.compile(r"!\[([^\]\n]*)\]\(([^)\s\n]+)\)")
+
+
+def _sanitize_md(body: str) -> str:
+    """把 ![alt](url) 替换成 `[图片: url]` 纯文本,避开飞书 image_key 误判。"""
+    if not body:
+        return body
+    return _RE_MD_IMAGE.sub(
+        lambda m: f"[图片: {m.group(1) or m.group(2)}]", body)
 
 
 def _progress_bar(cells: int) -> str:
@@ -25,17 +42,22 @@ def _md(text: str) -> dict:
 
 
 def _panel(title: str, body_md: str, *, folded: bool = True) -> dict:
+    # 视觉提示:折叠时前缀 ▸,展开时前缀 ▾,让用户一眼看出能点。
+    # 注:lark v2 collapsible_panel 不接受 background_color/border/padding。
+    # body 走 _sanitize_md:避开飞书 markdown 把 ![](url) 当 image_key 触发 400。
+    arrow = "▸" if folded else "▾"
+    decorated = f"{arrow} {title}"
     return {
         "tag": "collapsible_panel",
         "expanded": not folded,
-        "header": {"title": {"tag": "markdown", "content": title}},
-        "elements": [_md(body_md or " ")],
+        "header": {"title": {"tag": "markdown", "content": decorated}},
+        "elements": [_md(_sanitize_md(body_md or " "))],
     }
 
 
 def _btn(b: Button, *, ph_run_id: str | None) -> dict:
     """飞书 card v2:button 点击 callback 必须包在 ``behaviors`` 里;
-    裸 ``value`` 在 v2 schema 下不触发,这就是用户报的"按钮报错"根因。
+    裸 ``value`` 在 v2 schema 下不触发(用户报的'按钮报错'根因)。
     """
     if b.send:
         value: dict = {"send_text": b.send}
@@ -65,16 +87,20 @@ def _btn_row(row: ButtonRow, *, ph_run_id: str | None) -> dict:
 
 
 def _render_compact(sec: CompactSection) -> list[dict]:
+    """一行进度条+状态;下方折叠"已压缩 N 条消息"。
+    不再分两行(进度条+独立标题),归档措辞留给 /clear。"""
     out: list[dict] = []
     if sec.state == "completed":
-        title = "上下文压缩完成"
+        status = "完成压缩"
     elif sec.state == "cancelled":
-        title = "压缩已取消"
+        status = "压缩已取消"
     else:
-        title = "正在压缩上下文"
-    out.append(_md(f"**{title}**"))
-    if sec.state != "cancelled":
-        out.append(_md(f"`{_progress_bar(sec.progress_cells)}`"))
+        status = "压缩中"
+    if sec.state == "cancelled":
+        out.append(_md(f"**{status}**"))
+    else:
+        # 进度条 + 状态同一行
+        out.append(_md(f"{_progress_bar(sec.progress_cells)} **{status}**"))
     if sec.state == "completed":
         panel_title = f"已压缩 {sec.compacted_n} 条消息"
     elif sec.state == "cancelled":
@@ -85,70 +111,71 @@ def _render_compact(sec: CompactSection) -> list[dict]:
     return out
 
 
-def _render_answer(sec: AnswerSection, *, card_id: str) -> list[dict]:
+def _render_answer(
+    sec: AnswerSection, *, card_id: str, from_bg: bool = False
+) -> list[dict]:
     out: list[dict] = []
-    # thinking — 默认折叠(用户主动展开后,本侧推送的 expanded=False 可能让飞书
-    # 重新折叠,这是平台限制;先按"默认折叠"实现,用户体验上比"自动展开占地方"好)
+    # thinking — 默认折叠,空内容不放占位(只动 body,不动标题状态)
     think_title = "思考过程" if sec.thinking_text else "思考中"
     out.append(_panel(think_title, sec.thinking_text or " ", folded=True))
-    # tools — 全渲染。buf 里的不在这里出,等点按钮 reveal 才进 tools。
+    # tools — 全渲染。单 tool body 截 800 字符:飞书卡总大小有上限(230025),
+    # 多 tool 全 body 会超限 → patch_card 400 → UI 卡住。
     for t in sec.tools:
-        out.append(_panel(t.header, t.body_md or " ", folded=True))
-    # tools overflow 槽位按钮:label 由 state 决定。
-    # streaming:  "+N 待加载工具" (可点 reveal)
-    # detached:   "正在后台调用工具" (静默占位,detach 瞬间冻结按钮)
-    # terminal:   "显示剩余 N 工具" (可点 reveal)
-    # cancelled / 无 buf: 不出
+        body = t.body_md or " "
+        if len(body) > 800:
+            body = body[:800].rstrip() + "\n…(已截断)"
+        out.append(_panel(t.header, body, folded=True))
+    # tools overflow 槽位:
+    #   detached: 不可点的静态文字(detach 期间不接受交互)
+    #   streaming / terminal: 可点按钮 → reveal 当前 buf
+    #   cancelled / 空 buf: 不出
     if sec.tools_pending > 0:
         if sec.state == "detached":
-            btn = Button(text="正在后台调用工具")
-        elif sec.state == "terminal":
-            btn = Button(
-                text=f"显示剩余 {sec.tools_pending} 工具",
-                action="load_tools", action_arg=card_id,
+            out.append(_md("_正在后台调用工具_"))
+        elif sec.state in ("streaming", "terminal"):
+            label = (
+                f"显示剩余 {sec.tools_pending} 工具"
+                if sec.state == "terminal"
+                else f"+{sec.tools_pending} 待加载工具"
             )
-        elif sec.state == "streaming":
-            btn = Button(
-                text=f"+{sec.tools_pending} 待加载工具",
-                action="load_tools", action_arg=card_id,
-            )
-        else:
-            btn = None
-        if btn is not None:
+            btn = Button(text=label, action="load_tools", action_arg=card_id)
             out.append(_btn_row(ButtonRow(buttons=(btn,)), ph_run_id=None))
-    elif sec.state == "streaming" and not sec.tools and not sec.answer_text:
-        out.append(_md("_正在组织回答_"))
-    # 回答块:所有状态都用 collapsible_panel,保 detach 高度不变(spec §4.2)。
-    if sec.state == "detached":
-        ans_title, ans_body, ans_folded = "回答中…", "_回答仍在后台生成_", True
+    # 回答块:标题状态机保留,空 body 用空格(不放占位)。
+    ans_title = "回答" if sec.answer_text else "回答中"
+    if sec.state == "cancelled":
+        ans_title, ans_folded = "回答已取消", True
+    elif sec.state == "detached":
+        ans_folded = True
     elif sec.state == "terminal":
-        ans_title, ans_body, ans_folded = "回答", sec.answer_text or " ", False
-    elif sec.state == "cancelled":
-        ans_title, ans_body, ans_folded = (
-            "回答已取消", sec.answer_text or " ", True,
-        )
-    elif sec.answer_text:
-        ans_title, ans_body, ans_folded = "回答", sec.answer_text, False
+        ans_folded = from_bg
     else:
-        ans_title, ans_body, ans_folded = "正在回答", "_…_", False
-    out.append(_panel(ans_title, ans_body, folded=ans_folded))
+        ans_folded = False
+    out.append(_panel(ans_title, sec.answer_text or " ", folded=ans_folded))
     return out
 
 
 def render(state: UnifiedCardState) -> dict:
-    """Render a UnifiedCardState to a feishu interactive card message dict."""
+    """Render a UnifiedCardState to a feishu interactive card message dict。
+
+    飞书 renderer 始终是 default 模式 —— expand_mode 字段被忽略。
+    """
     elements: list[dict] = []
     for row in state.top_buttons:
         elements.append(_btn_row(row, ph_run_id=state.ph_run_id))
     if state.compact is not None:
         elements.extend(_render_compact(state.compact))
     if state.answer is not None:
-        elements.extend(_render_answer(state.answer, card_id=state.card_id))
+        elements.extend(_render_answer(
+            state.answer, card_id=state.card_id,
+            from_bg=state.terminal_from_bg,
+        ))
     if state.menu is not None:
         elements.append(_md(state.menu.body_md))
     for row in state.bottom_buttons:
         elements.append(_btn_row(row, ph_run_id=state.ph_run_id))
-    elements.append(_md(f"_{state.footer.render()}_"))
+    footer_text = state.footer.render()
+    if footer_text:
+        elements.append(_md(f"_{footer_text}_"))
     return {
         "schema": "2.0",
         "config": {"width_mode": "fill"},
