@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Callable, Optional, TextIO
 
@@ -211,12 +212,9 @@ def _do_telegram(data: dict, *, ask: AskFn, out: TextIO) -> tuple[int, bool]:
     return 0, True
 
 
-import secrets
-
-
 def ensure_daemon_token(system_json: Path) -> None:
-    """If daemon.token is empty -> generate 32-byte hex and write back; chmod 0600.
-    Idempotent: existing token preserved."""
+    """If daemon.token is empty -> generate 32 bytes (64 hex chars) and write
+    back; chmod 0600. Idempotent: existing token preserved."""
     data: dict = {}
     if system_json.exists():
         try:
