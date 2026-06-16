@@ -15,7 +15,10 @@ from typing import Any
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
+from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static
+
+from xana.agent_adapter.channels.unified_card import UnifiedCardState
+from xana.agent_adapter.channels.unified_card_cli import CardButton, render as render_card
 
 
 class _TabItem(ListItem):
@@ -56,7 +59,7 @@ class XanacApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         with Horizontal():
-            yield VerticalScroll(Static("", id="fg-body"), id="fg-pane")
+            yield VerticalScroll(id="fg-pane")
             yield ListView(id="tab-pane")
         yield Input(placeholder="message…  (Tab: switch run, Esc: input)", id="input")
         yield Footer()
@@ -104,28 +107,79 @@ class XanacApp(App):
 
     # ----- Renderer-facing API -----
 
+    def _set_body(self, widgets: list) -> None:
+        """Replace fg-pane children with the given widget list."""
+        pane = self.query_one("#fg-pane", VerticalScroll)
+        pane.remove_children()
+        if widgets:
+            pane.mount(*widgets)
+
     def show_run(self, run_id: str, *, label: str, body: str) -> None:
         self._frozen_runs.discard(run_id)
         self._fg_run_id = run_id
-        self.query_one("#fg-body", Static).update(body)
+        self._set_body([Static(body)] if body else [])
         self.title = f"xana · {label}" if label else "xana"
 
     def update_run_body(self, run_id: str, body: str) -> None:
         if run_id != self._fg_run_id:
             return
-        self.query_one("#fg-body", Static).update(body)
+        self._set_body([Static(body)] if body else [])
 
     def freeze_run(self, run_id: str, *, label: str) -> None:
         self._frozen_runs.add(run_id)
         if run_id == self._fg_run_id:
-            self.query_one("#fg-body", Static).update(
-                f"后台运行中 · {label}"
-            )
+            self._set_body([Static(f"后台运行中 · {label}")])
 
     def finalize_run(self, run_id: str, *, body: str, label: str) -> None:
         self._frozen_runs.discard(run_id)
         if run_id == self._fg_run_id:
-            self.query_one("#fg-body", Static).update(body)
+            self._set_body([Static(body)] if body else [])
+
+    def update_card(self, run_id: str, state: UnifiedCardState) -> None:
+        """统一卡渲染入口:render(state) → 替换 fg-pane 子树。
+        宿主端独立于 TurnDraft show/update/finalize 路径,可由
+        UnifiedCardState driver 直接调用。"""
+        if run_id != self._fg_run_id:
+            return
+        self._set_body(render_card(state))
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Card 按钮路由,对齐 tg _handle_callback_query / 飞书 _on_card_action。
+
+        - spec.send:作为用户输入 submit(走 router,/cancel /attach …)
+        - action=load_tools:本地动作(adapter 实现 reveal_tools)
+        - action=detach 或默认:转入后台
+        """
+        btn = event.button
+        if not isinstance(btn, CardButton):
+            return
+        spec = btn.spec
+        if spec.send:
+            from xana.agent_adapter.contracts import InboundMessage
+            inbound = InboundMessage(
+                adapter_id=self.adapter_id,
+                session_id=self.session_id,
+                text=spec.send,
+            )
+
+            async def _drain() -> None:
+                try:
+                    async for _ in self.gateway.submit(inbound):
+                        pass
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "xanac card-button submit drain crashed"
+                    )
+
+            asyncio.create_task(_drain())
+            return
+        if spec.action == "load_tools":
+            # 由宿主侧 adapter 处理(需后续接 CliAdapter 完成)
+            return
+        # detach / 默认("后台回答")
+        run_id = btn.ph_run_id or spec.action_arg
+        if run_id and hasattr(self.gateway, "detach"):
+            await self.gateway.detach(self.session_id, run_id)
 
     def refresh_tabs(
         self, bg_run_ids: list[str], *, labels: dict[str, str]

@@ -42,15 +42,27 @@ def _md(text: str) -> dict:
 
 
 def _panel(title: str, body_md: str, *, folded: bool = True) -> dict:
-    # 视觉提示:折叠时前缀 ▸,展开时前缀 ▾,让用户一眼看出能点。
-    # 注:lark v2 collapsible_panel 不接受 background_color/border/padding。
+    # 视觉提示:灰底卡片 + header 右侧 chevron(down-bold_outlined),
+    # 展开旋转 -180° 变上箭头 → 用户一眼看出能点。
     # body 走 _sanitize_md:避开飞书 markdown 把 ![](url) 当 image_key 触发 400。
-    arrow = "▸" if folded else "▾"
-    decorated = f"{arrow} {title}"
     return {
         "tag": "collapsible_panel",
         "expanded": not folded,
-        "header": {"title": {"tag": "markdown", "content": decorated}},
+        "background_color": "grey-50",
+        "header": {
+            "title": {"tag": "plain_text", "content": title},
+            "background_color": "grey-50",
+            "vertical_align": "center",
+            "padding": "4px 8px 4px 8px",
+            "icon": {
+                "tag": "standard_icon",
+                "token": "down-bold_outlined",
+                "color": "grey",
+                "size": "16px 16px",
+            },
+            "icon_position": "follow_text",
+            "icon_expanded_angle": -180,
+        },
         "elements": [_md(_sanitize_md(body_md or " "))],
     }
 
@@ -116,7 +128,7 @@ def _render_answer(
 ) -> list[dict]:
     out: list[dict] = []
     # thinking — 默认折叠,空内容不放占位(只动 body,不动标题状态)
-    think_title = "思考过程" if sec.thinking_text else "思考中"
+    think_title = "❋ 思考过程" if sec.thinking_text else "❋ 思考中"
     out.append(_panel(think_title, sec.thinking_text or " ", folded=True))
     # tools — 全渲染。单 tool body 截 800 字符:飞书卡总大小有上限(230025),
     # 多 tool 全 body 会超限 → patch_card 400 → UI 卡住。
@@ -131,19 +143,15 @@ def _render_answer(
     #   cancelled / 空 buf: 不出
     if sec.tools_pending > 0:
         if sec.state == "detached":
-            out.append(_md("_正在后台调用工具_"))
+            out.append(_md("_后台 ✎ 中_"))
         elif sec.state in ("streaming", "terminal"):
-            label = (
-                f"显示剩余 {sec.tools_pending} 工具"
-                if sec.state == "terminal"
-                else f"+{sec.tools_pending} 待加载工具"
-            )
+            label = f"展开 ✎×{sec.tools_pending}"
             btn = Button(text=label, action="load_tools", action_arg=card_id)
             out.append(_btn_row(ButtonRow(buttons=(btn,)), ph_run_id=None))
     # 回答块:标题状态机保留,空 body 用空格(不放占位)。
-    ans_title = "回答" if sec.answer_text else "回答中"
+    ans_title = "✦ 回答" if sec.answer_text else "✦ 回答中"
     if sec.state == "cancelled":
-        ans_title, ans_folded = "回答已取消", True
+        ans_title, ans_folded = "✦ 回答已取消", True
     elif sec.state == "detached":
         ans_folded = True
     elif sec.state == "terminal":
