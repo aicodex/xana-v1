@@ -80,6 +80,7 @@ def _is_listening(unix_path: str | None, host: str, port: int) -> bool:
 
 def _ensure_serve_running() -> None:
     base_url, token, unix = _resolve_endpoint()
+    del token  # only base_url + unix needed here; token used by callers
     if unix and Path(unix).exists() and _is_listening(unix, "", 0):
         return
     netloc = base_url.replace("http://", "").split("/", 1)[0]
@@ -132,6 +133,19 @@ def _evt_from_wire(data: dict):
     )
 
 
+def _progress_from_wire(data: dict):
+    """Reconstruct ProgressEvent from SSE wire payload (gateway.note_progress
+    payloads carry kind/session_id/run_id/... — see gateway.py)."""
+    from xana.harness_sdk.contracts import ProgressEvent
+    payload = dict(data)
+    return ProgressEvent(
+        session_id=str(payload.get("session_id") or ""),
+        run_id=str(payload.get("run_id") or ""),
+        message=str(payload.get("kind") or ""),
+        payload=payload,
+    )
+
+
 async def _oneshot_run(
     *, base_url: str, token: str, session_id: str, text: str,
     out: TextIO, timeout_s: float = 120.0, unix_socket: str | None = None,
@@ -176,6 +190,17 @@ async def _oneshot_run(
                             rc = 1
                         done.set()
                         return
+                    continue
+                if ev.event == "progress":
+                    # detach / ph_replaced / compact_* / command_progress
+                    # arrive as ProgressEvent via gateway.note_progress; if
+                    # dropped, /compact cards don't freeze and bg cards
+                    # don't get terminal patches.
+                    apply_event(state, _progress_from_wire(ev.data))
+                    if ev.data.get("kind") == "ph_replaced":
+                        done.set()
+                        return
+                    continue
 
         reader_task = asyncio.create_task(reader())
         await client.submit(session_id, text)

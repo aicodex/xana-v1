@@ -114,6 +114,16 @@ class XanacApp(App):
                         card_id=sid, ph_run_id=sid)
                     self.update_card(sid, self._state)
                     continue
+                if ev.event == "progress":
+                    # detach / ph_replaced / compact_* / command_progress
+                    # arrive as ProgressEvent via gateway.note_progress.
+                    # Without this branch, /compact cards don't freeze and
+                    # bg cards never get the terminal patch.
+                    from xana.cli.xanac import _progress_from_wire
+                    apply_event(self._state, _progress_from_wire(ev.data))
+                    self._fg_run_id = sid
+                    self.update_card(sid, self._state)
+                    continue
                 if ev.event != "agent_event":
                     continue
                 aev = _evt_from_wire(ev.data)

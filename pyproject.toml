@@ -42,3 +42,6 @@ where = ["src"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "strict"
+markers = [
+    "merge_gate: design-contract regression tests; run only on big merges (pytest -m merge_gate)",
+]
