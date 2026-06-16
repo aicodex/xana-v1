@@ -26,12 +26,14 @@ from pathlib import Path
 
 from xana.agent_adapter.channels._bindings import BindingStore
 from xana.agent_adapter.channels._pairing import PairingStore
+from xana.agent_adapter.channels.daemon_bridge import DaemonBridgeAdapter
 from xana.agent_adapter.channels.feishu import FeishuAdapter, FeishuConfig
 from xana.agent_adapter.channels.telegram import TelegramAdapter, TelegramConfig
 from xana.agent_adapter.interfaces import Adapter
 from xana.config.loader import DefaultConfigProvider
 from xana.config.system_model import SystemConfig
 from xana.runtime.boot import boot
+from xana.runtime.daemon_http import build_daemon_app, run_tcp, run_unix_socket
 
 
 def build_adapters(
@@ -191,6 +193,55 @@ def _remove_pidfile(home: Path) -> None:
         pass
 
 
+def _make_daemon_on_action(gateway):
+    """Build an on_action callback bridging daemon HTTP actions to gateway.
+
+    button actions are handled client-side by the unified Card; server-side
+    intervention re-enters via /submit as a /cmd text.
+    """
+    async def on_action(sid: str, kind: str, payload: dict) -> None:
+        run_id = payload.get("run_id") if isinstance(payload, dict) else None
+        if kind == "cancel":
+            await gateway.cancel(sid, run_id)
+        elif kind == "attach" and hasattr(gateway, "attach") and run_id:
+            await gateway.attach(sid, run_id)
+        elif kind == "detach" and hasattr(gateway, "detach") and run_id:
+            await gateway.detach(sid, run_id)
+        # button: client-managed, no-op
+    return on_action
+
+
+async def _start_daemon_in_process(
+    *,
+    project_root: Path,
+    port: int | None,
+    token: str,
+    unix_socket: str | None = None,
+):
+    """boot + register DaemonBridgeAdapter + start HTTP server.
+
+    Returns (bridge, gateway, runner_task). Cancel runner_task to shut down.
+    Used by tests; serve_main uses the same building blocks inline.
+    """
+    boot_result = await boot(
+        project_root=project_root,
+        history_root=Path.home() / ".xana" / "sessions",
+    )
+    bridge = DaemonBridgeAdapter()
+    await bridge.start()
+    await boot_result.gateway.register_adapter("cli", bridge)
+
+    on_action = _make_daemon_on_action(boot_result.gateway)
+    app = build_daemon_app(bridge=bridge, token=token, on_action=on_action)
+
+    if unix_socket:
+        Path(unix_socket).parent.mkdir(parents=True, exist_ok=True)
+        task = asyncio.create_task(run_unix_socket(app, unix_socket))
+    else:
+        task = asyncio.create_task(run_tcp(app, "127.0.0.1", port or 17777))
+    return bridge, boot_result.gateway, task
+
+
 async def _run(argv: argparse.Namespace) -> int:
     home = _xana_home()
     _write_pidfile(home)
@@ -213,9 +264,41 @@ async def _run_inner(argv: argparse.Namespace) -> int:
     system = cp.load_system_config()  # boot() already called cp.load()
     bindings_root = pairings_path().parent
     adapters = build_adapters(bindings_root=bindings_root, env=dict(os.environ), system=system)
+
+    # Daemon HTTP+SSE wiring (always-on; replaces in-process xanac path).
+    # Registered as adapter_id="cli" alongside feishu/tg adapters.
+    daemon_cfg = system.daemon
+    daemon_bridge = DaemonBridgeAdapter()
+    await daemon_bridge.start()
+    await boot_result.gateway.register_adapter("cli", daemon_bridge)
+    on_daemon_action = _make_daemon_on_action(boot_result.gateway)
+    daemon_tasks: list[asyncio.Task] = []
+    if daemon_cfg.unix_socket:
+        unix_path = Path(daemon_cfg.unix_socket).expanduser()
+        unix_path.parent.mkdir(parents=True, exist_ok=True)
+        unix_app = build_daemon_app(
+            bridge=daemon_bridge, token="", on_action=on_daemon_action,
+        )
+        daemon_tasks.append(
+            asyncio.create_task(run_unix_socket(unix_app, str(unix_path)))
+        )
+        print(f"[daemon] unix socket {unix_path}")
+    if daemon_cfg.bind:
+        tcp_app = build_daemon_app(
+            bridge=daemon_bridge, token=daemon_cfg.token, on_action=on_daemon_action,
+        )
+        daemon_tasks.append(
+            asyncio.create_task(run_tcp(tcp_app, daemon_cfg.bind, daemon_cfg.port))
+        )
+        print(f"[daemon] tcp {daemon_cfg.bind}:{daemon_cfg.port}")
+        if daemon_cfg.bind == "0.0.0.0":
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "daemon bound to 0.0.0.0 — exposed to LAN"
+            )
+
     if not adapters:
-        print("[xana serve] no adapter env vars set — nothing to run.")
-        return 1
+        print("[xana serve] no chat adapters configured — daemon only.")
 
     pumps: list[asyncio.Task] = []
     webhook_runner = None
@@ -260,7 +343,8 @@ async def _run_inner(argv: argparse.Namespace) -> int:
         runner.start()
         print("[xana serve] scheduler runner started")
 
-    print(f"[xana serve] running adapters: {', '.join(a.adapter_id for a in adapters)}")
+    running_ids = ["cli", *(a.adapter_id for a in adapters)]
+    print(f"[xana serve] running adapters: {', '.join(running_ids)}")
 
     # P5.6 — SIGTERM graceful drain: abort inflight runs, wait ≤2s, then exit.
     import signal as _signal
@@ -283,7 +367,11 @@ async def _run_inner(argv: argparse.Namespace) -> int:
     except (NotImplementedError, RuntimeError):
         pass  # platform without signal handler support (e.g. Windows)
     async def _run_pumps() -> None:
-        await asyncio.gather(*pumps)
+        if pumps:
+            await asyncio.gather(*pumps)
+        else:
+            # daemon-only mode: keep alive until shutdown
+            await asyncio.Event().wait()
     try:
         gather_pumps = asyncio.create_task(_run_pumps())
         shutdown_wait = asyncio.create_task(_shutdown_evt.wait())
@@ -297,6 +385,11 @@ async def _run_inner(argv: argparse.Namespace) -> int:
         for pump in pumps:
             pump.cancel()
         await asyncio.gather(*pumps, return_exceptions=True)
+        for dt in daemon_tasks:
+            dt.cancel()
+        if daemon_tasks:
+            await asyncio.gather(*daemon_tasks, return_exceptions=True)
+        await daemon_bridge.stop()
         if webhook_runner is not None:
             await webhook_runner.cleanup()
         for adapter in adapters:
