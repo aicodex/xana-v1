@@ -209,3 +209,26 @@ def _do_telegram(data: dict, *, ask: AskFn, out: TextIO) -> tuple[int, bool]:
     print("  2. 用你的账号给机器人发一条消息,会收到配对提示;", file=out)
     print("  3. 运行 `xana pair approve telegram <user_id>` 批准。", file=out)
     return 0, True
+
+
+import secrets
+
+
+def ensure_daemon_token(system_json: Path) -> None:
+    """If daemon.token is empty -> generate 32-byte hex and write back; chmod 0600.
+    Idempotent: existing token preserved."""
+    data: dict = {}
+    if system_json.exists():
+        try:
+            data = json.loads(system_json.read_text() or "{}")
+        except json.JSONDecodeError:
+            data = {}
+    daemon = data.setdefault("daemon", {})
+    if not daemon.get("token"):
+        daemon["token"] = secrets.token_hex(32)
+    system_json.parent.mkdir(parents=True, exist_ok=True)
+    system_json.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(system_json, 0o600)
