@@ -168,6 +168,22 @@ class MyChannelAdapter(Adapter):
 
 ---
 
+## 5b. CLI 接入(走 daemon)
+
+CLI 不再在进程内 boot,而是连本机 `xana serve` 的 HTTP+SSE daemon。
+
+- xanac client → `~/.xana/run/serve.sock`(POSIX 默认)或 TCP `127.0.0.1:17777`
+- token 在 `system.json.daemon.token`(`setup_wizard` 首次跑生成,`chmod 0600`)
+- SSE 协议:`GET /sessions/{sid}/stream` 推 `initialize` + `agent_event` + `progress` + `session.status` + `heartbeat`;客户端发 `Last-Event-ID` 续传
+- 提交:`POST /sessions/{sid}/submit {text}`
+- 取消 / 切换:`POST /sessions/{sid}/cancel|attach|detach|button`
+- 视图:client 自己渲染:
+  - oneshot stdout 走 `xana.agent_adapter.channels.unified_card_cli.render(state) -> str`
+  - Textual interactive 走 `unified_card_cli.render_widgets(state) -> list[Widget]`,由 `XanacApp.update_card` 挂到 `#fg-pane`
+- 服务端 `DaemonBridgeAdapter` 是 gateway 上的普通 `Adapter`(`adapter_id="cli"`,ring buffer + 多订阅者 fan-out);其它 channel 适配器(feishu / tg)代码完全不动。
+
+---
+
 ## 6. 命令 / 按钮约定
 
 | 按钮 | callback 形态 | 处理位置 |

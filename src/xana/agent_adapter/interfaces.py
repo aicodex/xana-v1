@@ -2,13 +2,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import AsyncIterator
 
 from xana.agent_adapter.contracts import AdapterHealth, CommandResult, CommandSpec, DraftHandle, InboundMessage, RenderedMessage, SessionBinding
 from xana.agents.contracts import AgentEvent, AgentRequest
-
-if TYPE_CHECKING:
-    from xana.agent_adapter.channels._draft import TurnDraft
 
 
 class InboundParser(ABC):
@@ -85,36 +82,3 @@ class AgentGateway(ABC):
 
     @abstractmethod
     async def cancel(self, session_id: str, run_id: str | None = None) -> None: ...
-
-
-class CliRenderer(ABC):
-    """Receives lifecycle callbacks for runs on a session and renders them to a CLI surface.
-
-    Implementations bind to a session and react to per-run events emitted by the gateway:
-    run lifecycle (started/detached/foreground_changed/completed_bg), incremental harness
-    events, PH replacement (finalize to full card), and compact lifecycle.
-    """
-
-    @abstractmethod
-    async def on_run_started(self, run_id: str, label: str) -> None: ...
-
-    @abstractmethod
-    async def on_event(self, run_id: str, event: AgentEvent) -> None: ...
-
-    @abstractmethod
-    async def on_run_detached(self, run_id: str) -> None: ...
-
-    @abstractmethod
-    async def on_foreground_changed(self, run_id: str) -> None: ...
-
-    @abstractmethod
-    async def on_ph_replaced(self, run_id: str, draft: "TurnDraft | None") -> None: ...
-
-    @abstractmethod
-    async def on_run_completed_bg(self, run_id: str, draft: "TurnDraft | None") -> None: ...
-
-    @abstractmethod
-    async def on_compact_started(self, run_id: str, fork_point: int) -> None: ...
-
-    @abstractmethod
-    async def on_compact_finalized(self, run_id: str, summary: str) -> None: ...

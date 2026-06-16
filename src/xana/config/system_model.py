@@ -119,6 +119,15 @@ class PolicyConfig(BaseModel):
         return v
 
 
+class DaemonConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    unix_socket: str = "~/.xana/run/serve.sock"
+    bind: Optional[str] = None        # e.g. "127.0.0.1" / "0.0.0.0"
+    port: int = 17777
+    token: str = ""                    # 32-byte hex; setup wizard populates
+
+
 class SystemConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -130,6 +139,7 @@ class SystemConfig(BaseModel):
     web_search: WebSearch = WebSearch()
     mcp: Mcp = Mcp()
     policy: PolicyConfig = PolicyConfig()
+    daemon: DaemonConfig = DaemonConfig()
 
     def model(self, name: str) -> Optional[ModelEntry]:
         return next((m for m in self.models if m.name == name), None)

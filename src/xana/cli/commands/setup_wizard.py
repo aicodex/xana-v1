@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Callable, Optional, TextIO
 
@@ -78,6 +79,25 @@ def run_wizard(
         print(f"[xana setup] 配置已写入 {path}", file=out)
     else:
         print("[xana setup] 模型与渠道均已配置,无需更改。", file=out)
+
+    # daemon: ensure token exists in system.json, then surface endpoint hint.
+    sys_json = user_config_dir() / "system.json"
+    ensure_daemon_token(sys_json)
+    try:
+        cfg = SystemConfig(**json.loads(sys_json.read_text(encoding="utf-8")))
+        d = cfg.daemon
+    except Exception:
+        d = None
+    if d is not None:
+        print("", file=out)
+        print("[xana setup] daemon HTTP+SSE 已配置:", file=out)
+        print(f"    unix socket {Path(d.unix_socket).expanduser()}", file=out)
+        print(
+            f"    TCP 端口    {d.port}"
+            f"(默认仅 unix;system.json 里把 daemon.bind 改成 '0.0.0.0' 暴露到 LAN — 慎重)",
+            file=out,
+        )
+        print(f"    token       已写入 {sys_json}(chmod 0600)", file=out)
     return 0
 
 
@@ -209,3 +229,23 @@ def _do_telegram(data: dict, *, ask: AskFn, out: TextIO) -> tuple[int, bool]:
     print("  2. 用你的账号给机器人发一条消息,会收到配对提示;", file=out)
     print("  3. 运行 `xana pair approve telegram <user_id>` 批准。", file=out)
     return 0, True
+
+
+def ensure_daemon_token(system_json: Path) -> None:
+    """If daemon.token is empty -> generate 32 bytes (64 hex chars) and write
+    back; chmod 0600. Idempotent: existing token preserved."""
+    data: dict = {}
+    if system_json.exists():
+        try:
+            data = json.loads(system_json.read_text() or "{}")
+        except json.JSONDecodeError:
+            data = {}
+    daemon = data.setdefault("daemon", {})
+    if not daemon.get("token"):
+        daemon["token"] = secrets.token_hex(32)
+    system_json.parent.mkdir(parents=True, exist_ok=True)
+    system_json.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(system_json, 0o600)
