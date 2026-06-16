@@ -16,7 +16,10 @@ from typing import Iterable
 
 from xana.memory.contracts import MemoryMessage, Placeholder
 
-PH_ASSISTANT_REPLY = "[此问题正在后台处理中,请基于其他可用上下文继续。]"
+PH_ASSISTANT_REPLY = (
+    "[此问题正在后台处理中,请基于其他可用上下文继续。"
+    "不要重复尝试运行此任务。]"
+)
 
 
 def expand_placeholders(

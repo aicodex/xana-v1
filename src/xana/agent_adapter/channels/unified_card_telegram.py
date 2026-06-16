@@ -150,7 +150,7 @@ def _render_default_answer(
 ) -> str:
     parts: list[str] = []
 
-    think_title = "思考过程" if sec.thinking_text else "思考中"
+    think_title = "❋ 思考过程" if sec.thinking_text else "❋ 思考中"
     think_body, think_truncated = _trunc_rendered(
         sec.thinking_text or " ", _BUDGET_DEFAULT_THINKING, md=False)
     parts.append(_fold(think_title, think_body, md=False))
@@ -167,17 +167,19 @@ def _render_default_answer(
     hidden_tools = (len(sec.tools) - visible_n) + sec.tools_pending
     if hidden_tools > 0:
         tools_truncated = True
-        parts.append(_esc(f"+{hidden_tools} 工具调用"))
+        # inline 文字计数(不是按钮,点不动);用户走底部"展开工具"
+        # expand_mode 按钮查看。
+        parts.append(_esc(f"其他 ✎×{hidden_tools},点下方展开工具查看"))
 
-    if sec.state == "cancelled":
-        title = "回答已取消"
-    else:
-        title = "回答" if sec.answer_text else "回答中"
     answer_body, answer_truncated = _trunc_rendered(
         sec.answer_text or " ", _BUDGET_DEFAULT_ANSWER, md=True)
-    # 回答不再 fold — 折叠会把 markdown 层套进 blockquote,出现一堆折叠嵌套。
-    # TG 4096 已硬截,直接渲染。标题前置加粗。
-    parts.append(f"*{_esc(title)}*\n{_md(answer_body)}")
+    # 回答不再 fold,也不再带"回答"标题(避免冗余)。
+    # 用一行横线作为视觉分割:把 thinking/tools 区隔开。
+    # cancelled 时单独标记一行,提示用户。
+    if sec.state == "cancelled":
+        parts.append(f"\n━━━━━━━ ✦ ━━━━━━━\n\n_{_esc('回答已取消')}_")
+    else:
+        parts.append(f"\n━━━━━━━ ✦ ━━━━━━━\n\n{_md(answer_body)}")
 
     row: list[dict] = []
     if think_truncated:
@@ -247,7 +249,7 @@ def _render_expand_thinking(
     chunk, page, total = _paginate_text(
         sec.thinking_text or "(无思考内容)", page, _BUDGET_EXPAND_PAGE)
     extra_kb.append(_pagination_kb(card_id, page, total))
-    title = f"思考过程 ({page + 1}/{total})" if total > 1 else "思考过程"
+    title = f"❋ 思考过程 ({page + 1}/{total})" if total > 1 else "❋ 思考过程"
     return _fold(title, chunk, md=False)
 
 
@@ -257,9 +259,9 @@ def _render_expand_answer(
     chunk, page, total = _paginate_text(
         sec.answer_text or " ", page, _BUDGET_EXPAND_PAGE)
     extra_kb.append(_pagination_kb(card_id, page, total))
-    title = f"回答 ({page + 1}/{total})" if total > 1 else "回答"
-    # 同 default 一样不折叠
-    return f"*{_esc(title)}*\n{_md(chunk)}"
+    # 同 default 一样不折叠,不带"回答"标题,用横线分割。
+    # expand 全屏页:翻页号放在按钮上,不在 body 里。
+    return f"\n━━━━━━━ ✦ ━━━━━━━\n\n{_md(chunk)}"
 
 
 _TOOLS_PER_PAGE = 10

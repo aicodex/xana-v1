@@ -533,7 +533,7 @@ def _make_tool_header(name: str, summary: str,
                       status: str = "") -> str:
     """组合: ``<name>[ · <summary>][ · <elapsed>][ · <status>]``。
     status ∈ {"", "ok", "fail", "cancel"};运行中传空串。"""
-    head = f"{name or '?'}"
+    head = f"✎ {name or '?'}"
     if summary:
         head += f" · {summary}"
     if elapsed_s is not None:
