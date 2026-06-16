@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Callable, Coroutine
 
 from aiohttp import web
@@ -173,3 +174,34 @@ async def _write_sse(resp: web.StreamResponse, *, seq: int, evt: str,
         f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
     ).encode("utf-8")
     await resp.write(chunk)
+
+
+async def run_unix_socket(app: web.Application, path: str) -> None:
+    """Run app on a Unix socket at `path` with 0600 perm. Block until cancelled."""
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, path)
+    await site.start()
+    os.chmod(path, 0o600)
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    finally:
+        await runner.cleanup()
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+async def run_tcp(app: web.Application, host: str, port: int) -> None:
+    """Run app on TCP. Block until cancelled."""
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host, port)
+    await site.start()
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    finally:
+        await runner.cleanup()
