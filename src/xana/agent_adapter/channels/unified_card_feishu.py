@@ -42,17 +42,18 @@ def _md(text: str) -> dict:
 
 
 def _panel(title: str, body_md: str, *, folded: bool = True) -> dict:
-    # 视觉提示:header 右侧 chevron(down-bold_outlined),展开旋转 -180°
-    # 变上箭头 → 用户一眼看出能点。注:Lark v2 collapsible_panel 拒绝
-    # ``background_color`` / ``padding``(200800 universal card fail),
-    # 我们只用 icon + plain_text 标题。
+    # 视觉提示:灰底卡片 + header 右侧 chevron(down-bold_outlined),
+    # 展开旋转 -180° 变上箭头 → 用户一眼看出能点。
     # body 走 _sanitize_md:避开飞书 markdown 把 ![](url) 当 image_key 触发 400。
     return {
         "tag": "collapsible_panel",
         "expanded": not folded,
+        "background_color": "grey-50",
         "header": {
             "title": {"tag": "plain_text", "content": title},
+            "background_color": "grey-50",
             "vertical_align": "center",
+            "padding": "4px 8px 4px 8px",
             "icon": {
                 "tag": "standard_icon",
                 "token": "down-bold_outlined",
