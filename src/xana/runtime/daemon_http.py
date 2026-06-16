@@ -23,6 +23,8 @@ def build_daemon_app(
     bridge: DaemonBridgeAdapter,
     token: str,
     on_action: Callable[[str, str, dict], Coroutine[Any, Any, None]] | None = None,
+    heartbeat_interval_s: float = 15.0,
+    idle_unload_s: float = 1800.0,
 ) -> web.Application:
     """Build the aiohttp app for the xana daemon.
 
@@ -88,12 +90,23 @@ def build_daemon_app(
         }
         await _write_sse(resp, seq=0, evt="initialize", data=init_payload)
 
+        bridge.note_subscribe(sid)
+        status = bridge.session_status(sid)
+        # Account for this client which has not yet entered subscribe()
+        status["subscribers"] = status["subscribers"] + 1
+        status["state"] = "active"
+        await _write_sse(resp, seq=0, evt="session.status", data=status)
+
+        hb_task = asyncio.create_task(_heartbeat(resp, heartbeat_interval_s))
         try:
             async for seq, evt_type, data in bridge.subscribe(
                 sid, last_event_id=last_id_int):
                 await _write_sse(resp, seq=seq, evt=evt_type, data=data)
         except (asyncio.CancelledError, ConnectionResetError):
             pass
+        finally:
+            hb_task.cancel()
+            bridge.note_unsubscribe(sid)
         return resp
 
     async def action(request):
@@ -112,7 +125,35 @@ def build_daemon_app(
     app.router.add_get("/sessions/{sid}/stream", stream)
     app.router.add_post(
         "/sessions/{sid}/{action:cancel|attach|detach|button}", action)
+
+    async def _start_idle(app):
+        app["_idle_task"] = asyncio.create_task(_idle_loop(
+            bridge, idle_unload_s=idle_unload_s))
+
+    async def _stop_idle(app):
+        t = app.get("_idle_task")
+        if t:
+            t.cancel()
+
+    app.on_startup.append(_start_idle)
+    app.on_cleanup.append(_stop_idle)
     return app
+
+
+async def _idle_loop(bridge: DaemonBridgeAdapter, *, idle_unload_s: float):
+    interval = max(1.0, min(idle_unload_s / 2 if idle_unload_s > 0 else 30, 60))
+    while True:
+        await asyncio.sleep(interval)
+        bridge.sweep_idle(idle_unload_s)
+
+
+async def _heartbeat(resp, interval_s):
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await resp.write(b": heartbeat\n\n")
+        except (ConnectionResetError, asyncio.CancelledError):
+            return
 
 
 def _parse_last_event_id(raw: str | None) -> int | None:

@@ -133,6 +133,31 @@ class DaemonBridgeAdapter(Adapter):
         finally:
             st.subscribers.discard(q)
 
+    def note_subscribe(self, sid: str) -> None:
+        st = self._get_or_create(sid)
+        st.last_activity_ts = time.monotonic()
+
+    def note_unsubscribe(self, sid: str) -> None:
+        st = self._sessions.get(sid)
+        if st is not None:
+            st.last_activity_ts = time.monotonic()
+
+    def session_status(self, sid: str) -> dict:
+        st = self._get_or_create(sid)
+        return {
+            "state": "active" if st.subscribers else "idle",
+            "subscribers": len(st.subscribers),
+            "active_run_ids": [],
+        }
+
+    def sweep_idle(self, idle_unload_s: float) -> None:
+        now = time.monotonic()
+        dead = [sid for sid, st in self._sessions.items()
+                if not st.subscribers
+                and now - st.last_activity_ts > idle_unload_s]
+        for sid in dead:
+            self._sessions.pop(sid, None)
+
 
 def _agent_event_to_dict(ev: AgentEvent) -> dict:
     out = {
