@@ -1,213 +1,223 @@
-"""xanac: xana's CLI client.
+"""xanac: HTTP+SSE thin client to xana serve daemon.
 
-Boots the runtime in-process, registers a CliAdapter, sends the user's
-message through the AgentGateway, prints streamed events to stdout,
-exits when the turn completes.
+Replaces the previous in-process `boot()`-per-call architecture. xanac now:
+  1. Resolves the daemon endpoint from ~/.xana/config/system.json (unix
+     socket preferred, falls back to TCP).
+  2. If not listening: subprocess.Popen("xana serve") and poll healthz.
+  3. Oneshot path: POST /submit + consume SSE events, accumulate into a
+     UnifiedCardState, print once on terminal event (final/error/cancelled).
+  4. Interactive path: delegate to xana.cli.xanac_textual.run_textual_with_daemon
+     (Task 11).
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import secrets
+import socket
+import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import TextIO
 
-from xana.agent_adapter.channels._cli_renderer_stdout import StdoutRenderer
-from xana.agent_adapter.cli import CliAdapter
-from xana.agent_adapter.contracts import InboundMessage
-from xana.cli.serve import _xana_home
-from xana.runtime.boot import boot
+from xana.agent_adapter.channels.unified_card import UnifiedCardState
+from xana.agent_adapter.channels.unified_card_events import apply_event
+from xana.agent_adapter.channels.unified_card_cli import render as render_card
+from xana.cli._daemon_client import DaemonClient
+from xana.config.system_model import SystemConfig
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="xanac", description="xana CLI client")
-    parser.add_argument("text", nargs="*", help="message to send (positional)")
-    parser.add_argument("--project", type=Path, default=None, help="project root (default: cwd)")
-    parser.add_argument("--session", default="cli-session", help="session id")
-    parser.add_argument("--interactive", "-i", action="store_true",
-                        help="enter REPL mode (default when no positional text)")
-    return parser.parse_args(argv)
+    p = argparse.ArgumentParser(prog="xanac", description="xana CLI client")
+    p.add_argument("text", nargs="*", help="one-shot prompt")
+    p.add_argument("--session", default="default")
+    p.add_argument("--random-session", action="store_true")
+    p.add_argument("-i", "--interactive", action="store_true")
+    return p.parse_args(argv)
 
 
-async def _build_pipeline(args: argparse.Namespace, renderer):
-    project_root = (args.project or Path.cwd()).resolve()
-    boot_result = await boot(
-        project_root=project_root,
-        history_root=_xana_home() / "sessions",
-    )
-    adapter = CliAdapter(
-        adapter_id="cli",
-        session_id=args.session,
-        renderer=renderer,
-    )
-    await adapter.start()
-    await boot_result.gateway.register_adapter("cli", adapter)
-    return boot_result, adapter, project_root
+def _resolve_endpoint() -> tuple[str, str, str | None]:
+    """Returns (base_url, token, unix_socket_path or None)."""
+    home = Path.home() / ".xana"
+    sys_json = home / "config" / "system.json"
+    cfg = SystemConfig()
+    if sys_json.exists():
+        try:
+            cfg = SystemConfig.model_validate(
+                json.loads(sys_json.read_text() or "{}"))
+        except Exception:
+            cfg = SystemConfig()
+    d = cfg.daemon
+    unix = Path(d.unix_socket).expanduser() if d.unix_socket else None
+    if unix and unix.exists():
+        return ("http://unix", "", str(unix))
+    if d.bind:
+        return (f"http://{d.bind}:{d.port}", d.token, None)
+    return (f"http://127.0.0.1:{d.port}", d.token, None)
 
 
-async def _run(args: argparse.Namespace) -> int:
-    text = " ".join(args.text).strip()
-    # Default mode: oneshot if user provided text OR stdin is piped;
-    # otherwise launch Textual TUI.
-    use_textual = (
-        not text
-        and not args.interactive
-        and sys.stdin.isatty()
-    )
-    if args.interactive:
-        use_textual = True
-
-    if use_textual:
-        return await _textual(args)
-
-    renderer = StdoutRenderer()
-    boot_result, adapter, _root = await _build_pipeline(args, renderer)
-    # P5.6 — SIGTERM graceful drain.
-    import signal as _signal
-    from xana.cli.shutdown import graceful_shutdown as _graceful_shutdown
-
-    async def _on_sigterm() -> None:
-        await _graceful_shutdown(boot_result.gateway, grace_seconds=2.0)
-
+def _is_listening(unix_path: str | None, host: str, port: int) -> bool:
+    if unix_path and Path(unix_path).exists():
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.3)
+        try:
+            s.connect(unix_path)
+            s.close()
+            return True
+        except OSError:
+            return False
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.3)
     try:
-        asyncio.get_event_loop().add_signal_handler(
-            _signal.SIGTERM, lambda: asyncio.create_task(_on_sigterm())
-        )
-    except (NotImplementedError, RuntimeError):
-        pass
-    try:
-        if not text:
-            # Fallback to legacy prompt_toolkit REPL when stdin is piped /
-            # there's still no text (rare — keeps old behavior for scripts).
-            print(f"xanac · interactive · session={args.session}")
-            print(f"model={boot_result.model}  provider={boot_result.provider}")
-            return await _repl_loop(
-                boot_result.gateway, adapter=adapter, session_id=args.session
-            )
-        inbound = InboundMessage(adapter_id="cli", session_id=args.session, text=text)
-        exit_code = 0
-        async for rendered in boot_result.gateway.submit(inbound):
-            if rendered.metadata.get("event_kind") == "error":
-                exit_code = 1
-        return exit_code
-    finally:
-        if boot_result.main_writer is not None:
-            await boot_result.main_writer.aclose()
+        s.connect((host, port))
+        s.close()
+        return True
+    except OSError:
+        return False
 
 
-async def _textual(args: argparse.Namespace) -> int:
-    from xana.agent_adapter.channels._cli_renderer_textual import TextualRenderer
-    from xana.cli.xanac_textual import XanacApp
-
-    renderer = TextualRenderer()
-    boot_result, adapter, _root = await _build_pipeline(args, renderer)
-    try:
-        app = XanacApp(
-            gateway=boot_result.gateway,
-            session_id=args.session,
-            adapter_id=adapter.adapter_id,
-        )
-        renderer.attach(app)
-        await app.run_async()
-        return 0
-    finally:
-        if boot_result.main_writer is not None:
-            await boot_result.main_writer.aclose()
-
-
-from typing import Callable, Protocol
-
-
-class _PromptLike(Protocol):
-    async def prompt_async(self, *args, **kwargs) -> str: ...
-
-
-class _NullCtx:
-    def __enter__(self) -> None: ...
-    def __exit__(self, *a) -> None: ...
-
-
-async def _drain(stream) -> None:
-    async for _ in stream:
-        pass
-
-
-async def _repl_loop(
-    gateway,
-    *,
-    adapter=None,
-    prompt_factory: Callable[[], _PromptLike] | None = None,
-    session_id: str = "cli-session",
-    adapter_id: str = "cli",
-) -> int:
-    """Interactive REPL: read a line, submit, stream events, loop.
-
-    Ctrl-C on an in-flight turn cancels via gateway.cancel(); Ctrl-C at the
-    prompt or Ctrl-D exits cleanly. EOFError from prompt_factory also exits.
-    """
-    if prompt_factory is None:
-        from prompt_toolkit import PromptSession
-        from prompt_toolkit.patch_stdout import patch_stdout
-
-        def _bottom_toolbar() -> str:
-            if adapter is None:
-                return "ready"
-            tabs = adapter.format_tabs()
-            p = adapter.last_progress
-            if p:
-                base = (
-                    f"tokens: {p.get('tokens_in', 0)} in / {p.get('tokens_out', 0)} out · "
-                    f"elapsed: {p.get('elapsed_s', 0):.1f}s"
-                )
-            else:
-                base = "ready"
-            return f"{base}  ||  {tabs}" if tabs else base
-
-        from prompt_toolkit.key_binding import KeyBindings
-        kb = KeyBindings()
-
-        @kb.add("tab", eager=True)
-        def _switch_run(event) -> None:
-            if adapter is None or not adapter.bg_runs:
-                return
-            target_rid, target_lbl = next(iter(adapter.bg_runs.items()))
-            cur_rid = adapter.foreground_run_id
-            adapter.set_foreground(target_rid)
-            if cur_rid:
-                adapter.bg_runs[cur_rid] = cur_rid
-            attach = getattr(gateway, "attach", None)
-            if attach is not None:
-                import asyncio as _a
-                _a.create_task(attach(session_id, target_rid))
-
-        prompt = PromptSession("> ", bottom_toolbar=_bottom_toolbar, key_bindings=kb)
-        prompt_ctx = patch_stdout()
+def _ensure_serve_running() -> None:
+    base_url, token, unix = _resolve_endpoint()
+    if unix and Path(unix).exists() and _is_listening(unix, "", 0):
+        return
+    netloc = base_url.replace("http://", "").split("/", 1)[0]
+    if ":" in netloc and netloc != "unix":
+        host, port_s = netloc.split(":", 1)
     else:
-        prompt = prompt_factory()
-        prompt_ctx = _NullCtx()
+        host, port_s = "127.0.0.1", "17777"
+    if _is_listening(unix, host, int(port_s)):
+        return
+    log = Path.home() / ".xana" / "logs" / "serve.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    f = open(log, "a")
+    xana_bin = Path.home() / ".xana" / "bin" / "xana"
+    if not xana_bin.exists():
+        xana_bin_str = "xana"
+    else:
+        xana_bin_str = str(xana_bin)
+    subprocess.Popen(
+        [xana_bin_str, "serve"],
+        stdout=f, stderr=f, start_new_session=True,
+    )
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        if _is_listening(unix, host, int(port_s)):
+            return
+        time.sleep(0.2)
+    try:
+        tail = log.read_text().splitlines()[-20:]
+        msg = "\n".join(tail)
+    except Exception:
+        msg = "(log unavailable)"
+    raise RuntimeError(
+        f"xana serve failed to come up within 20s. log tail ({log}):\n{msg}")
 
-    with prompt_ctx:
-        while True:
-            try:
-                line = (await prompt.prompt_async()).strip()
-            except (EOFError, KeyboardInterrupt):
-                return 0
-            if not line:
-                continue
-            inbound = InboundMessage(adapter_id=adapter_id, session_id=session_id, text=line)
-            stream = gateway.submit(inbound)
-            inflight = asyncio.create_task(_drain(stream))
-            try:
-                await inflight
-            except KeyboardInterrupt:
-                inflight.cancel()
-                await gateway.cancel(session_id, None)
-                print("\n[xanac] ⏹ 已取消当前 turn。")
+
+def _evt_from_wire(data: dict):
+    """Reconstruct AgentEvent from SSE wire payload (mirror of
+    daemon_bridge._agent_event_to_dict)."""
+    from xana.agents.contracts import AgentEvent
+    from xana.harness_sdk.contracts import HarnessEvent
+    he = data.get("harness_event")
+    harness_event = None
+    if he:
+        harness_event = HarnessEvent(
+            kind=he["kind"], session_id=he["session_id"],
+            run_id=he["run_id"], payload=he.get("payload") or {})
+    return AgentEvent(
+        kind=data["kind"], session_id=data["session_id"],
+        payload=data.get("payload") or {}, harness_event=harness_event,
+    )
+
+
+async def _oneshot_run(
+    *, base_url: str, token: str, session_id: str, text: str,
+    out: TextIO, timeout_s: float = 120.0, unix_socket: str | None = None,
+) -> int:
+    """Submit `text`, consume SSE until final/error/cancelled, print card."""
+    client = DaemonClient(base_url=base_url, token=token,
+                          unix_socket=unix_socket)
+    try:
+        state = UnifiedCardState(card_id=session_id, ph_run_id=session_id)
+        done = asyncio.Event()
+        rc = 0
+
+        async def reader():
+            nonlocal rc, state
+            async for ev in client.stream(session_id):
+                if ev.event == "initialize":
+                    continue
+                if ev.event == "session.status":
+                    continue
+                if ev.event == "replay_gap":
+                    state = UnifiedCardState(
+                        card_id=session_id, ph_run_id=session_id)
+                    continue
+                if ev.event == "agent_event":
+                    aev = _evt_from_wire(ev.data)
+                    # Ensure terminal events surface even when no prior
+                    # turn_started/model_delta was observed (e.g. cached
+                    # replay starting partway through, or short server
+                    # responses): seed an AnswerSection so apply_event's
+                    # `final` branch has something to finalize.
+                    he = aev.harness_event
+                    if (he is not None and he.kind in ("final", "error")
+                            and state.answer is None):
+                        from xana.agent_adapter.channels.unified_card import (
+                            AnswerSection,
+                        )
+                        state.answer = AnswerSection()
+                    apply_event(state, aev)
+                    kind = ev.data.get("kind")
+                    if kind in ("final", "error", "cancelled"):
+                        if kind == "error":
+                            rc = 1
+                        done.set()
+                        return
+
+        reader_task = asyncio.create_task(reader())
+        await client.submit(session_id, text)
+        try:
+            await asyncio.wait_for(done.wait(), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            rc = 2
+        reader_task.cancel()
+        try:
+            await reader_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        out.write(render_card(state) + "\n")
+        return rc
+    finally:
+        await client.close()
+
+
+def _session_id(args: argparse.Namespace) -> str:
+    if args.random_session:
+        return f"cli-{secrets.token_hex(3)}"
+    return args.session
+
+
+async def _async_main(argv: list[str]) -> int:
+    args = _parse_args(argv)
+    text = " ".join(args.text).strip()
+    if args.interactive or (not text and sys.stdin.isatty()):
+        from xana.cli.xanac_textual import run_textual_with_daemon
+        return await run_textual_with_daemon(session_id=_session_id(args))
+    _ensure_serve_running()
+    base_url, token, unix = _resolve_endpoint()
+    return await _oneshot_run(
+        base_url=base_url, token=token,
+        session_id=_session_id(args), text=text,
+        out=sys.stdout, unix_socket=unix,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv if argv is not None else sys.argv[1:])
-    return asyncio.run(_run(args))
+    return asyncio.run(_async_main(argv if argv is not None else sys.argv[1:]))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
