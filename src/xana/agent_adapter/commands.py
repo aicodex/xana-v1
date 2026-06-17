@@ -134,28 +134,36 @@ class DefaultCommandRouter(CommandRouter):
                              payload={"buttons": rows, "linkify_commands": True})
 
     async def _cmd_clear(self, inbound: InboundMessage, args: str) -> CommandResult:
-        if self.active_context_store is None:
-            return CommandResult(ok=False, message="active_context_store 未配置")
-        snapshot = await self.active_context_store.get(inbound.session_id, "chat")
-        n = len(snapshot.messages) if snapshot else 0
-        await self.active_context_store.clear(inbound.session_id, "chat")
-        # /clear should produce a TRULY fresh session — rotate the adapter's
-        # binding so the next inbound from this chat resolves to a brand-new
-        # session_id. Without this, /resume etc. still surface historical runs
-        # from the old session. CLI-style adapters (fixed session_id, no
-        # binding store) silently skip — old behaviour preserved.
-        new_sid: str | None = None
+        # I17 (docs/design/session-and-card-state.md §1.7): /clear ROTATES the
+        # session_id for the current (adapter_id, thread_id). It does NOT wipe
+        # the old session's active_context, memory tree, or bg runs — those
+        # stay live in memory under the old sid (reachable via system.json
+        # edit + restart). Effect: the next inbound on the same external
+        # thread resolves to a NEW sid via SessionResolver, so prompts start
+        # from a true blank slate without losing prior work.
         adapters = getattr(self.gateway, "adapters", {}) if self.gateway is not None else {}
         adapter = adapters.get(inbound.adapter_id) if adapters else None
-        external_thread_id = inbound.metadata.get("chat_id") if inbound.metadata else None
+        # thread_id: feishu/tg = chat_id; cli = "" (single host = single thread)
+        if inbound.metadata and "chat_id" in inbound.metadata:
+            external_thread_id = inbound.metadata.get("chat_id") or ""
+        else:
+            external_thread_id = ""
+        new_sid: str | None = None
         rotate = getattr(adapter, "rotate_session", None) if adapter is not None else None
-        if rotate is not None and external_thread_id:
+        if rotate is not None:
             try:
                 new_sid = rotate(external_thread_id)
             except Exception:
                 new_sid = None
-        suffix = f"; 新 session={new_sid}" if new_sid else ""
-        return CommandResult(ok=True, message=f"[cleared] 已清空 {n} 条历史{suffix}")
+        if new_sid is None or new_sid == inbound.session_id:
+            return CommandResult(
+                ok=False,
+                message="[clear] 未能换会话 id (adapter 不支持 rotate_session)",
+            )
+        return CommandResult(
+            ok=True, message=f"[cleared] 已切换会话 id → {new_sid}",
+            payload={"new_session_id": new_sid},
+        )
 
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
         from xana.harness_sdk.compact import (

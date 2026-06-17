@@ -73,6 +73,37 @@ def ensure_user_system_json(target: Path | None = None) -> Path:
     return live
 
 
+def write_system_config(path: Path, system: SystemConfig) -> None:
+    """Atomically persist ``system`` to ``path`` (chmod 600).
+
+    Used as a mirror write by SessionResolver — in-memory state is
+    canonical (I15), this is the durable side-mirror. Atomic via
+    tmp + fsync + os.replace so partial writes never corrupt the file.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = system.model_dump(mode="json", exclude_none=False)
+    data = json.dumps(payload, indent=2, ensure_ascii=False)
+    # Idempotent: skip the write if disk already matches. Avoids spurious
+    # inode churn when resolve() hits an existing entry on a hot path.
+    if path.exists():
+        try:
+            if path.read_text(encoding="utf-8") == data:
+                return
+        except OSError:
+            pass
+    tmp = path.parent / (path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
 class JsonSystemConfigReader(ConfigReader):
     async def read(self, source: ConfigSource) -> RawConfig:
         assert source.path is not None, "JsonSystemConfigReader requires source.path"

@@ -142,11 +142,13 @@ class TelegramAdapter(Adapter):
         bindings: BindingStore,
         api_client: TelegramApiClient | None = None,
         pairing: PairingStore | None = None,
+        session_resolver: Any = None,
     ) -> None:
         self._config = config
         self._bindings = bindings
         self._api_client = api_client
         self._pairing = pairing
+        self._resolver = session_resolver
         self._status: str = "starting"
         self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._buffers: dict[str, _SessionBuffer] = {}
@@ -159,7 +161,14 @@ class TelegramAdapter(Adapter):
         self._gateway = gateway
 
     def rotate_session(self, external_thread_id: str) -> str:
+        if self._resolver is not None:
+            return self._resolver.rotate("tg", external_thread_id)
         return self._bindings.rotate(external_thread_id, prefix="tg")
+
+    def _allocate_sid(self, external_thread_id: str) -> str:
+        if self._resolver is not None:
+            return self._resolver.resolve("tg", external_thread_id)
+        return self._bindings.allocate(external_thread_id, prefix="tg")
 
     async def _drain_pending(self) -> None:
         while self._pending_tasks:

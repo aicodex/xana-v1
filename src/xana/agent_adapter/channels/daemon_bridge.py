@@ -37,11 +37,34 @@ class _SessionState:
 class DaemonBridgeAdapter(Adapter):
     adapter_id = "cli"
 
-    def __init__(self, ring_buffer_size: int = 5000) -> None:
+    def __init__(
+        self, ring_buffer_size: int = 5000,
+        session_resolver: Any = None,
+    ) -> None:
         self._ring_size = ring_buffer_size
         self._sessions: dict[str, _SessionState] = {}
         self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._status = "stopped"
+        self._resolver = session_resolver
+
+    # /clear hook: rotates the cli thread's session_id via the resolver.
+    # Without this, /clear over the CLI is a no-op for session rotation
+    # (legacy behaviour comment at commands.py:_cmd_clear).
+    def rotate_session(self, external_thread_id: str = "") -> str:
+        if self._resolver is None:
+            return external_thread_id  # legacy no-op
+        return self._resolver.rotate("cli", external_thread_id or "")
+
+    def current_session(self, external_thread_id: str = "") -> str | None:
+        if self._resolver is None:
+            return None
+        return self._resolver.current("cli", external_thread_id or "")
+
+    def resolve_session(self, external_thread_id: str = "") -> str | None:
+        """Returns the active sid for the given thread; mints if missing."""
+        if self._resolver is None:
+            return None
+        return self._resolver.resolve("cli", external_thread_id or "")
 
     async def start(self) -> None:
         self._status = "healthy"

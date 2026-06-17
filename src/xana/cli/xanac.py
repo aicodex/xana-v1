@@ -246,17 +246,42 @@ def _session_id(args: argparse.Namespace) -> str:
     return args.session
 
 
+async def _resolve_session_id(
+    args: argparse.Namespace, *, base_url: str, token: str, unix: str | None,
+) -> str:
+    """Pick the session_id: explicit --session wins; otherwise ask the
+    daemon's SessionResolver for the current cli/"" sid (so /clear-rotated
+    ids are followed automatically). Falls back to args.session if the
+    daemon has no resolver wired (legacy mode)."""
+    if args.random_session or args.session != "default":
+        return _session_id(args)
+    client = DaemonClient(base_url=base_url, token=token, unix_socket=unix)
+    try:
+        resolved = await client.resolve(adapter="cli", thread="")
+    finally:
+        await client.close()
+    return resolved or _session_id(args)
+
+
 async def _async_main(argv: list[str]) -> int:
     args = _parse_args(argv)
     text = " ".join(args.text).strip()
     if args.interactive or (not text and sys.stdin.isatty()):
+        _ensure_serve_running()
+        base_url, token, unix = _resolve_endpoint()
+        sid = await _resolve_session_id(
+            args, base_url=base_url, token=token, unix=unix,
+        )
         from xana.cli.xanac_textual import run_textual_with_daemon
-        return await run_textual_with_daemon(session_id=_session_id(args))
+        return await run_textual_with_daemon(session_id=sid)
     _ensure_serve_running()
     base_url, token, unix = _resolve_endpoint()
+    sid = await _resolve_session_id(
+        args, base_url=base_url, token=token, unix=unix,
+    )
     return await _oneshot_run(
         base_url=base_url, token=token,
-        session_id=_session_id(args), text=text,
+        session_id=sid, text=text,
         out=sys.stdout, unix_socket=unix,
     )
 

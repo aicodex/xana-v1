@@ -74,6 +74,22 @@ class DaemonClient:
         r = await self._client.post(f"/sessions/{sid}/submit", json=body)
         r.raise_for_status()
 
+    async def resolve(self, adapter: str = "cli", thread: str = "") -> str | None:
+        """Ask daemon for the current sid bound to (adapter, thread).
+
+        Returns None if the daemon's SessionResolver isn't wired (legacy
+        deployment). Callers should fall back to a client-side sid.
+        """
+        try:
+            r = await self._client.get(
+                "/resolve", params={"adapter": adapter, "thread": thread},
+            )
+            r.raise_for_status()
+            sid = str(r.json().get("session_id") or "")
+            return sid or None
+        except Exception:
+            return None
+
     async def cancel(self, sid: str, run_id: str | None = None) -> None:
         body = {"run_id": run_id} if run_id else {}
         r = await self._client.post(f"/sessions/{sid}/cancel", json=body)

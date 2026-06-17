@@ -98,11 +98,13 @@ class FeishuAdapter(Adapter):
         bindings: BindingStore,
         api_sender: FeishuApiSender | None = None,
         pairing: PairingStore | None = None,
+        session_resolver: Any = None,
     ) -> None:
         self._config = config
         self._bindings = bindings
         self._api_sender = api_sender
         self._pairing = pairing
+        self._resolver = session_resolver
         self._status: str = "starting"
         self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._buffers: dict[str, _SessionBuffer] = {}
@@ -115,7 +117,14 @@ class FeishuAdapter(Adapter):
         self._gateway = gateway
 
     def rotate_session(self, external_thread_id: str) -> str:
+        if self._resolver is not None:
+            return self._resolver.rotate("feishu", external_thread_id)
         return self._bindings.rotate(external_thread_id, prefix="feishu")
+
+    def _allocate_sid(self, external_thread_id: str) -> str:
+        if self._resolver is not None:
+            return self._resolver.resolve("feishu", external_thread_id)
+        return self._bindings.allocate(external_thread_id, prefix="feishu")
 
     async def _drain_pending(self) -> None:
         while self._pending_tasks:
@@ -172,7 +181,7 @@ class FeishuAdapter(Adapter):
         sender_id = parsed.sender_open_id or ""
         if not await self._gate_pairing(sender_id, parsed.chat_id, parsed.text):
             return
-        session_id = self._bindings.allocate(parsed.chat_id, prefix="feishu")
+        session_id = self._allocate_sid(parsed.chat_id)
         buf = self._get_or_create_buffer(session_id)
         buf.chat_id = parsed.chat_id
         # 记下用户消息 id,下一张新卡 send 时用 reply_to 引用
@@ -214,7 +223,7 @@ class FeishuAdapter(Adapter):
             target_run_id = str(value.get("run_id", "") or "")
             if not target_run_id or not chat_id or self._gateway is None:
                 return
-            session_id = self._bindings.allocate(chat_id, prefix="feishu")
+            session_id = self._allocate_sid(chat_id)
             try:
                 await self._gateway.attach(session_id, target_run_id)
             except Exception:
@@ -225,7 +234,7 @@ class FeishuAdapter(Adapter):
         if send_field.startswith("/cancel "):
             if not chat_id or self._gateway is None:
                 return
-            session_id = self._bindings.allocate(chat_id, prefix="feishu")
+            session_id = self._allocate_sid(chat_id)
             rid = send_field.split(" ", 1)[1].strip()
             if rid:
                 try:
@@ -237,7 +246,7 @@ class FeishuAdapter(Adapter):
         if action == "stop_foreground":
             if not chat_id or self._gateway is None:
                 return
-            session_id = self._bindings.allocate(chat_id, prefix="feishu")
+            session_id = self._allocate_sid(chat_id)
             runs = getattr(self._gateway, "_inflight", {}).get(session_id, [])
             fg = next((ir for ir in runs if getattr(ir, "is_attached", False)), None)
             if fg is None:
@@ -255,7 +264,7 @@ class FeishuAdapter(Adapter):
         if action == "detach_foreground" or value.get("detach"):
             if not chat_id or self._gateway is None:
                 return
-            session_id = self._bindings.allocate(chat_id, prefix="feishu")
+            session_id = self._allocate_sid(chat_id)
             try:
                 await self._gateway.detach_foreground(session_id)
             except Exception:
@@ -269,7 +278,7 @@ class FeishuAdapter(Adapter):
             open_id, chat_id, send_text
         ):
             return
-        session_id = self._bindings.allocate(chat_id, prefix="feishu")
+        session_id = self._allocate_sid(chat_id)
         self._get_or_create_buffer(session_id).chat_id = chat_id
         await self._inbound.put(
             InboundMessage(
@@ -285,7 +294,7 @@ class FeishuAdapter(Adapter):
         """加载剩余工具按钮回调:委托给 Card。"""
         if not chat_id:
             return
-        session_id = self._bindings.allocate(chat_id, prefix="feishu")
+        session_id = self._allocate_sid(chat_id)
         buf = self._get_or_create_buffer(session_id)
         card = buf.cards.get(card_id)
         if card is None:

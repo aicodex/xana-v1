@@ -37,7 +37,8 @@ from xana.runtime.daemon_http import build_daemon_app, run_tcp, run_unix_socket
 
 
 def build_adapters(
-    *, bindings_root: Path, env: dict[str, str], system: SystemConfig
+    *, bindings_root: Path, env: dict[str, str], system: SystemConfig,
+    session_resolver: object = None,
 ) -> list[Adapter]:
     adapters: list[Adapter] = []
     pairing = PairingStore(path=bindings_root / "pairings.json")
@@ -68,7 +69,10 @@ def build_adapters(
             connection_mode=connection_mode,
         )
         bindings = BindingStore(path=bindings_root / "feishu.bindings.json")
-        adapters.append(FeishuAdapter(config=cfg, bindings=bindings, pairing=pairing))
+        adapters.append(FeishuAdapter(
+            config=cfg, bindings=bindings, pairing=pairing,
+            session_resolver=session_resolver,
+        ))
 
     tg = system.channels.telegram
     bot_token = env.get("TELEGRAM_BOT_TOKEN") or tg.bot_token
@@ -81,7 +85,10 @@ def build_adapters(
         )
         cfg = TelegramConfig(bot_token=bot_token, allowed_user_ids=allowed)
         bindings = BindingStore(path=bindings_root / "telegram.bindings.json")
-        adapters.append(TelegramAdapter(config=cfg, bindings=bindings, pairing=pairing))
+        adapters.append(TelegramAdapter(
+            config=cfg, bindings=bindings, pairing=pairing,
+            session_resolver=session_resolver,
+        ))
     return adapters
 
 
@@ -263,12 +270,17 @@ async def _run_inner(argv: argparse.Namespace) -> int:
     )
     system = cp.load_system_config()  # boot() already called cp.load()
     bindings_root = pairings_path().parent
-    adapters = build_adapters(bindings_root=bindings_root, env=dict(os.environ), system=system)
+    adapters = build_adapters(
+        bindings_root=bindings_root, env=dict(os.environ), system=system,
+        session_resolver=boot_result.session_resolver,
+    )
 
     # Daemon HTTP+SSE wiring (always-on; replaces in-process xanac path).
     # Registered as adapter_id="cli" alongside feishu/tg adapters.
     daemon_cfg = system.daemon
-    daemon_bridge = DaemonBridgeAdapter()
+    daemon_bridge = DaemonBridgeAdapter(
+        session_resolver=boot_result.session_resolver,
+    )
     await daemon_bridge.start()
     await boot_result.gateway.register_adapter("cli", daemon_bridge)
     on_daemon_action = _make_daemon_on_action(boot_result.gateway)

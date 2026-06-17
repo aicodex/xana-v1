@@ -121,7 +121,24 @@ def build_daemon_app(
             asyncio.create_task(on_action(sid, kind, body))
         return web.json_response({}, status=202)
 
+    async def resolve_sid(request):
+        # Returns the SessionResolver's current sid for (adapter, thread).
+        # Used by clients (xanac) to follow /clear rotations: before each
+        # submit, ask which sid we should use right now.
+        # Query: ?adapter=cli&thread=  (thread defaults to "")
+        adapter_id = request.query.get("adapter", "cli")
+        thread_id = request.query.get("thread", "")
+        sid = bridge.resolve_session(thread_id) if adapter_id == "cli" else None
+        if sid is None:
+            return web.json_response(
+                {"error": "resolver unavailable for adapter"}, status=404,
+            )
+        return web.json_response({
+            "adapter": adapter_id, "thread": thread_id, "session_id": sid,
+        })
+
     app.router.add_get("/healthz", healthz)
+    app.router.add_get("/resolve", resolve_sid)
     app.router.add_post("/sessions/{sid}/submit", submit)
     app.router.add_get("/sessions/{sid}/stream", stream)
     app.router.add_post(

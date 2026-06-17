@@ -129,6 +129,14 @@ class DaemonConfig(BaseModel):
 
 
 class SystemConfig(BaseModel):
+    """System-level config persisted at ~/.xana/config/system.json.
+
+    ``sessions`` is the unified (adapter_id, thread_id) -> session_id map
+    used by SessionResolver. Key format: ``f"{adapter_id}:{thread_id}"``
+    where thread_id is feishu/tg chat_id, "" for cli. See
+    docs/design/session-and-card-state.md §1.0. The file is read ONLY at
+    boot; runtime mirrors writes here but never re-reads (per I16).
+    """
     model_config = ConfigDict(extra="forbid")
 
     models: list[ModelEntry] = []
@@ -140,6 +148,7 @@ class SystemConfig(BaseModel):
     mcp: Mcp = Mcp()
     policy: PolicyConfig = PolicyConfig()
     daemon: DaemonConfig = DaemonConfig()
+    sessions: dict[str, str] = {}
 
     def model(self, name: str) -> Optional[ModelEntry]:
         return next((m for m in self.models if m.name == name), None)

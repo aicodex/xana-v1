@@ -22,7 +22,11 @@ from xana.agent_adapter.progress import AdapterProgressSink
 from xana.agent_adapter.router import DefaultAgentRequestRouter
 from xana.agents.chat_agent import ChatAgent, build_chat_agent_spec
 from xana.agents.interfaces import Agent
-from xana.config.loader import DefaultConfigProvider, derive_compact_thresholds
+from xana.config.loader import (
+    DefaultConfigProvider,
+    default_system_json_source,
+    derive_compact_thresholds,
+)
 from xana.extension_api.builtin.skills_listing import SkillsListingContributor
 from xana.extension_api.registry import ExtensionRegistry, ExtensionRegistryBuilder
 from xana.harness_sdk.default import DefaultHarness
@@ -66,6 +70,7 @@ from xana.session_config.file_store import FileSessionConfigStore
 from xana.session_config.interfaces import SessionConfigStore
 from xana.tools.builtin._todo_store import TodoStore
 from xana.runtime.scheduler import FileSchedulerService
+from xana.runtime.session_resolver import SessionResolver
 from xana.tools.builtin.bash import BashTool
 from xana.tools.builtin.cron import CronCreateTool, CronDeleteTool, CronListTool
 from xana.tools.builtin.edit import EditTool
@@ -108,6 +113,7 @@ class BootResult:
     provider: str
     model: str
     scheduler: FileSchedulerService | None = None
+    session_resolver: SessionResolver | None = None
     main_writer: MainWriter | None = None
     run_jsonl_writer: RunJsonlWriter | None = None
     write_queue: WriteQueue | None = None
@@ -212,6 +218,15 @@ async def boot(
     runtime_config = await cp.load(project_root)
     system_cfg = cp.load_system_config()
     model_thresholds = {e.name: derive_compact_thresholds(e) for e in system_cfg.models}
+    # SessionResolver — single source of truth for (adapter_id, thread_id) -> sid.
+    # Seeded from system_cfg.sessions (read-once at boot per I16); mirror-writes
+    # back to the same system.json path.
+    _sys_json_path = default_system_json_source().path
+    assert _sys_json_path is not None
+    session_resolver = SessionResolver(
+        system_config=system_cfg,
+        system_json_path=_sys_json_path,
+    )
     # web_search:brave key 走 system.json 既有 web_search.brave_search_key 字段
     await tools.register(WebSearchTool(
         session_config_store=session_config_store,
@@ -300,7 +315,7 @@ async def boot(
         session_config_store=session_config_store,
         active_context_store=active_ctx,
         gateway=gateway,
-        available_models=tuple(runtime_config.models.keys()) if hasattr(runtime_config, "models") else (model,),
+        available_models=tuple(getattr(runtime_config, "models", {}).keys()) or (model,),
         available_search_providers=("native", "brave", "duckduckgo"),
         available_efforts=SUPPORTED_EFFORTS,
         model_registry=model_registry,
@@ -328,6 +343,7 @@ async def boot(
         provider=provider,
         model=model,
         scheduler=scheduler,
+        session_resolver=session_resolver,
         main_writer=main_writer,
         run_jsonl_writer=run_jsonl_writer,
         write_queue=write_queue,
