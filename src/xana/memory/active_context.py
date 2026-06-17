@@ -20,6 +20,11 @@ from pathlib import Path
 from xana.memory.contracts import ActiveContext, HistoryRow, InjectedBlock, MemoryMessage, Placeholder, ReplayResult
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror, MemoryInjector, MemoryInjectorRegistry
 
+# TYPE_CHECKING-only import to avoid circular dependency at runtime.
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from xana.context.sdk import ContextSDK
+
 
 def _debug_on() -> bool:
     return os.environ.get("XANA_DEBUG_ACTCTX", "") in ("1", "true", "on", "yes")
@@ -74,13 +79,109 @@ def _log_state(
 
 
 class InMemoryActiveContextStore(ActiveContextStore):
-    def __init__(self) -> None:
+    def __init__(self, context_sdk: "ContextSDK | None" = None) -> None:
         self._store: dict[tuple[str, str], ActiveContext] = {}
         # per-(session,agent) 混合序列，按追加顺序记录 MemoryMessage 或 Placeholder。
         # 与 _store[key].messages 是独立视图：前者含 PH，后者只装 MemoryMessage。
         self._snapshots: dict[tuple[str, str], list[MemoryMessage | Placeholder]] = {}
+        # P3-D: when set, this store mirror-writes every mutation to the SDK
+        # and serves reads from the SDK buffer (canonical). The legacy
+        # in-memory buffers above are kept in sync for debug logging and as
+        # a fallback when the SDK does not represent a payload (system
+        # messages, currently).
+        self._sdk: "ContextSDK | None" = context_sdk
+
+    # ------------------------------------------------------------------
+    # SDK bridge helpers
+    # ------------------------------------------------------------------
+
+    def _sdk_buffer(self, session_id: str, agent_name: str):
+        if self._sdk is None:
+            return None
+        # Direct buffer access — same view ContextSDK uses internally; we
+        # never mutate it from here.
+        return self._sdk._store.buffer(session_id, agent_name)
+
+    async def _sdk_mirror_append_message(
+        self, session_id: str, agent_name: str, message: MemoryMessage
+    ) -> None:
+        if self._sdk is None:
+            return
+        from xana.memory._message_bridge import memory_message_to_sdk
+        sdk_msg = memory_message_to_sdk(message)
+        if sdk_msg is None:
+            return
+        st = self._sdk._store.state(session_id)
+        async with st.write_lock:
+            self._sdk._store.buffer(session_id, agent_name).append(sdk_msg)
+
+    async def _sdk_mirror_append_placeholder(
+        self, session_id: str, agent_name: str, placeholder: Placeholder
+    ) -> None:
+        if self._sdk is None:
+            return
+        from xana.memory._message_bridge import placeholder_to_sdk
+        sdk_ph = placeholder_to_sdk(placeholder)
+        st = self._sdk._store.state(session_id)
+        async with st.write_lock:
+            self._sdk._store.buffer(session_id, agent_name).append(sdk_ph)
+
+    async def _sdk_mirror_replace_placeholder(
+        self, run_id: str, replace_with: tuple[MemoryMessage, ...]
+    ) -> None:
+        if self._sdk is None:
+            return
+        from xana.memory._message_bridge import memory_message_to_sdk
+        sdk_msgs = [m for m in (memory_message_to_sdk(x) for x in replace_with) if m is not None]
+        # Find the buffer that holds this run_id.
+        for (sid, agent), buf in self._sdk._store._buffers.items():
+            idx = self._sdk._store.find_by_run_id(buf, run_id)
+            if idx < 0:
+                continue
+            st = self._sdk._store.state(sid)
+            async with st.write_lock:
+                buf[idx:idx + 1] = sdk_msgs
+            return
+
+    async def _sdk_mirror_replace_range(
+        self,
+        session_id: str,
+        agent_name: str,
+        start_idx: int,
+        end_idx: int,
+        summary_message: MemoryMessage,
+    ) -> None:
+        if self._sdk is None:
+            return
+        from xana.memory._message_bridge import memory_message_to_sdk
+        sdk_msg = memory_message_to_sdk(summary_message)
+        st = self._sdk._store.state(session_id)
+        async with st.write_lock:
+            buf = self._sdk._store.buffer(session_id, agent_name)
+            if start_idx < 0 or end_idx > len(buf) or start_idx >= end_idx:
+                return
+            buf[start_idx:end_idx] = [sdk_msg] if sdk_msg is not None else []
 
     async def get(self, session_id: str, agent_name: str) -> ActiveContext | None:
+        if self._sdk is not None:
+            from xana.memory._message_bridge import sdk_buffer_to_legacy_pure
+            buf = self._sdk_buffer(session_id, agent_name)
+            if buf is None or not buf:
+                # No SDK data yet — fall back to legacy view (e.g. before
+                # any writes happen, or for system-only contexts).
+                ctx = self._store.get((session_id, agent_name))
+                _log_state("get" if ctx else "get_miss",
+                           session_id, agent_name, ctx.messages if ctx else ())
+                return ctx
+            msgs = sdk_buffer_to_legacy_pure(buf)
+            ctx = ActiveContext(
+                session_id=session_id,
+                agent_name=agent_name,
+                messages=msgs,
+                token_estimate=sum(len(m.content) for m in msgs),
+            )
+            _log_state("get", session_id, agent_name, ctx.messages)
+            return ctx
         ctx = self._store.get((session_id, agent_name))
         if ctx is not None:
             _log_state("get", session_id, agent_name, ctx.messages)
@@ -92,6 +193,16 @@ class InMemoryActiveContextStore(ActiveContextStore):
         self._store[(context.session_id, context.agent_name)] = context
         self._snapshots[(context.session_id, context.agent_name)] = list(context.messages)
         _log_state("set", context.session_id, context.agent_name, context.messages)
+        if self._sdk is not None:
+            from xana.memory._message_bridge import memory_message_to_sdk
+            st = self._sdk._store.state(context.session_id)
+            async with st.write_lock:
+                buf = self._sdk._store.buffer(context.session_id, context.agent_name)
+                buf.clear()
+                for m in context.messages:
+                    sdk_msg = memory_message_to_sdk(m)
+                    if sdk_msg is not None:
+                        buf.append(sdk_msg)
 
     async def append_message(self, session_id: str, agent_name: str, message: MemoryMessage) -> ActiveContext:
         key = (session_id, agent_name)
@@ -104,6 +215,7 @@ class InMemoryActiveContextStore(ActiveContextStore):
         self._store[key] = updated
         self._snapshots.setdefault(key, []).append(message)
         _log_state("append_msg", session_id, agent_name, updated.messages)
+        await self._sdk_mirror_append_message(session_id, agent_name, message)
         return updated
 
     async def compact(self, session_id: str, agent_name: str, summary: str) -> ActiveContext:
@@ -113,16 +225,31 @@ class InMemoryActiveContextStore(ActiveContextStore):
         self._store[key] = updated
         self._snapshots[key] = []
         _log_state("compact", session_id, agent_name, ())
+        if self._sdk is not None:
+            st = self._sdk._store.state(session_id)
+            async with st.write_lock:
+                self._sdk._store.buffer(session_id, agent_name).clear()
         return updated
 
     async def clear(self, session_id: str, agent_name: str) -> None:
         self._store.pop((session_id, agent_name), None)
         self._snapshots.pop((session_id, agent_name), None)
         _log_state("clear", session_id, agent_name, ())
+        if self._sdk is not None:
+            st = self._sdk._store.state(session_id)
+            async with st.write_lock:
+                self._sdk._store.buffer(session_id, agent_name).clear()
 
     async def snapshot(
         self, session_id: str, agent_name: str
     ) -> tuple[MemoryMessage | Placeholder, ...]:
+        if self._sdk is not None:
+            from xana.memory._message_bridge import sdk_buffer_to_legacy_mixed
+            buf = self._sdk_buffer(session_id, agent_name)
+            if buf:
+                snap = sdk_buffer_to_legacy_mixed(buf)
+                _log_state("snapshot", session_id, agent_name, snap)
+                return snap
         snap = tuple(self._snapshots.get((session_id, agent_name), ()))
         _log_state("snapshot", session_id, agent_name, snap)
         return snap
@@ -135,6 +262,7 @@ class InMemoryActiveContextStore(ActiveContextStore):
         if key not in self._store:
             self._store[key] = ActiveContext(session_id=session_id, agent_name=agent_name)
         _log_state("append_ph", session_id, agent_name, self._snapshots[key])
+        await self._sdk_mirror_append_placeholder(session_id, agent_name, placeholder)
 
     async def replace_placeholder(
         self,
@@ -158,6 +286,7 @@ class InMemoryActiveContextStore(ActiveContextStore):
                     _log_state(
                         f"replace_ph(run={run_id})", key[0], key[1], items,
                     )
+                    await self._sdk_mirror_replace_placeholder(run_id, replace_with)
                     return updated
         return None
 
@@ -189,6 +318,9 @@ class InMemoryActiveContextStore(ActiveContextStore):
         _log_state(
             f"replace_range[{start_idx}:{end_idx}]",
             session_id, agent_name, items,
+        )
+        await self._sdk_mirror_replace_range(
+            session_id, agent_name, start_idx, end_idx, summary_message
         )
         return updated
 

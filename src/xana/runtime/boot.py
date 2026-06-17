@@ -146,7 +146,12 @@ async def boot(
     injector_registry = DefaultMemoryInjectorRegistry()
     await injector_registry.register(injector, priority=100)
 
-    active_ctx_inner = InMemoryActiveContextStore()
+    # §1.5 Compact-as-PH: construct ContextSDK FIRST, then back the legacy
+    # InMemoryActiveContextStore with it so writes flow into both stores and
+    # reads are served from the SDK (canonical). P3-D.
+    from xana.context.sdk import ContextSDK
+    context_sdk = ContextSDK()
+    active_ctx_inner = InMemoryActiveContextStore(context_sdk=context_sdk)
     main_writer: MainWriter | None = None
     run_jsonl_writer: RunJsonlWriter | None = None
     mirror: HistoryMirror
@@ -311,13 +316,9 @@ async def boot(
 
     gateway.agents["chat"] = chat_agent
 
-    # §1.5 Compact-as-PH: ContextSDK runs alongside the legacy
-    # active_context_store (shadow). /compact uses the SDK as the single
-    # write coordinator; harness prompt building remains on the legacy
-    # store until P3-D.
-    from xana.context.sdk import ContextSDK
-    context_sdk = ContextSDK()
-
+    # §1.5 Compact-as-PH: ContextSDK constructed above and bound into the
+    # legacy active_context_store; same instance is wired into the
+    # command router so /compact reaches the same buffer.
     command_router = DefaultCommandRouter(
         session_config_store=session_config_store,
         active_context_store=active_ctx,
