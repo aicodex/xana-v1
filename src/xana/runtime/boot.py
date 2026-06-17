@@ -311,10 +311,18 @@ async def boot(
 
     gateway.agents["chat"] = chat_agent
 
+    # §1.5 Compact-as-PH: ContextSDK runs alongside the legacy
+    # active_context_store (shadow). /compact uses the SDK as the single
+    # write coordinator; harness prompt building remains on the legacy
+    # store until P3-D.
+    from xana.context.sdk import ContextSDK
+    context_sdk = ContextSDK()
+
     command_router = DefaultCommandRouter(
         session_config_store=session_config_store,
         active_context_store=active_ctx,
         gateway=gateway,
+        context_sdk=context_sdk,
         available_models=tuple(getattr(runtime_config, "models", {}).keys()) or (model,),
         available_search_providers=("native", "brave", "duckduckgo"),
         available_efforts=SUPPORTED_EFFORTS,

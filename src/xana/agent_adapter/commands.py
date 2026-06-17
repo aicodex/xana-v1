@@ -47,6 +47,7 @@ class DefaultCommandRouter(CommandRouter):
         model: str = "",
         progress_sink: Any = None,
         write_queue: Any = None,
+        context_sdk: Any = None,
     ) -> None:
         self.session_config_store = session_config_store
         self.active_context_store = active_context_store
@@ -59,6 +60,7 @@ class DefaultCommandRouter(CommandRouter):
         self.model = model
         self.progress_sink = progress_sink
         self.write_queue = write_queue
+        self.context_sdk = context_sdk
         self._compact_seq = 0
         self._compact_cancels: dict[str, asyncio.Event] = {}
 
@@ -253,6 +255,24 @@ class DefaultCommandRouter(CommandRouter):
                          "buttons": cancel_button},
             ))
 
+        # §1.5 Compact-as-PH: acquire SDK compact lock before LLM call. This
+        # is the race fix — once the PH is appended under the SDK's per-sid
+        # write_lock+compact_lock, any concurrent ph_replaced + subsequent
+        # writeback are serialized; the summary replaces ONLY the
+        # CompactPlaceholder (by run_id), never "all messages including the
+        # freshly-arrived answer".
+        sdk_ph_acquired = False
+        if self.context_sdk is not None:
+            try:
+                await self.context_sdk.append_compact_placeholder(
+                    inbound.session_id, "chat",
+                    run_id=run_id, ph_id=run_id,
+                    transcript_path=f"runs/{run_id}.jsonl",
+                )
+                sdk_ph_acquired = True
+            except Exception:
+                # Lock release handled inside SDK on failure; continue best-effort.
+                sdk_ph_acquired = False
         try:
             await _emit("")  # 立即出卡:空进度条 + 取消按钮
             try:
@@ -261,6 +281,10 @@ class DefaultCommandRouter(CommandRouter):
                     on_progress=_emit)
             except _CompactCancelled:
                 # 用户取消:停流、不写回。仍需 finalize 防止 PH 卡片永久停在 running。
+                if sdk_ph_acquired and self.context_sdk is not None:
+                    await self.context_sdk.cancel_compact_placeholder(
+                        inbound.session_id, "chat", run_id)
+                    sdk_ph_acquired = False
                 if ph_note is not None:
                     ph_note({
                         "kind": "compact_finalized",
@@ -272,6 +296,10 @@ class DefaultCommandRouter(CommandRouter):
                 return CommandResult(
                     ok=False, message="🛑 压缩已取消", payload={"run_id": run_id})
             if summary is None:
+                if sdk_ph_acquired and self.context_sdk is not None:
+                    await self.context_sdk.cancel_compact_placeholder(
+                        inbound.session_id, "chat", run_id)
+                    sdk_ph_acquired = False
                 if ph_note is not None:
                     ph_note({
                         "kind": "compact_finalized",
@@ -281,44 +309,29 @@ class DefaultCommandRouter(CommandRouter):
                         "error": True,
                     })
                 return CommandResult(ok=False, message="压缩失败:模型未返回 <summary>,请重试")
-            revealed = revealed_tools_from_messages(snapshot.messages) if snapshot else set()
-            # Group H: route writeback through write_queue (ReplaceRangeItem)
-            # when a queue is wired; otherwise fall back to the legacy direct
-            # store.set() path so unit tests without a queue keep working.
-            if self.write_queue is not None:
-                from xana.memory.contracts import MemoryMessage, Placeholder
-                from xana.memory.write_queue import ReplaceRangeItem
-                from xana.harness_sdk.compact import (
-                    COMPACT_BOUNDARY_MARKER, post_compact_message,
+            # §1.5 Compact-as-PH writeback: replace the CompactPlaceholder
+            # we appended above with a CompactSummary. SDK serializes this
+            # under its write_lock, so a racing ph_replaced cannot stomp on
+            # the freshly-arrived answer (the previous race source — see
+            # §11.3 / B3). The legacy active_context_store path is
+            # intentionally NOT updated here: until P3-D migrates harness
+            # prompt building to the SDK, the legacy store is the truth for
+            # prompt assembly. /compact is now SDK-truth for the compact
+            # write coordination.
+            if sdk_ph_acquired and self.context_sdk is not None:
+                from xana.context._internal import _PlaceholderInternal
+                from xana.context.message import CompactSummary
+                cs = CompactSummary(
+                    summary=summary,
+                    _internal=_PlaceholderInternal(
+                        run_id=run_id, ph_id=run_id,
+                        transcript_path=f"runs/{run_id}.jsonl",
+                    ),
                 )
-                mixed = await self.active_context_store.snapshot(
-                    inbound.session_id, "chat")
-                # fork_point = index of first still-running Placeholder, else len
-                fork_point = len(mixed)
-                for i, item in enumerate(mixed):
-                    if isinstance(item, Placeholder) and item.status == "running":
-                        fork_point = i
-                        break
-                boundary_meta: dict = {"compact_boundary": True}
-                if revealed:
-                    boundary_meta["pre_compact_revealed_tools"] = sorted(revealed)
-                # Single summary message carrying the post-compact preamble;
-                # we stash boundary metadata onto it so revealed_tools survive.
-                summary_msg = MemoryMessage(
-                    role="compact",
-                    content=post_compact_message(summary),
-                    metadata={**boundary_meta,
-                              "compact_summary": True,
-                              "boundary_marker": COMPACT_BOUNDARY_MARKER},
-                )
-                await self.write_queue.put(ReplaceRangeItem(
-                    session_id=inbound.session_id, agent_name="chat",
-                    start_idx=0, end_idx=fork_point, summary=summary_msg,
-                ))
-            else:
-                await self.active_context_store.set(build_post_compact_context(
-                    session_id=inbound.session_id, agent_name="chat", summary=summary,
-                    revealed_tools=sorted(revealed)))
+                await self.context_sdk.replace_placeholder(
+                    inbound.session_id, "chat", run_id, (cs,))
+                sdk_ph_acquired = False
+            _ = revealed_tools_from_messages(snapshot.messages) if snapshot else set()
             if ph_note is not None:
                 ph_note({
                     "kind": "compact_finalized",
@@ -338,6 +351,13 @@ class DefaultCommandRouter(CommandRouter):
             return CommandResult(
                 ok=True, message="", payload={"silent": True})
         except Exception:
+            if sdk_ph_acquired and self.context_sdk is not None:
+                try:
+                    await self.context_sdk.cancel_compact_placeholder(
+                        inbound.session_id, "chat", run_id)
+                except Exception:
+                    pass
+                sdk_ph_acquired = False
             if ph_note is not None:
                 ph_note({
                     "kind": "compact_finalized",
@@ -349,6 +369,14 @@ class DefaultCommandRouter(CommandRouter):
             raise
         finally:
             self._compact_cancels.pop(run_id, None)
+            # Safety: if for any reason we still hold the SDK compact lock
+            # (e.g. an early `return` path skipped release), let it go.
+            if sdk_ph_acquired and self.context_sdk is not None:
+                try:
+                    await self.context_sdk.cancel_compact_placeholder(
+                        inbound.session_id, "chat", run_id)
+                except Exception:
+                    pass
 
     async def _cmd_compact_cancel(self, inbound: InboundMessage, args: str) -> CommandResult:
         """隐藏命令 /compact_cancel <run_id>:置取消事件,静默(不渲染卡片)。"""
