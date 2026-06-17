@@ -123,9 +123,21 @@ class DaemonConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     unix_socket: str = "~/.xana/run/serve.sock"
-    bind: Optional[str] = None        # e.g. "127.0.0.1" / "0.0.0.0"
+    # Always bind a TCP port — this is the OS-level single-instance lock.
+    # A second `xana serve` will fail with EADDRINUSE before it can take over
+    # the unix socket (UnixSite silently unlinks the old one, defeating that
+    # path as a guard). Empty/None values from legacy system.json auto-upgrade
+    # to the default 127.0.0.1 below.
+    bind: str = "127.0.0.1"
     port: int = 17777
     token: str = ""                    # 32-byte hex; setup wizard populates
+
+    @field_validator("bind", mode="before")
+    @classmethod
+    def _coerce_bind(cls, v):
+        if v is None or v == "":
+            return "127.0.0.1"
+        return v
 
 
 class SystemConfig(BaseModel):

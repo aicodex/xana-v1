@@ -278,6 +278,29 @@ async def _run_inner(argv: argparse.Namespace) -> int:
     # Daemon HTTP+SSE wiring (always-on; replaces in-process xanac path).
     # Registered as adapter_id="cli" alongside feishu/tg adapters.
     daemon_cfg = system.daemon
+    # TCP bind is MANDATORY — it's the OS-level single-instance lock. A
+    # second `xana serve` invocation will fail this preflight before it
+    # can steal the unix socket (UnixSite silently unlinks the old one,
+    # so it can't be used as a guard). Pre-bind synchronously so the
+    # error propagates back to main and exits the process cleanly.
+    if not daemon_cfg.bind:
+        raise RuntimeError(
+            "daemon.bind must be set in system.json — TCP port is the "
+            "single-instance lock; disabling it allows split-brain serves."
+        )
+    import socket as _socket
+    _preflight = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    try:
+        _preflight.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        _preflight.bind((daemon_cfg.bind, daemon_cfg.port))
+    except OSError as e:
+        _preflight.close()
+        raise SystemExit(
+            f"[xana serve] cannot bind {daemon_cfg.bind}:{daemon_cfg.port}"
+            f" — another serve is already running ({e})"
+        ) from None
+    _preflight.close()
+
     daemon_bridge = DaemonBridgeAdapter(
         session_resolver=boot_result.session_resolver,
     )
@@ -295,19 +318,18 @@ async def _run_inner(argv: argparse.Namespace) -> int:
             asyncio.create_task(run_unix_socket(unix_app, str(unix_path)))
         )
         print(f"[daemon] unix socket {unix_path}")
-    if daemon_cfg.bind:
-        tcp_app = build_daemon_app(
-            bridge=daemon_bridge, token=daemon_cfg.token, on_action=on_daemon_action,
+    tcp_app = build_daemon_app(
+        bridge=daemon_bridge, token=daemon_cfg.token, on_action=on_daemon_action,
+    )
+    daemon_tasks.append(
+        asyncio.create_task(run_tcp(tcp_app, daemon_cfg.bind, daemon_cfg.port))
+    )
+    print(f"[daemon] tcp {daemon_cfg.bind}:{daemon_cfg.port}")
+    if daemon_cfg.bind == "0.0.0.0":
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "daemon bound to 0.0.0.0 — exposed to LAN"
         )
-        daemon_tasks.append(
-            asyncio.create_task(run_tcp(tcp_app, daemon_cfg.bind, daemon_cfg.port))
-        )
-        print(f"[daemon] tcp {daemon_cfg.bind}:{daemon_cfg.port}")
-        if daemon_cfg.bind == "0.0.0.0":
-            import logging as _logging
-            _logging.getLogger(__name__).warning(
-                "daemon bound to 0.0.0.0 — exposed to LAN"
-            )
 
     if not adapters:
         print("[xana serve] no chat adapters configured — daemon only.")

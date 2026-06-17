@@ -406,3 +406,31 @@ CLI 见 [channels/cli.md](./channels/cli.md)。
 | §1.7 | /clear 触发 detach |
 | §1.8 | detach 只有"后台回答"按钮 + 任何菜单/命令 submit 触发;attach 永远新建卡(目标已 terminal 也新建) |
 | §6  | TG 比飞书多 3 个按钮(展开 思考/工具/答案 全量),tools 翻页每页 4 个;answer markdown 不闭合守门 |
+
+---
+
+## 11. 待落地重构(用户已确认,排队中)
+
+### 11.1 TurnMessage 类 + 平台序列化器
+
+**问题**:当前 `MemoryMessage` / `Placeholder` 直接被 ph_expand 展开成纯 dict,送给模型。PH 的 `run_id` / 内部元数据可能泄漏到 prompt,导致模型推测出"上下文 = jsonl 路径 = 我可以读取"。
+
+**重构契约**:
+- 定义 `TurnMessage` 基类(role + 文本 + **内部元数据**)
+- 内部元数据(run_id, ph_run_id, message_id, debug fields...)**在序列化时全部剥离**,模型 prompt 永不携带
+- 实现两个 platform serializer:
+  - `serialize_for_openai(turn_messages) -> list[dict]`
+  - `serialize_for_anthropic(turn_messages) -> list[dict]`
+  - 两家协议略有差异(tool_calls 嵌套形态、system 角色处理等)
+- Placeholder 在序列化时变成 `MemoryMessage(role="assistant", content="[正在后台回答 '{label}',不要重复尝试运行此内容。]")` — **无 run_id,无 UUID**
+- 模型看到的 PH = 普通 1:1 聊天的一句 assistant 回复,**0 区别**
+
+**测试合约(待写)**:
+- I18: 序列化结果中**禁止**出现任何 run_id / UUID / 内部字段
+- I19: PH 序列化文本必须以 "正在后台回答" 起,不含 run 标识
+
+### 11.2 待修 bug(以日志验证)
+
+- **B1**: PH 被 `replace_placeholder` 两次(每次 run 回写正常只 1 次)— `active_context.replace_placeholder` 逻辑 bug,或调用方双触发
+- **B2**: /compact 摘要包含 /clear 之前的内容 — 跨 session 内存污染。/clear 只动了 active_context,但 compact 走的可能是另一份历史(history mirror / memory tree)
+- **B3**: /compact 完成后,PH 前的内容**没被替换为摘要**(违反 §1.5 case B)
