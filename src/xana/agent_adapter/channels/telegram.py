@@ -281,7 +281,7 @@ class TelegramAdapter(Adapter):
         if not await self._gate(user_id_int, chat_id, text):
             return
 
-        session_id = self._bindings.allocate(chat_id, prefix="tg")
+        session_id = self._allocate_sid(chat_id)
         buf = self._get_or_create_buffer(session_id)
         buf.chat_id = chat_id
         # 记下用户消息 id 和前 100 字引用片段,下一张新卡 send 时设 reply_to
@@ -356,7 +356,7 @@ class TelegramAdapter(Adapter):
 
         if data.startswith("__detach__:"):
             if self._gateway is not None:
-                session_id = self._bindings.allocate(chat_id, prefix="tg")
+                session_id = self._allocate_sid(chat_id)
                 try:
                     await self._gateway.detach_foreground(session_id)
                 except Exception as exc:
@@ -369,7 +369,7 @@ class TelegramAdapter(Adapter):
 
         if data.startswith("__load_tools__:"):
             card_id = data.split(":", 1)[1]
-            session_id = self._bindings.allocate(chat_id, prefix="tg")
+            session_id = self._allocate_sid(chat_id)
             buf = self._get_or_create_buffer(session_id)
             card = buf.cards.get(card_id)
             if card is not None:
@@ -386,7 +386,7 @@ class TelegramAdapter(Adapter):
             except (ValueError, TypeError):
                 await _ack()
                 return
-            session_id = self._bindings.allocate(chat_id, prefix="tg")
+            session_id = self._allocate_sid(chat_id)
             buf = self._get_or_create_buffer(session_id)
             card = buf.cards.get(card_id)
             if card is not None:
@@ -403,7 +403,7 @@ class TelegramAdapter(Adapter):
             except ValueError:
                 await _ack()
                 return
-            session_id = self._bindings.allocate(chat_id, prefix="tg")
+            session_id = self._allocate_sid(chat_id)
             buf = self._get_or_create_buffer(session_id)
             card = buf.cards.get(card_id)
             if card is not None:
@@ -420,7 +420,7 @@ class TelegramAdapter(Adapter):
             except (ValueError, TypeError):
                 await _ack()
                 return
-            session_id = self._bindings.allocate(chat_id, prefix="tg")
+            session_id = self._allocate_sid(chat_id)
             buf = self._get_or_create_buffer(session_id)
             card = buf.cards.get(card_id)
             if card is not None:
@@ -432,7 +432,7 @@ class TelegramAdapter(Adapter):
 
         if data.startswith("__expand_back__:"):
             card_id = data.split(":", 1)[1]
-            session_id = self._bindings.allocate(chat_id, prefix="tg")
+            session_id = self._allocate_sid(chat_id)
             buf = self._get_or_create_buffer(session_id)
             card = buf.cards.get(card_id)
             if card is not None:
@@ -450,7 +450,7 @@ class TelegramAdapter(Adapter):
         # /attach r1, /help). Run through the same gate as direct messages.
         if data:
             if await self._gate(user_id_int, chat_id, data):
-                session_id = self._bindings.allocate(chat_id, prefix="tg")
+                session_id = self._allocate_sid(chat_id)
                 self._get_or_create_buffer(session_id).chat_id = chat_id
                 user_id = str(user_id_int) if user_id_int is not None else ""
                 await self._inbound.put(InboundMessage(
