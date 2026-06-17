@@ -1,14 +1,17 @@
 # Session / Run / Card 状态机(终极版)
 
-> 本文档是 async + 卡片所有行为的**最终来源**。docs/superpowers/specs/ 下早期 spec 之间互相打架,以本文为准。
-> 修改本文 = 修改契约,必须先经用户确认。`tests/e2e_real/test_card_state_contract.py` 是本文的可执行断言,merge gate 必跑,**不得改测试糊弄**。
+> 本文是 async + 卡片 + 上下文 所有行为的**唯一来源**。
+> 文档只描述**当前正确设计**,无历史、无对比、无"旧/新"。
+> 修改本文 = 修改契约,先经用户确认。`tests/e2e_real/test_card_state_contract.py` 是本文的可执行断言,merge-gate 必跑。
 
 ---
 
 ## 0. 总原则
 
-- **异步与同步都走异步**。所谓"同步"只是异步 + 阻塞了消息消费队列的特例。包括用户消息等待队列在内,**所有 Run 都是从主会话 fork 出来的后台异步 run**。
-- **只维护一种卡**:统一 unified MVVM 分块卡(UnifiedCardState)。各 channel(飞书 / TG / CLI)是不同 View,**共用同一 Model + ViewModel**,根据元素是否存在、状态如何来显示/变化。
+- **异步与同步都走异步**。所谓"同步"只是异步 + 阻塞了消息消费队列的特例。所有 Run 都是从主会话 fork 出来的后台异步 run。
+- **只维护一种卡**:统一 unified MVVM 分块卡(`UnifiedCardState`)。各 channel(飞书 / TG / CLI)是不同 View,共用同一 Model + ViewModel。
+- **上下文操作只有一个入口**:`ContextSDK` facade。代码层强制(`__slots__` + ABC + 没 SDK 句柄就启动失败)。禁止任何 adapter / harness / 命令处理代码直接调 `_store` / `_bindings` / `_resolver` 等内部组件。
+- **内存是唯一 source of truth**。`system.json` 与 `history/` 都是**副本写**(mirror write);启动时读一次重建内存,运行中永不再读磁盘。
 
 ---
 
@@ -16,122 +19,325 @@
 
 ### 1.0 会话身份与持久化(session_id 来源)
 
-**不存在"默认"会话 id**(没有 `default` 等特殊路径)。所有 channel 都用同一套映射:
+所有 channel 走同一套映射:
 
 ```
 key = (adapter_id, thread_id) → session_id
 ```
 
-| adapter | thread_id 取值 |
+| adapter | thread_id |
 |---|---|
 | feishu | `chat_id`(单聊 = open_id;群聊 = chat_id) |
 | telegram | `chat_id` |
-| cli | `""`(CLI 是单 client,一个 host 一个 thread) |
+| cli | `""`(单 host = 单 thread) |
 
-`system.json` 持久化整张 `key → session_id` 映射表。运行时:
-- 入站消息到达 → adapter 查 `system.json` 拿 session_id;查不到 → 生成新 session_id + 写回
-- /clear → 直接换新 session_id 写回 `system.json`,旧 session 整个保留在内存里
-- 想"回到旧会话" → 手编 `system.json` 把 key 改回旧 session_id 即可
-
-**数据权威:内存是唯一 source of truth。** `system.json` 跟 `history/` 一样是**副本写(mirror write)**:
-- 写路径:写内存 → 异步 mirror 到 `system.json` / `history/`
-- 启动恢复:内存为空 → 从 `system.json` + `history/` 读副本重建
-- **磁盘不能反向覆盖内存** —— 运行中不再读 `system.json`(只在启动时读一次),避免外部编辑导致内存与磁盘不一致
+运行时:
+- 入站消息到达 → adapter 查内存映射拿 session_id;查不到 → 生成新 session_id + 写回内存 + 副本写 `system.json`
+- /clear → 生成新 session_id 覆盖该 key,副本写盘
+- 想回到旧会话 → 编辑 `system.json` 把 key 指回旧 sid,重启 serve 生效
 
 ### 1.1 主会话上下文(main context)
 
-- 任何用户的问题、回复**在主上下文里默认就是 PH**(分叉占位符)。也就是说:用户消息进入 → 立刻给该 turn 创建一个 PH 节点占位,真正的回答 / 工具 / 思考都在后台 Run 里跑,Run 完成时**回写**这个 PH。
-- 主上下文**维护分叉点**。一旦后台 Run 回写完成,该分叉点(PH)就消失 —— 被替换为完整上下文(用户消息 + tools + 思考 + 回答 等真实节点)。
-- 主上下文通过**锁等机制**防止 compact / 回写 / fork 并发时的同时读写。
+- 任何用户的问题、回复**默认就是 PH**(占位符)。用户消息进入 → 立即创建 PH 占位,真正的回答 / 工具 / 思考都在后台 Run 里跑,Run 完成时**回写**该 PH。
+- 主上下文**维护分叉点**。Run 回写完成后 PH 消失,被替换为完整上下文(用户消息 + tools + 思考 + 回答)。
+- 主上下文写操作通过 `ContextSDK` 内部锁串行化。
 
 ### 1.2 子线程上下文(每个 Run 的 prompt)
 
-- 子线程的上下文 = **fork 那一刻主上下文的快照**(子的 PH 是"先复制后写入" —— fork 时主里还没它自己的 PH,fork 之后主才追加自己的 PH;子永远看不见自己的 PH)。
-- **后来的子线程,会复制到前一个子线程已经留在主里的 PH**(因为前一个 Run 没回写时,主里那个 PH 仍在)。
-- 这些"看得见的别人的 PH",通过 [`ph_expand`](../../src/xana/harness_sdk/ph_expand.py) 展成 user/assistant 合成对喂给 LLM。
+- 子线程上下文 = **fork 那一刻主上下文的快照**。
+- 子的 PH 是"先复制后写入" —— fork 时主里还没它自己的 PH,fork 之后主才追加;子永远看不见自己的 PH。
+- 后来的子线程会把"前一个子线程已经留在主里的 PH"一起复制走。这些 PH 通过 §1.3 的协议展给 LLM。
 
-### 1.3 后台占位符内容(PH 节点的可见 content)
+### 1.3 PH 类型 + 模型可见展开
 
-文本(以 [`ph_expand.PH_ASSISTANT_REPLY`](../../src/xana/harness_sdk/ph_expand.py) 为准):
+PH 有两类:
+
+| 类型 | kind | 模型可见展开 | 用途 |
+|---|---|---|---|
+| 普通 PH | `regular` | **1 条 assistant 消息**(下文逐字) | 用户提问对应的 turn 占位 |
+| compact PH | `compact` | **0 条**(完全隐身) | compact 运行期间的占位 |
+
+#### 普通 PH 序列化文本(逐字)
 
 ```
-user:      {ph.label}                       # 用户原问题
-assistant: [此问题正在后台处理中,请基于其他可用上下文继续。不要重复尝试运行此任务。]
+assistant: 正在后台回答你的问题{ph.label}，请勿重试此请求。
 ```
 
-核心目的:让**后来的子线程看到主里这个 PH 时,知道这事正在后台处理,不要重复运行**。可能携带 `run_id` 标识便于后续替换回写。
+例如 `label="review xana"`:
 
-### 1.4 Run 的运行不影响前台
+```
+assistant: 正在后台回答你的问题review xana，请勿重试此请求。
+```
 
-- 所有 tools / 流的处理都在**后台 Run 里直接进行**,响应到那个 Run 的 RenderState。
-- **前台卡片仅同步状态**(订阅当前所属 Run 的事件,patch 卡)。
-- 后台 Run 即便和当前前台不是同一个,也照样跑、照样产生事件 —— 只是不被前台卡片渲染(其对应卡处于 frozen)。
+#### compact PH 序列化
 
-### 1.5 compact 的两种触发路径
+读模型上下文时**整条跳过**。等于"少一条消息",纯透明。
 
-**A. 没有任何后台正在运行**
-- 直接发起一个空会话(创建占位符)
-- compact 段单独占用这张新建卡片
+#### 序列化规则
 
-**B. 自动或手动触发,但**有**后台在运行**
-- 找主上下文里的 PH 点
-- **把 PH 点之前的用户问题也压缩进去**
-- 完成后,**把 PH 点之前的内容替换为压缩结果**(等于主上下文从开头到该 PH 之间全被摘要节点替换)
+- 通过 §1.9 `TurnMessage` 序列化器统一处理。
+- **任何**内部元数据(`run_id`、`ph_run_id`、`message_id`、debug 字段等)**绝对不进 prompt**。模型看到的 PH 就是普通 1:1 聊天的一句 assistant 回复,无任何标识泄漏。
+
+### 1.4 Run 后台运行不影响前台
+
+- 所有 tools / 流处理在后台 Run 内部完成,事件流入该 Run 的 `RenderState`。
+- 前台卡片仅同步状态(订阅当前所属 Run 的事件,patch 卡)。
+- 后台 Run 与前台 Run 各自独立,照样跑、照样产生事件 —— 只是不被前台卡片渲染(其对应卡 frozen)。
+
+### 1.5 compact 协议(compact 自己是个 PH)
+
+compact 与普通 run 走同一套 PH `replace_placeholder` 协议,完全消除 race。
+
+#### A. 没有任何后台运行(空闲态)
+- 直接 append 一个 `Placeholder(kind="compact")` 在 main 末尾
+- compact run 跑完后调 `replace_placeholder(compact_run_id, (summary_msg,))` 写回自己
+- main 上多出一个 compact 摘要节点
+
+#### B. 有后台 regular PH 在运行
+- 找到 main 里**最靠前**的 regular PH 位置 K
+- 在 K **前面**插入 `Placeholder(kind="compact")`(占位 0 模型可见)
+- compact run 启动,以"compact PH 前面所有内容 + 那个 regular PH 自身展开"作为 prompt
+- 跑完调 `replace_placeholder(compact_run_id, (summary_msg,))`,summary 取代 compact PH 位置
+- 摘要内容覆盖 compact PH 前面所有节点(即"PH 点之前的内容替换为摘要")
+
+#### 4 条强制约束
+
+1. **隐身**:模型读上下文时 compact PH = 0 条。
+2. **位置**:compact PH 永远插在"最靠前 regular PH 的前面"。
+3. **读取协调**:任何新 run fork main snapshot 之前,SDK 先检查"最靠前 regular PH 再前面有 compact PH 吗?":
+   - 没有 → 直接 fork
+   - 有,已 replaced(已变 summary)→ 直接 fork
+   - 有,还在 running → **阻塞等待**,直到 compact PH 被 replace 再 fork
+4. **会话级单实例锁**:同一 session_id 任意时刻**最多一个** compact 在跑(SDK 内部 `asyncio.Lock` per sid)。代码 bug / 双触发 / 并发,都序列化。
+
+#### 关键点
+
+- 写回靠 `run_id`,不靠位置 —— `replace_placeholder` 按 run_id 查 PH。compact 不会动其他 PH。
+- compact PH 的占位 `content` 任意(reader 看不到);replace 时写入 `MemoryMessage(role="compact", content=<summary>)`,这条要被后续 fork 看见。
+- 取消:`replace_placeholder(compact_run_id, ())` 替换为空,等于撤销 PH;reader 看到等同没 compact 发生过。
 
 ### 1.6 子会话的 compact(子 Run 内部触发的 compact)
 
-- **第二次压缩不再读主上下文了**(已经有过自己的压缩结果,直接接着压自己积累的新内容)
-- **首次压缩**只看一件事:它能看到的、**最靠前的分叉点,它前一个消息一定是用户问题**。
-  - 情况 A:那个"前一个消息"已经**变成 compact 结果** —— 说明已经压缩过了,**直接用这个 compact 结果**(跳过自己压缩)
-  - 情况 B:那个最靠前的分叉点**此时此刻已经回写**(不再是 PH 了) —— **看下一个**最靠后的分叉点,它一定是**自己的那个 PH**(因为自己肯定还没结束,不然不可能由自己触发 compact);此时由自己压缩
-- 主上下文锁保护:查 + 用 + 写要原子。
+- **第二次起不再读主上下文**(已经有过自己的压缩结果,接着压自己积累的新内容)。
+- **首次压缩**只看一件事:**它能看到的最靠前分叉点,它前一个消息一定是用户问题**:
+  - 那条"前一个消息"已经是 compact 结果 → **直接用**,跳过自己压缩
+  - 那条已经回写(不再是 PH 了)→ 看下一个最靠后的分叉点,必是自己的 PH(它没结束,不然不会由它触发 compact);由自己压缩
+- 所有读写通过 SDK 串行化。
 
 ### 1.7 /clear
 
-- = **换 session_id**(对当前 `(adapter_id, thread_id)` 生成新 session_id,写入 `system.json` 副本)
-- 旧 session 的内存(active_context + memory tree + bg run)**全部保留在内存里**,不清不杀
-- /clear 不是"清历史" —— 旧历史依然在内存里,只是当前 thread 不再绑这个 session_id
-- **/clear 那一刻和所有菜单消息一样,触发当前前台卡 detach**(走 §4.7 的 detach 路径)
-- 旧会话对应的**后台 Run 暂不处理,让它继续跑**(它们写回旧 session 的内存,不影响新 session)
-- 旧卡保持在它当前的形态;新会话有自己的新卡
-- 想回到旧会话:手编 `system.json` 把 `(adapter_id, thread_id)` 指回旧 session_id,**重启 serve** 生效
+- = 对当前 `(adapter_id, thread_id)` **换 session_id**(`SessionResolver.rotate`)
+- 旧 session 的 active_context、memory tree、bg run **全部留在内存里**,SDK 通过旧 sid 仍可访问
+- 触发 detach(同 §1.8):当前前台卡 frozen
+- 旧会话对应的后台 Run **不杀**,继续跑完后写回旧 sid 的内存
+- 新会话起一张新卡
+- 想回到旧会话:编辑 `system.json`,key 指回旧 sid,重启 serve
 
-### 1.8 attach / detach 的范围 + 触发方式
+### 1.8 attach / detach
 
-- **attach 和 detach 只对前端卡片样式有用**。
-- **对后端(Run、上下文、PH、回写)不应该产生任何影响**。后台 Run 继续跑、PH 继续等回写。
+- attach / detach **仅对前端卡片样式**生效,对后端 Run / 上下文 / PH / 回写**零影响**。
 
-**detach 触发方式只有两条:**
-1. **"后台回答"按钮**(顶部按钮)被点
-2. **任何菜单消息 / 命令 submit**(包括 /compact、/clear、/help、/attach、普通用户消息)
+**detach 触发方式只有两条**:
+1. "后台回答"按钮点击
+2. 任何 submit(任何普通消息、`/compact`、`/clear`、`/help`、`/attach`、其他菜单选项)
 
-> 没有"detach 菜单"。submit 任何东西就等于 detach。
-
-**/attach 流程:**
-- submit `/attach` (无参数)→ **此时此刻**判断后台候选 Run → 弹出后台列表卡(`build_attach_menu`)
-- 用户点列表中某项 → submit `/attach <run_id>` → **新建一张 fg 卡**(新 card_id + 新 message_id)
-- **即使目标 Run 已经 terminal,attach 依然新建一张卡**显示其终态。
-  - 即:attach 永远新建卡,从不"复活旧卡"。
+**/attach 流程**:
+- submit `/attach`(无参)→ 此时此刻判断后台候选 Run → `build_attach_menu` 弹菜单卡
+- 默认 highlight 当前 detached 的那个
+- 用户点列表项 → submit `/attach <run_id>` → **新建一张 fg 卡**(新 card_id + 新 message_id)
+- 即使目标 Run 已 terminal,attach 依然新建卡显示其终态。**从不复活旧卡**。
 - 旧 fg 卡(如有)同时被 detach 走 frozen 路径。
+
+### 1.9 Message 类 + 平台序列化器
+
+所有上下文条目都是 `xana.context.message.Message`(ABC)的子类。**唯一**与模型对话的出口。任何绕开此出口的"直接拼 dict"都视为裂脑,代码层禁止(§3 ContextSDK 强制)。
+
+#### 模块布局
+
+```
+xana/context/
+    message.py      # Message ABC + public 子类(只暴露 public 字段)
+    _internal.py    # frozen private dataclasses (run_id / ph_id / debug 等)
+                    # 模块入口断言:只允许 sdk.py import,其他 caller 直接 ImportError
+    sdk.py          # ContextSDK facade
+    _store.py       # 内部 store + 锁;业务代码 import 即报错
+```
+
+#### Message ABC + public 子类
+
+```python
+# message.py
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from xana.context._internal import _PlaceholderInternal, _ToolCallInternal
+
+
+class Message(ABC):
+    @abstractmethod
+    def to_anthropic(self) -> list[dict]: ...   # 空列表 = filter
+    @abstractmethod
+    def to_openai(self)    -> list[dict]: ...
+
+
+@dataclass(frozen=True)
+class UserMessage(Message):
+    text: str
+    def to_anthropic(self): return [{"role": "user", "content": self.text}]
+    def to_openai(self):    return [{"role": "user", "content": self.text}]
+
+
+@dataclass(frozen=True)
+class AssistantMessage(Message):
+    text: str
+    tool_calls: tuple["_ToolCallInternal", ...] = ()
+    # anthropic: content blocks [{type:"text"...},{type:"tool_use"...}]
+    # openai: {role:"assistant", content, tool_calls:[...]}
+    def to_anthropic(self): ...   # 各家差异在此吸收
+    def to_openai(self): ...
+
+
+@dataclass(frozen=True)
+class ToolResultMessage(Message):
+    tool_use_id: str
+    content: str
+    ok: bool
+    # anthropic: {role:"user", content:[{type:"tool_result", tool_use_id, content}]}
+    # openai:    {role:"tool", tool_call_id, content}
+    def to_anthropic(self): ...
+    def to_openai(self): ...
+
+
+@dataclass(frozen=True)
+class RegularPlaceholder(Message):
+    label: str                              # user 原问题(public)
+    _internal: "_PlaceholderInternal"       # run_id / ph_id 等(private)
+    def to_anthropic(self):
+        return [{"role": "assistant",
+                 "content": f"正在后台回答你的问题{self.label}，请勿重试此请求。"}]
+    def to_openai(self):
+        return [{"role": "assistant",
+                 "content": f"正在后台回答你的问题{self.label}，请勿重试此请求。"}]
+
+
+@dataclass(frozen=True)
+class CompactPlaceholder(Message):
+    _internal: "_PlaceholderInternal"
+    def to_anthropic(self): return []       # 隐身
+    def to_openai(self):    return []       # 隐身
+
+
+@dataclass(frozen=True)
+class CompactSummary(Message):
+    summary: str
+    _internal: "_PlaceholderInternal"
+    # 模板正文住本类(单源):卡片 body / 模型可见 / main 节点 content 都引用此处
+    POST_COMPACT_TEMPLATE = (
+        "此会话正在从上一次因上下文不足而中断的对话中继续。"
+        "以下摘要涵盖了对话的早期部分。\n\n"
+        "摘要：\n{summary}\n\n"
+        "如果你需要压缩前的具体细节(如确切的代码片段、错误信息或你生成的内容),"
+        "请阅读完整转录记录:{transcript}\n"
+        "继续对话,无需向用户提出任何进一步的问题。直接继续——不要确认摘要,"
+        "不要复述正在发生的事情,不要以\"我将继续\"或类似语句开头。"
+        "如同中断从未发生一样继续上一个任务。"
+    )
+    def _render(self) -> str:
+        return self.POST_COMPACT_TEMPLATE.format(
+            summary=self.summary, transcript=self._internal.transcript_path)
+    def to_anthropic(self): return [{"role": "user", "content": self._render()}]
+    def to_openai(self):    return [{"role": "user", "content": self._render()}]
+```
+
+#### Private 元数据(路线 3:public/private 拆两半)
+
+```python
+# _internal.py
+import sys
+from dataclasses import dataclass
+
+_ALLOWED_CALLER_MODULES = {"xana.context.sdk", "xana.context._store"}
+_caller = sys._getframe(1).f_globals.get("__name__", "")
+if _caller not in _ALLOWED_CALLER_MODULES:
+    raise ImportError(
+        f"xana.context._internal is private — only ContextSDK may import. "
+        f"caller={_caller!r}"
+    )
+
+@dataclass(frozen=True)
+class _PlaceholderInternal:
+    run_id: str
+    ph_id: str
+    transcript_path: str   # 给 CompactSummary 模板用
+    # ...其他 debug / 路由 字段
+
+@dataclass(frozen=True)
+class _ToolCallInternal:
+    call_id: str
+    name: str
+    arguments: dict
+    # ...
+```
+
+业务代码(adapter / harness / 命令处理)拿到 `Message` 实例后,**只能**读 public 字段(`label`、`text`、`summary` 等);访问 `._internal` 字段时类型注释字符串(`TYPE_CHECKING`)阻挡静态分析,运行时 SDK 顶层把它们封装在受控 API 后(读取需调 SDK 方法,不准直接戳)。
+
+#### Context 序列化(SDK 顶层入口)
+
+```python
+# sdk.py
+class ContextSDK:
+    def to_anthropic(self, sid: str, *, system_content: str) -> list[dict]:
+        out = [{"role": "system", "content": system_content}]
+        for m in self._store.snapshot(sid):
+            out.extend(m.to_anthropic())   # 空列表自然 filter
+        return out
+
+    def to_openai(self, sid: str, *, system_content: str) -> list[dict]:
+        out = [{"role": "system", "content": system_content}]
+        for m in self._store.snapshot(sid):
+            out.extend(m.to_openai())
+        return out
+```
+
+system_content 由 harness 单独传入(从 `build_system_prompt(...)` 来),**不**走 Message 类。
+
+#### 模板归属(铁律)
+
+凡是"模型可见 + 卡片可见"复用的模板(如 `POST_COMPACT_TEMPLATE`):
+- 模板正文住对应 Message 子类(`CompactSummary`)
+- `harness_sdk/compact_prompt.py` 只放"让模型生成摘要"的指令(`BASE_COMPACT_PROMPT` / `NO_TOOLS_PREAMBLE` / `NO_TOOLS_TRAILER`)
+- **单源**:
+  - `CompactSummary.to_anthropic/openai()` → 给模型
+  - 卡片 compact 折叠面板 body → 引用同一渲染
+  - compact run 完成回写 main 的节点 content → 同一段
+
+#### 铁律汇总
+
+- 内部元数据(`run_id`、`ph_id`、`call_id` 等)**绝对不进** serialize 输出
+- 序列化是**唯一**与模型对话的出口
+- `_internal.py` 只允许 ContextSDK 模块 import,其他 caller import 即 `ImportError`
+- 没有 SystemMessage —— system 由 harness 单独传 SDK 顶层 prepend
 
 ---
 
 ## 2. Run 状态机
 
 ```
-                  submit (fork from main snapshot)
+                  submit (fork from main snapshot via SDK)
                        │
                        ▼
               ┌─────────────────┐
               │   streaming     │  后台跑,事件流持续
-              │   (前端 fg)      │  前端卡 = 此 Run 的实时镜像
+              │   (前端 fg)      │  前端卡 = Run 实时镜像
               └────────┬────────┘
                        │ 用户发任何消息 / 菜单 / /compact
                        │ → 前端按钮 = "后台回答" 同效
                        ▼
               ┌─────────────────┐
               │   streaming     │  后台继续跑(不受影响)
-              │   (前端 bg)      │  前端卡 frozen,不再更新
+              │   (前端 bg)      │  前端卡 frozen,零更新
               └────────┬────────┘
                        │ Run 完成 → ph_replaced
                        ▼
@@ -148,104 +354,115 @@ assistant: [此问题正在后台处理中,请基于其他可用上下文继续�
               └─────────────────┘
 ```
 
-**关键:Run 自身的状态(streaming → terminal)只由后端事件驱动。前端 detach 不杀 Run、不影响其状态机。** 前端 fg/bg 只是"这张卡是否还订阅这个 Run 的事件流"的差别。
+Run 状态(streaming → terminal)由后端事件驱动。前端 detach 不杀 Run、不影响状态机。fg/bg 只是"卡是否还订阅事件流"的差别。
 
 ---
 
-## 3. 卡片(MVVM):一个模板,多个 View
+## 3. 上下文 SDK(ContextSDK)
 
-### 3.1 模板定义
+所有 channel(feishu / tg / cli)、所有命令处理(/clear / /compact / /attach)、harness 必须通过 `ContextSDK` 句柄操作上下文。代码层强制:
 
-无论飞书 / TG / CLI,**只维护一个"卡片模板"**。它定义:
-- 所有可能出现的元素(section)
-- 各元素的状态(streaming / detached / terminal / cancelled / completed / 等)
-- 元素的**先后顺序**(固定)
+- adapter / harness / 命令 处理代码**直接字段访问 SDK 内部组件就报错**(`__slots__` + property + 调用栈检查)
+- 启动时若任何上下文操作的代码路径没有 SDK 句柄注入 → **启动失败**(ImportError / AssertionError)
+- 没有 fallback、没有"如果 resolver 为 None 就走 BindingStore"这类后路
 
-各 View 根据"有没有相应元素 / 处于哪些状态"显示和变化。
+SDK 内部收敛:
+- ActiveContextStore(主+子上下文 + PH + replace_placeholder + 串行锁)
+- SessionResolver((adapter, thread) → sid 映射 + 副本写)
+- MainWriter / HistoryMirror(磁盘副本)
+- Compact 协调(§1.5 的位置查找、读取阻塞、sid 锁)
+- TurnMessage 序列化器(§1.9)
 
-### 3.2 Section 顺序(自上而下,固定)
+唯一对外接口集合:
+- `resolve(adapter_id, thread_id) -> sid` / `rotate(...)` (会话身份)
+- `snapshot_for_fork(sid, agent) -> tuple[TurnMessage|PH, ...]`(自动处理 compact PH 阻塞)
+- `append_user(sid, agent, text) -> None`
+- `append_placeholder(sid, agent, ph) -> None`
+- `replace_placeholder(run_id, messages: tuple[TurnMessage, ...]) -> None`
+- `serialize_for_openai(turn_messages) / serialize_for_anthropic(...)`
+
+---
+
+## 4. 卡片(MVVM):一个模板,多个 View
+
+### 4.1 模板定义
+
+只维护一个"卡片模板"。它定义所有可能元素(section)、各元素状态(streaming / detached / terminal / cancelled / completed)、元素**先后顺序**。各 View 根据"有没有相应元素 / 处于哪些状态"显示。
+
+### 4.2 Section 顺序(固定)
 
 ```
-1. 压缩进度条(一行文字,带 ▰…▱ 进度)
+1. 压缩进度条(一行文字 + ▰…▱)
 2. 压缩下拉                       ┐
 3. 思考过程下拉                    │  panel 段
-4. 工具下拉(默认 3 个) + 展开按钮 │
-5. 回答块(主答案,可折叠/展开)     ┘
+4. 工具下拉(默认 3 个)+ 展开按钮 │
+5. 回答块(主答案)                ┘
 6. 脚标(footer)
 7. 顶部按钮(取消回答 / 后台回答 / 取消)
 ```
 
-> 注:button row 实现上挂在 top_buttons / bottom_buttons,但视觉位置由 Channel View 决定(飞书 top 在最顶,TG 多用 bottom inline_keyboard)。
+button row 视觉位置由各 View 决定(飞书 top 在最顶,TG 多用 bottom inline_keyboard)。
 
-**为什么 compact 结果排在 answer 前**:因为 compact 是对该 PH 点之前的总结,回答出现在 PH 之后。语义上"前置摘要 + 后续回答" → UI 顺序也是"摘要在上,回答在下"。
+compact 摘要排在 answer 前的原因:语义上 compact 是 PH 点之前的摘要,回答出现在 PH 之后 → UI 顺序"摘要在上,回答在下"。
 
-### 3.3 MVVM 分层(责权)
+### 4.3 MVVM 分层
 
-| 层 | 提供方 | 内容 |
+| 层 | 提供方 | 职责 |
 |---|---|---|
-| **Model** | `xana.agent_adapter.channels.unified_card.UnifiedCardState` 等 dataclasses | 所有 section 字段 + 状态 enum + 派生小工具(append_*, advance_*, finalize_*) |
-| **ViewModel / Event Bridge** | `xana.agent_adapter.channels.unified_card_events.apply_event` | 从后端 `HarnessEvent / AgentEvent / ProgressEvent` 推 Model 状态。**唯一**的状态推进入口。adapter 只负责把事件喂进来、把 state 喂给 renderer。 |
-| **View(平台)** | `unified_card_feishu.render` / `unified_card_telegram.render` / `unified_card_cli.render` | 把 `UnifiedCardState` 渲染成平台 schema(飞书 dict / TG MarkdownV2+keyboard / Textual widget) |
-| **Agent 侧接口** | `xana.harness_sdk` 的 HarnessEvent 流 + `Placeholder` 的 prompt 展开 | Agent 不直接见 Card;它只发事件。Card 的存在对 Agent 透明。 |
-| **Adapter** | `FeishuAdapter / TelegramAdapter / CliAdapter` | 1) 维护 card_id ↔ message_id ↔ run_id 绑定 2) 调 apply_event 推 Model 3) 调 renderer 出 schema 4) 决定 send vs patch 5) 处理按钮回调路由 |
-
-**绑定上下文状态**:卡片选择上**绑定 PH/上下文**。例如"前台 Run 正在跑"时,这张前台卡本身在主上下文里也是一个 PH 占位 —— 直到回答写完(Run 完成 → ph_replaced),它的回答 section 才从"流式中"变成"终态"。compact 结果出现在前面(PH 之前的内容被摘要替换),回答出现在 PH 替换后的位置(自然就是下方)。
+| Model | `UnifiedCardState` 等 dataclass | section 字段 + 状态 enum + 小工具 |
+| ViewModel | `unified_card_events.apply_event` | 后端 `HarnessEvent/AgentEvent/ProgressEvent` → Model。**唯一状态推进入口** |
+| View | `unified_card_feishu.render` / `_telegram.render` / `_cli.render` | UnifiedCardState → 平台 schema |
+| Agent 接口 | `xana.harness_sdk` 的事件流 | Agent 不见 Card,只发事件 |
+| Adapter | `FeishuAdapter` / `TelegramAdapter` / `CliAdapter` | 维护 card_id↔message_id↔run_id 绑定;调 apply_event;调 renderer;决定 send vs patch;按钮路由 |
 
 ---
 
-## 4. 卡片元素详细规格(以飞书为基准,差异点单列)
+## 5. 卡片元素详细规格(以飞书为基准,差异点 §7 单列)
 
-### 4.1 压缩进度条 "压缩中"
+### 5.1 压缩进度条
 
-- **10 段**(▰/▱)
-- **7 段输入阶段**:**3s 进一格**(用户口述明定;只是估算,不准 —— 实际推进时间随便)
-- **如果模型开始输出了 → 直接跳到 7**
-- **3 段输出阶段**:根据 compact 输出的 N 个 section 进度算
+- 10 段(▰/▱)
+- 7 段输入阶段:3s 进一格(估算)
+- 模型开始输出 → 直接跳到 7
+- 3 段输出阶段:按 compact 输出 N 个 section 进度算
 
-实现:[unified_card.advance_compact_input / advance_compact_streaming](../../src/xana/agent_adapter/channels/unified_card.py)
+### 5.2 压缩下拉(折叠面板)
 
-### 4.2 压缩下拉(折叠面板)
+- streaming:title "压缩中",body 已积累的摘要片段
+- completed:title "已压缩 N 条消息",body 完整摘要
+- cancelled:title "压缩已取消"
 
-- streaming 时:title "压缩中",body 已积累的摘要片段
-- completed 时:title "已压缩 N 条消息",body 完整摘要
-- cancelled 时:title "压缩已取消"
-
-### 4.3 思考过程下拉
+### 5.3 思考过程下拉
 
 - 默认折叠
 - 标题:有内容 → "❋ 思考过程";空 → "❋ 思考中"
 - body = 模型 reasoning 流
 
-### 4.4 工具下拉(tool blocks)
+### 5.4 工具下拉
 
-- **默认 3 个 visible**(`TOOLS_VISIBLE_LIMIT=3`)
+- 默认 3 个 visible(`TOOLS_VISIBLE_LIMIT = 3`)
 - 每个 tool 是一个折叠面板
-- header 文本规则:
-  - **bash**: 显示 LLM 输出的**短标题**(prompt 里要求模型给 `description`,即 [`_tool_summary`](../../src/xana/agent_adapter/channels/unified_card_events.py) 的 1)
-  - **其余工具**: 显示**参数**,优先级固定:**description > path / file_path / file / cmd / command / url / query / pattern > 第一个非空 kv**(用户已确认)
+- header 文本:
+  - **bash**: 显示 LLM 输出的短标题(prompt 让模型给 `description` 字段)
+  - **其余工具**: 显示参数,优先级固定 `description > path / file_path / file / cmd / command / url / query / pattern > 第一个非空 kv`
   - 完整头格式:`✎ {name} · {summary} · {elapsed} · {status}`(status ∈ ok/fail/cancel)
 - body 渲染:
-  - 飞书:截 800 字符上限(单卡 30KB 总限,避 200800)
-  - TG:**top 3 行 + 每行最多 60 字**(用户口述明定)
-- **超出 3 个时**:
-  - **飞书**: 显示"展开 ✎×N"**按钮**(N = 未扩展个数 = `tools_pending = len(_pending_tools_buf)`)
-  - **TG**: 显示"展开 ✎×N"**文字提示**(非按钮 —— 用户口述明定)
-  - 点击/触发(飞书)→ `load_pending_tools`: buf → tools, pending=0, 按钮消失
-  - 后续又来新 tool → 又进 buf → 按钮/提示重新出现
+  - 飞书:截 800 字符(单卡 30KB 上限,避 200800)
+  - TG:**top 3 行 + 每行最多 60 字**
+- 超出 3 个:
+  - 飞书:"展开 ✎×N" **按钮**(N = `tools_pending = len(_pending_tools_buf)`)
+  - TG:"展开 ✎×N" **文字提示**(非按钮)
+  - 触发后:`load_pending_tools`,buf → tools,pending=0
+  - 之后新 tool 又进 buf → 按钮/提示重新出现
 
-### 4.5 回答块
+### 5.5 回答块
 
-- **fg 默认展开**
-- **bg 默认折叠**(用户口述"bg 合上")
-- 标题状态:
-  - streaming 有内容 → "✦ 回答";空 → "✦ 回答中"
-  - cancelled → "✦ 回答已取消"
-- **内容渲染:只有回答渲染 markdown**(其他段落是纯文本)
-- streaming 截断处理:**必须考虑最后截断语法不全的问题**(`*x` 缺闭合 `*`、表格半行、未闭代码块等)→ View 层负责修补/截到安全 boundary。**已实现,主要在 TG 侧**(走 telegramify-markdown)。飞书侧由于自身 markdown 容错较好,不需要额外守门。
+- fg 默认展开;bg 默认折叠
+- 标题:有内容 → "✦ 回答";空 → "✦ 回答中";cancelled → "✦ 回答已取消"
+- 内容渲染:**只有回答用 markdown**(其他段落纯文本)
+- streaming 截断守门:`*` / `_` / `` ` `` / ``` 等末尾补闭或截到安全 boundary。TG 走 telegramify-markdown;飞书自身容错足够,不补。
 
-### 4.6 脚标(footer)
-
-固定四形态(实现:[`FooterText.render`](../../src/xana/agent_adapter/channels/unified_card.py)):
+### 5.6 脚标(footer)
 
 | Run / Card 状态 | 脚标 |
 |---|---|
@@ -254,183 +471,158 @@ assistant: [此问题正在后台处理中,请基于其他可用上下文继续�
 | cancelled | `🔴 model · 上下文 Nk/Mk · 回答用时 53s` |
 | bg(frozen) | `🟡 正在后台回答` |
 
-**互斥规则**(用户口述明定):
-- "🟡 正在后台回答" 与 "运行中 / 结束的 3 段内容" **互斥** —— 即 bg_frozen 态下绝不出现 model·ctx·回答用时三件套。
-- 三件套(model + ctx + 回答用时)**绑定**:任一字段缺失,整段不渲染。
-- **工具用时(菜单段)永远排最尾**:例如 `compact 用时 10s` 跟在所有内容之后,即便 bg_frozen 也允许尾巴挂 menu 段(解决 compact + 后台 竞态)。
+**互斥规则**:
+- "🟡 正在后台回答" 与三件套(model + ctx + 回答用时)互斥。bg_frozen 态下绝不出现三件套。
+- 三件套**绑定**:任一字段缺失,整段不渲染。
+- 菜单段(如 `compact 用时 10s`)永远排最尾;bg_frozen 也允许尾巴挂菜单段。
 
-### 4.7 顶部按钮
+### 5.7 顶部按钮
 
 | Run 状态 | 按钮 |
 |---|---|
 | streaming(fg) | "取消回答" + "后台回答" |
-| streaming(bg, 仍未完成) | "取消回答"(允许取消后台 run) |
+| streaming(bg,仍未完成) | "取消回答"(允许取消后台 run) |
 | compact 单独运行(answer 不活跃) | "取消"(`/compact_cancel`) |
 | terminal / cancelled | 无 |
 
-- **点击"后台回答"** → 前端卡片转 bg 状态(detach),卡片样式变 frozen
-- **发送任何消息 / 任何菜单选项**也会导致 dettach(等价行为)
-- **不需要专门写一个"dettach 菜单按钮"** —— "后台回答"按钮 + "submit 任何东西"已覆盖
-- 按钮 callback **建议以 run_id 编号**(尽管前台同时最多一个 Run,但形式上 run_id 让 callback 是自描述、可路由的)
+- 点"后台回答" → 当前前台卡 detach
+- 任何 submit 也等价 detach
+- 按钮 callback 以 run_id 编号
 
 ---
 
-## 5. bg(frozen)状态的精确语义
+## 6. bg(frozen)状态的精确语义
 
-- **卡片不再动**(不更新内容、不更新工具 panel、不更新按钮样式)
-- **直到回答结束**(后端 Run terminal → ph_replaced)
-- 此时**一次性刷新成"和流最后一刻一样"**(即此时此刻 Run 的完整 RenderState 一次性 patch 进卡)
-- 期间后台 Run 的所有事件全部累积在 Run 自己的 RenderState 里,不写卡(adapter `_deliver` 被 `is_frozen` 门挡住)
+- 卡片不再动(不更新内容、tool panel、按钮样式)
+- 直到 Run terminal → `ph_replaced`
+- 一次性刷新成"流最后一刻"(完整 RenderState 一次性 patch)
+- 期间后台 Run 的所有事件累积在 Run 自己的 RenderState,不写卡(adapter `_deliver` 由 `is_frozen` 门挡)
 
-### TG 与飞书的 bg 差异
+### TG/飞书 bg 差异
 
-- 飞书 bg:tools_pending 提示是**按钮**(但 detached 态下渲染成静态文字 "_后台 ✎ 中_",不可点)
-- TG bg:tools_pending 提示**本来就是文字**(非按钮),所以 detach 前后视觉无变(都是"展开 ✎×N" 文字)
-
----
-
-## 6. TG 与飞书的渲染差异(总表)
-
-| 项 | 飞书 | TG |
-|---|---|---|
-| 折叠 panel | `collapsible_panel` 灰底 + chevron | expandable blockquote(`**>` + `||`) |
-| 工具 body | 截 800 字符 | **top 3 行 + 每行 60 字** |
-| tools_pending 提示 | 按钮"展开 ✎×N" | **文字"展开 ✎×N"**(非按钮) |
-| 超长 thinking / answer / tools | 直接折叠,展开看全 | 底部多出 3 个按钮:"展开 思考 / 工具 / 答案"(全量) → 点击进**全屏单段卡**,支持**翻页** |
-| 翻页粒度 | 无 | **tools 一页最多 4 个**;answer 按 TG 单消息长度切页 |
-| markdown 渲染 | 只回答用 markdown | 只回答用 markdown;TG 走 telegramify-markdown,**answer 必须考虑流式截断时元素不闭合**(`*` `_` `` ` `` ``` 等末尾补闭/截到安全 boundary) |
-| 命令 linkify | 无 | `linkify_commands=True` 时正文 `/cmd` 原生可点 |
-
-CLI 见 [channels/cli.md](./channels/cli.md)。
+- 飞书:tools_pending 提示是**按钮**,detached 态下渲染成静态文字"_后台 ✎ 中_"不可点
+- TG:tools_pending 提示本来就是文字,detach 前后无变
 
 ---
 
-## 7. 关键事件 → 状态转换(端到端)
+## 7. TG / 飞书 / CLI 渲染差异表
 
-### 7.1 首次 submit("你好")
-1. main 追加 `MemoryMessage(user, "你好")`
-2. 创建 Run R1,从主**当前快照** fork(R1 看不见自己的 PH —— PH 还未追加)
-3. main 追加 `Placeholder(R1, label="你好")`
-4. 新建 Card C1,首次 send → 获得 message_id
-5. R1 后台跑,事件流 → apply_event(C1) → patch C1
-6. R1 完成 → `ph_replaced` → `apply_ph_replaced(C1, final_answer=...)` → terminal
+| 项 | 飞书 | TG | CLI |
+|---|---|---|---|
+| 折叠 panel | `collapsible_panel` 灰底 + chevron | expandable blockquote(`**>` + `\|\|`) | Textual Collapsible 节点 |
+| 工具 body | 截 800 字符 | **top 3 行 + 每行 60 字** | 截 4096 字符 |
+| tools_pending 提示 | 按钮 | **文字**(非按钮) | 文字 |
+| 超长 thinking / answer / tools | 直接折叠展开看全 | 底部 3 个按钮("展开 思考 / 工具 / 答案" 全量)→ 全屏单段卡,翻页 | 滚动条 |
+| 翻页粒度 | 无 | tools 一页最多 4 个;answer 按 TG 单消息长度切页 | 无 |
+| markdown 渲染 | 只回答用 markdown | 只回答用 markdown;telegramify-markdown 容错 | 纯文本(无 markdown 解析) |
+| 命令 linkify | 无 | `linkify_commands=True` 时正文 `/cmd` 原生可点 | 无 |
 
-### 7.2 streaming 中用户再发("再问一条")
-1. **前端 detach C1**(`apply_detach(C1)`):C1 patch 一次 → frozen,**后端 R1 不受影响,继续跑**
-2. main 追加 `MemoryMessage(user, "再问一条")`
-3. 创建 R2,fork main(此时主里已有 R1 的 PH;R2 prompt 通过 ph_expand 看到 R1 PH)
-4. main 追加 `Placeholder(R2)`
-5. **新建 Card C2**(新 card_id + 新 message_id)→ R2 streaming patch C2
-6. R1 完成 → ph_replaced 找到 C1(绑定)→ patch C1 终态,`terminal_from_bg=True`
+CLI 详细见 [channels/cli.md](./channels/cli.md)。
+
+---
+
+## 8. 端到端事件流(权威流程)
+
+### 8.1 首次 submit("你好")
+1. SDK `append_user(sid, "chat", "你好")` → main 追加
+2. SDK `snapshot_for_fork(sid, "chat")` → 拿到当时快照(R1 看不见自己的 PH)
+3. SDK 创建 Run R1,fork 完后 `append_placeholder(sid, "chat", Placeholder(R1, kind="regular", label="你好"))` 追加 PH
+4. 新建 Card C1,首次 send → 拿 message_id
+5. R1 后台跑,事件流 → `apply_event(C1)` → patch C1
+6. R1 完成 → SDK `replace_placeholder(R1, (assistant_msgs, tool_msgs, ...))` → main 上 PH 变真节点
+7. `ph_replaced` → `apply_ph_replaced(C1)` → terminal
+
+### 8.2 streaming 中再发("再问一条")
+1. 前端 detach C1:patch 一次 → frozen,**后端 R1 不受影响**
+2. SDK `append_user(...)` 追加用户消息
+3. SDK `snapshot_for_fork(...)` 拿快照(看见 R1 PH,按 §1.3 展为 1 条 assistant)
+4. 创建 R2,append R2 PH
+5. **新建 Card C2** → R2 streaming patch C2
+6. R1 完成 → `replace_placeholder(R1, ...)` → `ph_replaced` 找到 C1 → patch 终态,`terminal_from_bg=True`
 7. R2 完成 → patch C2 终态
 
-### 7.3 /compact 中途介入(Scenario 2 核心)
-1. R1 review 正在 streaming,C1 是当前 fg
+### 8.3 /compact 中途介入
+1. R1 正在 streaming,C1 是 fg
 2. 用户 submit `/compact`
-3. **前端 detach C1**:C1 patch 一次 → frozen(后端 R1 不受影响)
-4. 创建 compact Run Rc(`triggers_turn=True`,但**不**追加 user 节点)
-5. 找到"**主上下文中最早未完成 PH**" → R1 的 PH → **挂在 C1 上**
-6. `apply_event(compact_started)` → C1 多 compact 段;footer 末尾出现 "compact 用时 t"(menu_label="compact")
-7. compact 进度推进:input(7 格,~3s/格,模型开输出跳 7)→ streaming(7→10,按 sections)
-8. compact 完成 → finalize_compact → "已压缩 N 条消息";**主上下文 PH 点之前的内容被替换为摘要**
-9. R1 继续跑;完成时 ph_replaced(R1)→ C1 answer 段 patch 终态;**C1 同时承载 compact 段 + answer 终态**
-10. 用户下一条消息走 7.2 → 新建 C2
+3. 前端 detach C1
+4. SDK 拿 sid 级 compact 锁
+5. SDK 查 main 最靠前 regular PH 位置 K(= R1 PH 索引)
+6. SDK 在 K 前面插入 `Placeholder(kind="compact", run_id=Rc, ...)`
+7. 创建 compact Run Rc(没有 user 节点,prompt = compact PH 前面所有内容 + R1 PH 展开)
+8. 找到 C1(R1 对应)→ `apply_event(compact_started)` → C1 多 compact 段,footer 加"compact 用时 t"
+9. compact 进度:input(7 格,~3s/格,模型开输出跳 7)→ streaming(7→10,按 sections)
+10. Rc 完成 → SDK `replace_placeholder(Rc, (MemoryMessage(role="compact", content=summary),))` → main 上 compact PH 位置变 summary,**compact PH 前面所有节点被替换覆盖**
+11. `finalize_compact` → C1 "已压缩 N 条消息";SDK 释放 sid 锁
+12. R1 继续跑;完成时 `ph_replaced(R1)` → C1 answer 段 patch 终态;**C1 同时承载 compact 段 + answer 终态**
+13. 用户下一条消息走 8.2 → 新建 C2
 
-> compact **不**开新卡(除非 1.5.A 无后台空闲态)。
+读取协调:Rc 跑的时候,任何新 run 走 `snapshot_for_fork` 会**阻塞等待**到 Rc 替换完(§1.5 约束 3)。
 
-### 7.4 /attach
-1. 用户 submit `/attach`(无参数)→ **此时此刻**判断所有后台候选 Run → `build_attach_menu` 出一张菜单卡
-2. **默认 highlight 当前 detached 的那个**
-3. 用户点列表某项 → submit `/attach <run_id>`
-4. 流程:
-   - 当前 fg(如有)→ detach(同 7.2 步 1)
-   - **新建 Card Cn** 绑定到目标 Run
-   - 此后 Cn 接收该 Run 的事件;旧 card 保留冻结态
-5. **即使目标 Run 已经 terminal(后台已结束),attach 依然新建一张卡显示其终态。从不复活旧卡。**
-6. 后端 Run 状态不动
+### 8.4 /attach
+1. submit `/attach`(无参)→ SDK 此时此刻列后台候选 Run → `build_attach_menu`
+2. 默认 highlight 当前 detached 的 Run
+3. 用户点项 → submit `/attach <run_id>`
+4. 当前 fg(如有)→ detach
+5. **新建 Card Cn** 绑定目标 Run
+6. Cn 接收该 Run 事件;旧 card 保持 frozen
+7. 即使目标 Run 已 terminal,attach 依然新建卡显示终态
+8. 后端 Run 状态不动
 
-### 7.5 /cancel
+### 8.5 /cancel
 - top button "取消回答" → submit `/cancel <run_id>`
-- 后端真取消 Run;Card 走 cancelled 形态(`cancel_answer`,footer 红点)
+- 后端真取消 Run;Card 走 cancelled 形态(`cancel_answer`,footer 🔴)
 - 后续 delta no-op
 
-### 7.6 /clear
-- **触发 detach**(同 7.2 步 1)→ 当前 fg 卡冻结
-- 主会话换新 session_id(切语境)
-- 旧 session 的后台 Run **不杀**,让它跑完(回写到自己原卡)
-- 新 session 起一张新卡显示新对话
+### 8.6 /clear
+- 触发 detach → 当前 fg 卡 frozen
+- SDK `rotate("feishu/tg/cli", thread_id)` 生成新 sid + 副本写 system.json
+- 旧 session 内存 + 后台 Run **不动**,继续在旧 sid 下回写
+- 新 session 起一张新卡
 
 ---
 
-## 8. 不变量(I1–I17,merge-gate 测试断言)
+## 9. 不变量(merge-gate 断言)
 
-| # | 不变量 | 关联条 |
+| # | 不变量 | 关联 |
 |---|---|---|
 | I1 | 1 Run ↔ 1 PH ↔ 1 Card 终生绑定 | §1.1, §2 |
-| I2 | Card 一旦 send,后续都 patch 同 message_id,不重发覆盖 | §3.3 |
+| I2 | Card 一旦 send,后续都 patch 同 message_id,不重发覆盖 | §4.3 |
 | I3 | 前端 detach / attach 不改变后端 Run 状态、不杀 Run、不影响 PH | §1.8 |
-| I4 | submit 任何消息(含 /compact)→ 当前前台卡立即 detach | §4.7 / §7.2 |
-| I5 | /compact 段挂在"主上下文最早未完成 PH 所属的 Card"上,不新建卡(除非空闲态) | §1.5 / §7.3 |
-| I6 | /attach 总是新建卡 | §1.8 / §7.4 |
-| I7 | bg(frozen)Card 从 detach 到 ph_replaced 之间**零更新**;ph_replaced 一次性 patch 成最终状态 | §5 |
-| I8 | tools_pending 只数未展开 tools(buf 长度);load_pending_tools 后归零 | §4.4 |
-| I9 | footer 三件套(model + ctx + 回答用时)绑定;缺一不渲染 | §4.6 |
-| I10 | bg_frozen 脚标永不出现 "model · ctx · 回答用时" 三件套(互斥) | §4.6 |
-| I11 | 任何 channel View 对同一 UnifiedCardState 产出语义一致的输出 | §3.3 |
-| I12 | 子会话 compact:首次查"同分叉点已压缩可用就用",二次起不再读主上下文 | §1.6 |
-| I13 | session_id 来源于统一映射 `(adapter_id, thread_id) → session_id`;**禁止任何 channel 走"default"等特殊路径** | §1.0 |
-| I14 | thread_id 取值固定:feishu/tg = chat_id;cli = `""` —— 同一 thread 在同一 channel 只对应一个 active session_id | §1.0 |
-| I15 | 内存是 session_id 映射的**唯一 source of truth**;`system.json` 是副本写(mirror write),`history/` 同理 | §1.0 |
-| I16 | `system.json` **只在启动时读一次**;运行中不再读,避免外部编辑悄悄覆盖内存。手编需重启生效 | §1.0 |
-| I17 | /clear = 对当前 `(adapter_id, thread_id)` **换 session_id**(不清旧内存);旧 session 的 active_context / memory tree / bg run 全部留底,可通过手编 `system.json` 重启回归 | §1.7 |
+| I4 | submit 任何消息(含 /compact)→ 当前前台卡立即 detach | §5.7 / §8.2 |
+| I5 | /compact 段挂在"最早未完成 PH 所属的 Card"上,不新建卡(除非空闲态) | §1.5 / §8.3 |
+| I6 | /attach 总是新建卡 | §1.8 / §8.4 |
+| I7 | bg(frozen)Card 从 detach 到 ph_replaced 之间零更新;ph_replaced 一次性 patch 终态 | §6 |
+| I8 | tools_pending 只数未展开 tools(buf 长度);load_pending_tools 后归零 | §5.4 |
+| I9 | footer 三件套(model + ctx + 回答用时)绑定;缺一不渲染 | §5.6 |
+| I10 | bg_frozen 脚标永不出现三件套(互斥) | §5.6 |
+| I11 | 任何 channel View 对同一 UnifiedCardState 输出语义一致 | §4.3 |
+| I12 | 子会话 compact:首次查"同分叉点已压缩可用就用";二次起不再读主上下文 | §1.6 |
+| I13 | session_id 来源于统一映射 `(adapter_id, thread_id) → session_id`;禁止任何 channel 走 "default" 路径 | §1.0 |
+| I14 | thread_id 取值固定:feishu/tg = chat_id;cli = `""`;同 thread 在同 channel 只对应一个 active sid | §1.0 |
+| I15 | 内存是 session_id 映射的唯一 source of truth;`system.json` / `history/` 是副本写 | §1.0 |
+| I16 | `system.json` 只在启动时读一次;运行中不再读;手编需重启生效 | §1.0 |
+| I17 | /clear = 对当前 `(adapter_id, thread_id)` 换 session_id(不清旧内存);旧 session 全留底 | §1.7 |
+| I18 | 序列化给模型的消息中**禁止**出现 run_id / UUID / 内部字段 | §1.3 / §1.9 |
+| I19 | 普通 PH 序列化必须**逐字**为 1 条 assistant `"正在后台回答你的问题{label}，请勿重试此请求。"`;compact PH 序列化为 **0 条** | §1.3 |
+| I20 | compact 是 PH(`kind="compact"`),跑完通过 `replace_placeholder(compact_run_id, ...)` 写回,不调 `replace_range` | §1.5 |
+| I21 | 同 session_id 任意时刻最多一个 compact 在跑(SDK sid 锁) | §1.5 |
+| I22 | 新 run `snapshot_for_fork` 检测到 running compact PH 时**阻塞等待**到其被 replace | §1.5 |
+| I23 | 所有上下文操作必须通过 `ContextSDK` 句柄;adapter / harness / 命令处理直接访问 SDK 内部组件 = 启动失败 | §0 / §3 |
 
 ---
 
-## 9. 测试合约(committed,禁止借口"是别人引入的")
+## 10. 测试合约(committed,禁止糊弄)
 
-参见 `tests/e2e_real/test_card_state_contract.py`(待落)。
-- 仅 `pytest -m merge_gate` 跑(默认 skip,不拖日常 CI)
-- 失败 = 行为偏离本文 = **必须修代码**,**不得**借口"是别人引入的回归" —— 没有别人,只有我
-- 修改本测试 = 修改契约 → 必须先改本文 + 用户确认
-
----
-
-## 10. 已确认决议(对应早期开放点)
-
-| # | 决议 |
-|---|---|
-| §4.1 | 输入推进 3s/格(估算,不精确) |
-| §4.4 | 非 bash 工具 header:description > path/file_path/file/cmd/command/url/query/pattern > 第一非空 kv |
-| §4.5 | streaming markdown 截断守门:**已实现,主要在 TG**(telegramify-markdown),飞书不补 |
-| §1.6 | 子会话首次 compact 查询:看最靠前分叉点的前一条 —— compact 结果就用;否则它已回写就看下一个(必是自己 PH)→ 自己压 |
-| §1.7 | /clear 触发 detach |
-| §1.8 | detach 只有"后台回答"按钮 + 任何菜单/命令 submit 触发;attach 永远新建卡(目标已 terminal 也新建) |
-| §6  | TG 比飞书多 3 个按钮(展开 思考/工具/答案 全量),tools 翻页每页 4 个;answer markdown 不闭合守门 |
+`tests/e2e_real/test_card_state_contract.py`:
+- `pytest -m merge_gate` 触发,默认 skip
+- 失败 = 行为偏离本文 → **必须修代码**;不得借口"别人引入"
+- 修改本测试 = 修改契约 → 先改本文 + 用户确认
 
 ---
 
-## 11. 待落地重构(用户已确认,排队中)
+## 11. Channel View 详细规格
 
-### 11.1 TurnMessage 类 + 平台序列化器
-
-**问题**:当前 `MemoryMessage` / `Placeholder` 直接被 ph_expand 展开成纯 dict,送给模型。PH 的 `run_id` / 内部元数据可能泄漏到 prompt,导致模型推测出"上下文 = jsonl 路径 = 我可以读取"。
-
-**重构契约**:
-- 定义 `TurnMessage` 基类(role + 文本 + **内部元数据**)
-- 内部元数据(run_id, ph_run_id, message_id, debug fields...)**在序列化时全部剥离**,模型 prompt 永不携带
-- 实现两个 platform serializer:
-  - `serialize_for_openai(turn_messages) -> list[dict]`
-  - `serialize_for_anthropic(turn_messages) -> list[dict]`
-  - 两家协议略有差异(tool_calls 嵌套形态、system 角色处理等)
-- Placeholder 在序列化时变成 `MemoryMessage(role="assistant", content="[正在后台回答 '{label}',不要重复尝试运行此内容。]")` — **无 run_id,无 UUID**
-- 模型看到的 PH = 普通 1:1 聊天的一句 assistant 回复,**0 区别**
-
-**测试合约(待写)**:
-- I18: 序列化结果中**禁止**出现任何 run_id / UUID / 内部字段
-- I19: PH 序列化文本必须以 "正在后台回答" 起,不含 run 标识
-
-### 11.2 待修 bug(以日志验证)
-
-- **B1**: PH 被 `replace_placeholder` 两次(每次 run 回写正常只 1 次)— `active_context.replace_placeholder` 逻辑 bug,或调用方双触发
-- **B2**: /compact 摘要包含 /clear 之前的内容 — 跨 session 内存污染。/clear 只动了 active_context,但 compact 走的可能是另一份历史(history mirror / memory tree)
-- **B3**: /compact 完成后,PH 前的内容**没被替换为摘要**(违反 §1.5 case B)
+具体渲染细节见:
+- 飞书 → [channels/feishu.md](./channels/feishu.md)
+- TG → [channels/telegram.md](./channels/telegram.md)
+- CLI → [channels/cli.md](./channels/cli.md)
