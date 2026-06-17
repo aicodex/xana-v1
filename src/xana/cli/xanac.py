@@ -157,6 +157,11 @@ async def _oneshot_run(
         state = UnifiedCardState(card_id=session_id, ph_run_id=session_id)
         done = asyncio.Event()
         rc = 0
+        # Replay-vs-live gate: only honour final/error/cancelled for events
+        # received AFTER our submit's baseline seq. Replay can deliver an
+        # earlier turn's final ahead of our /compact (or new prompt)
+        # progress events; without this we'd exit before consuming them.
+        baseline_seq = -1
 
         async def reader():
             nonlocal rc, state
@@ -186,6 +191,10 @@ async def _oneshot_run(
                     apply_event(state, aev)
                     kind = ev.data.get("kind")
                     if kind in ("final", "error", "cancelled"):
+                        seq = getattr(ev, "seq", 0) or 0
+                        if baseline_seq < 0 or seq <= baseline_seq:
+                            # Replay-phase terminator for a prior turn; skip
+                            continue
                         if kind == "error":
                             rc = 1
                         done.set()
@@ -197,12 +206,24 @@ async def _oneshot_run(
                     # dropped, /compact cards don't freeze and bg cards
                     # don't get terminal patches.
                     apply_event(state, _progress_from_wire(ev.data))
-                    if ev.data.get("kind") == "ph_replaced":
-                        done.set()
-                        return
+                    # /compact run finishes via compact_finalized progress
+                    # (no agent_event=final for compact). Honour it as a
+                    # oneshot terminator alongside final/error/cancelled,
+                    # gated by the same baseline check.
+                    kind_p = ev.data.get("kind")
+                    if kind_p in ("compact_finalized", "compact_cancelled"):
+                        seq = getattr(ev, "seq", 0) or 0
+                        if baseline_seq >= 0 and seq > baseline_seq:
+                            done.set()
+                            return
                     continue
 
         reader_task = asyncio.create_task(reader())
+        # Let replay phase drain so baseline_seq snapshots only pre-existing
+        # events; afterwards, submit our prompt and treat terminations only
+        # for events with seq > baseline.
+        await asyncio.sleep(0.5)
+        baseline_seq = client._last_seq.get(session_id, 0)
         await client.submit(session_id, text)
         try:
             await asyncio.wait_for(done.wait(), timeout=timeout_s)
