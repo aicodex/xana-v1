@@ -14,6 +14,30 @@
 
 ## 1. 会话状态(后端)
 
+### 1.0 会话身份与持久化(session_id 来源)
+
+**不存在"默认"会话 id**(没有 `default` 等特殊路径)。所有 channel 都用同一套映射:
+
+```
+key = (adapter_id, thread_id) → session_id
+```
+
+| adapter | thread_id 取值 |
+|---|---|
+| feishu | `chat_id`(单聊 = open_id;群聊 = chat_id) |
+| telegram | `chat_id` |
+| cli | `""`(CLI 是单 client,一个 host 一个 thread) |
+
+`system.json` 持久化整张 `key → session_id` 映射表。运行时:
+- 入站消息到达 → adapter 查 `system.json` 拿 session_id;查不到 → 生成新 session_id + 写回
+- /clear → 直接换新 session_id 写回 `system.json`,旧 session 整个保留在内存里
+- 想"回到旧会话" → 手编 `system.json` 把 key 改回旧 session_id 即可
+
+**数据权威:内存是唯一 source of truth。** `system.json` 跟 `history/` 一样是**副本写(mirror write)**:
+- 写路径:写内存 → 异步 mirror 到 `system.json` / `history/`
+- 启动恢复:内存为空 → 从 `system.json` + `history/` 读副本重建
+- **磁盘不能反向覆盖内存** —— 运行中不再读 `system.json`(只在启动时读一次),避免外部编辑导致内存与磁盘不一致
+
 ### 1.1 主会话上下文(main context)
 
 - 任何用户的问题、回复**在主上下文里默认就是 PH**(分叉占位符)。也就是说:用户消息进入 → 立刻给该 turn 创建一个 PH 节点占位,真正的回答 / 工具 / 思考都在后台 Run 里跑,Run 完成时**回写**这个 PH。
@@ -64,10 +88,13 @@ assistant: [此问题正在后台处理中,请基于其他可用上下文继续�
 
 ### 1.7 /clear
 
-- = 开新会话(主上下文换 session_id / 重置)
+- = **换 session_id**(对当前 `(adapter_id, thread_id)` 生成新 session_id,写入 `system.json` 副本)
+- 旧 session 的内存(active_context + memory tree + bg run)**全部保留在内存里**,不清不杀
+- /clear 不是"清历史" —— 旧历史依然在内存里,只是当前 thread 不再绑这个 session_id
 - **/clear 那一刻和所有菜单消息一样,触发当前前台卡 detach**(走 §4.7 的 detach 路径)
-- 旧会话对应的**后台 Run 暂不处理,让它继续跑**(不杀、不取消)
+- 旧会话对应的**后台 Run 暂不处理,让它继续跑**(它们写回旧 session 的内存,不影响新 session)
 - 旧卡保持在它当前的形态;新会话有自己的新卡
+- 想回到旧会话:手编 `system.json` 把 `(adapter_id, thread_id)` 指回旧 session_id,**重启 serve** 生效
 
 ### 1.8 attach / detach 的范围 + 触发方式
 
@@ -335,7 +362,7 @@ CLI 见 [channels/cli.md](./channels/cli.md)。
 
 ---
 
-## 8. 不变量(I1–I12,merge-gate 测试断言)
+## 8. 不变量(I1–I17,merge-gate 测试断言)
 
 | # | 不变量 | 关联条 |
 |---|---|---|
@@ -351,6 +378,11 @@ CLI 见 [channels/cli.md](./channels/cli.md)。
 | I10 | bg_frozen 脚标永不出现 "model · ctx · 回答用时" 三件套(互斥) | §4.6 |
 | I11 | 任何 channel View 对同一 UnifiedCardState 产出语义一致的输出 | §3.3 |
 | I12 | 子会话 compact:首次查"同分叉点已压缩可用就用",二次起不再读主上下文 | §1.6 |
+| I13 | session_id 来源于统一映射 `(adapter_id, thread_id) → session_id`;**禁止任何 channel 走"default"等特殊路径** | §1.0 |
+| I14 | thread_id 取值固定:feishu/tg = chat_id;cli = `""` —— 同一 thread 在同一 channel 只对应一个 active session_id | §1.0 |
+| I15 | 内存是 session_id 映射的**唯一 source of truth**;`system.json` 是副本写(mirror write),`history/` 同理 | §1.0 |
+| I16 | `system.json` **只在启动时读一次**;运行中不再读,避免外部编辑悄悄覆盖内存。手编需重启生效 | §1.0 |
+| I17 | /clear = 对当前 `(adapter_id, thread_id)` **换 session_id**(不清旧内存);旧 session 的 active_context / memory tree / bg run 全部留底,可通过手编 `system.json` 重启回归 | §1.7 |
 
 ---
 
