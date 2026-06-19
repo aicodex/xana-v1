@@ -154,6 +154,18 @@ class CompactSummary(Message):
         "如同中断从未发生一样继续上一个任务。"
     )
 
+    @classmethod
+    def render(cls, summary: str, transcript_path: str = "") -> str:
+        """Single-source renderer — same string for model prompt + card body.
+
+        Used by both CompactSummary._render() (model side, via
+        to_anthropic/to_openai) and the UI side (commands._cmd_compact
+        fires this rendered text in the compact_finalized progress event,
+        so the card panel body matches what the model will see)."""
+        return cls.POST_COMPACT_TEMPLATE.format(
+            summary=summary, transcript=transcript_path,
+        )
+
     def _render(self) -> str:
         return self.POST_COMPACT_TEMPLATE.format(
             summary=self.summary,

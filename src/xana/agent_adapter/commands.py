@@ -332,12 +332,22 @@ class DefaultCommandRouter(CommandRouter):
                     inbound.session_id, "chat", run_id, (cs,))
                 sdk_ph_acquired = False
             _ = revealed_tools_from_messages(snapshot.messages) if snapshot else set()
+            # §1.9 single-source render: same string the model will see
+            # (CompactSummary.to_anthropic/openai) is what the card panel
+            # shows. Without this, the card body was the raw model output
+            # (no template prefix/suffix), while the model context had the
+            # full templated form — visible divergence between front-end
+            # and back-end "compact summary".
+            from xana.context.message import CompactSummary as _CS
+            rendered_summary = _CS.render(
+                summary, transcript_path=f"runs/{run_id}.jsonl",
+            )
             if ph_note is not None:
                 ph_note({
                     "kind": "compact_finalized",
                     "session_id": inbound.session_id,
                     "run_id": run_id,
-                    "summary": summary,
+                    "summary": rendered_summary,
                     "compacted_n": len(live),
                 })
             # compact 完成:visual 已由 compact_finalized note_progress 落到
