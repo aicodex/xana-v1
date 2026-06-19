@@ -169,9 +169,9 @@ class DefaultCommandRouter(CommandRouter):
 
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
         from xana.harness_sdk.compact import (
-            SUMMARY_SECTIONS, _CompactCancelled, build_post_compact_context,
+            _CompactCancelled,
             generate_summary, messages_since_boundary, partial_summary,
-            post_compact_message, revealed_tools_from_messages, summary_progress,
+            revealed_tools_from_messages, summary_progress,
         )
         from xana.harness_sdk.contracts import ProgressEvent
         if self.active_context_store is None:

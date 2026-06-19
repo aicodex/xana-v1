@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable, Sequence
 
+from xana.context.message import CompactSummary as _CompactSummary
 from xana.harness_sdk.compact_prompt import (
     COMPACT_BOUNDARY_MARKER,
-    POST_COMPACT_TEMPLATE,
     get_compact_prompt,
 )
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
@@ -23,7 +23,6 @@ class _CompactCancelled(Exception):
 _CHARS_PER_TOKEN = 4  # 与 DefaultUsageAccumulator 同源启发式
 BLOCKING_HEADROOM = 3_000    # blocking 线 = context_window - 3K
 _COMPACT_RETRIES = 3
-_TRANSCRIPT_PLACEHOLDER = "(转录不可用)"
 
 
 def estimate_tokens(messages: Sequence[MemoryMessage]) -> int:
@@ -141,12 +140,6 @@ def _extract_summary(text: str) -> str | None:
 partial_summary = _extract_summary
 
 
-def post_compact_message(summary: str) -> str:
-    """compact 后留在上下文里的唯一一条消息全文(CC 结构: 开头说明 + 摘要: + 转录指引 + 继续指令)。
-    卡片折叠块显示的也是这条全文 — 上下文与展示一致。"""
-    return POST_COMPACT_TEMPLATE.format(summary=summary, transcript=_TRANSCRIPT_PLACEHOLDER)
-
-
 def revealed_tools_from_messages(messages) -> set[str]:
     """已揭示工具 = 消息 metadata.revealed_tools ∪ compact boundary 的
     pre_compact_revealed_tools(CC: preCompactDiscoveredTools 同思路)。"""
@@ -171,7 +164,9 @@ def build_post_compact_context(
     boundary = MemoryMessage(
         role="system", content=COMPACT_BOUNDARY_MARKER, metadata=boundary_meta
     )
-    summary_msg = MemoryMessage(role="user", content=post_compact_message(summary))
+    summary_msg = MemoryMessage(
+        role="user", content=_CompactSummary.render(summary),
+    )
     return ActiveContext(
         session_id=session_id, agent_name=agent_name,
         messages=(boundary, summary_msg),

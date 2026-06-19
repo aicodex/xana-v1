@@ -745,8 +745,9 @@ class DefaultHarness(Harness):
                         if wq is not None:
                             from xana.memory.contracts import Placeholder
                             from xana.memory.write_queue import ReplaceRangeItem
+                            from xana.context.message import CompactSummary
                             from xana.harness_sdk.compact import (
-                                COMPACT_BOUNDARY_MARKER, post_compact_message,
+                                COMPACT_BOUNDARY_MARKER,
                             )
                             mixed = await context.active_context_store.snapshot(
                                 session_id, agent_name)
@@ -760,7 +761,7 @@ class DefaultHarness(Harness):
                                 boundary_meta["pre_compact_revealed_tools"] = revealed_now
                             summary_msg = MemoryMessage(
                                 role="compact",
-                                content=post_compact_message(summary),
+                                content=CompactSummary.render(summary),
                                 metadata={**boundary_meta,
                                           "compact_summary": True,
                                           "boundary_marker": COMPACT_BOUNDARY_MARKER},

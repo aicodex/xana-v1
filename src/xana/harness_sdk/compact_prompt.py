@@ -92,13 +92,12 @@ BASE_COMPACT_PROMPT = """你的任务是创建一份迄今为止对话的详细�
 
 NO_TOOLS_TRAILER = """提醒：禁止调用任何工具。仅回复纯文本——一个 <analysis> 块后跟一个 <summary> 块。工具调用将被拒绝，你将无法完成任务。"""
 
-POST_COMPACT_TEMPLATE = """此会话正在从上一次因上下文不足而中断的对话中继续。以下摘要涵盖了对话的早期部分。
-
-摘要：
-{summary}
-
-如果你需要压缩前的具体细节（如确切的代码片段、错误信息或你生成的内容），请阅读完整转录记录：{transcript}
-继续对话，无需向用户提出任何进一步的问题。直接继续——不要确认摘要，不要复述正在发生的事情，不要以"我将继续"或类似语句开头。如同中断从未发生一样继续上一个任务。"""
+# §1.9 single-source rule: POST_COMPACT_TEMPLATE now lives only on
+# ``xana.context.message.CompactSummary``. This module owns the
+# "tell-the-model-to-write-a-summary" prompts (NO_TOOLS_PREAMBLE /
+# BASE_COMPACT_PROMPT / NO_TOOLS_TRAILER) — it does NOT own the
+# "wrap-the-summary-for-future-prompts" template. Use
+# ``CompactSummary.render(summary, transcript_path)`` for that.
 
 
 def get_compact_prompt() -> str:
