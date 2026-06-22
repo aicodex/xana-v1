@@ -488,9 +488,30 @@ class DefaultHarness(Harness):
                         await event_queue.put(ev)
                         if ev.kind == "error":
                             status = "failed"
+                            # XANA_DEBUG: surface error payload immediately
+                            # (default _logger handlers don't print to stderr)
+                            import sys as _sys
+                            print(
+                                f"[HARNESS-ERROR] bg run_id={run_id} sid={session_id} "
+                                f"payload={ev.payload!r}",
+                                file=_sys.stderr, flush=True,
+                            )
                         elif ev.kind == "cancelled":
                             status = "cancelled"
+                            import sys as _sys
+                            print(
+                                f"[HARNESS-CANCELLED] bg run_id={run_id} sid={session_id} "
+                                f"payload={ev.payload!r}",
+                                file=_sys.stderr, flush=True,
+                            )
                 except Exception:
+                    import sys as _sys
+                    import traceback as _tb
+                    print(
+                        f"[HARNESS-CRASH] bg run_id={run_id} sid={session_id}:",
+                        file=_sys.stderr, flush=True,
+                    )
+                    _tb.print_exc(file=_sys.stderr)
                     _logger.exception("async background _run_query_loop crashed")
                     status = "failed"
                 finally:
@@ -536,10 +557,23 @@ class DefaultHarness(Harness):
             async for ev in self._run_query_loop(request, forked_context):
                 if ev.kind == "error":
                     status = "failed"
+                    import sys as _sys
+                    print(
+                        f"[HARNESS-ERROR] sync run_id={run_id} sid={session_id} "
+                        f"payload={ev.payload!r}",
+                        file=_sys.stderr, flush=True,
+                    )
                 elif ev.kind == "cancelled":
                     status = "cancelled"
                 yield ev
         except Exception:
+            import sys as _sys
+            import traceback as _tb
+            print(
+                f"[HARNESS-CRASH] sync run_id={run_id} sid={session_id}:",
+                file=_sys.stderr, flush=True,
+            )
+            _tb.print_exc(file=_sys.stderr)
             _logger.exception("sync _run_query_loop crashed")
             status = "failed"
             raise

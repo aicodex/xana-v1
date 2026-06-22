@@ -88,11 +88,14 @@ def _parse_assistant_tool_calls(metadata: dict) -> tuple[_ToolCallInternal, ...]
     """Reconstruct ``_ToolCallInternal`` tuples from legacy assistant
     metadata.
 
-    The legacy producer stores tool calls under one of two keys:
-      - ``"tool_calls"``: tuple/list of dicts ``{call_id, name, arguments}``
-      - ``"tool_call"`` (singular): a single dict in the same shape
-    Anything that does not parse cleanly is silently dropped — the
-    metadata is best-effort.
+    Legacy producer (DefaultHarness `_run_query_loop`, around line 903)
+    stores each tool call as a dict::
+
+        {"tool_name": "...", "input": {...}, "call_id": "..."}
+
+    Some older callers (and the SDK round-trip) use
+    ``{"name": ..., "arguments": ..., "call_id"|"id": ...}``.
+    Accept both shapes — fail silently if a record has neither.
     """
     raw = metadata.get("tool_calls")
     if raw is None and "tool_call" in metadata:
@@ -104,8 +107,11 @@ def _parse_assistant_tool_calls(metadata: dict) -> tuple[_ToolCallInternal, ...]
         if not isinstance(entry, dict):
             continue
         call_id = entry.get("call_id") or entry.get("id") or ""
-        name = entry.get("name") or ""
+        # Accept both legacy ("tool_name"/"input") and SDK ("name"/"arguments").
+        name = entry.get("name") or entry.get("tool_name") or ""
         arguments = entry.get("arguments")
+        if arguments is None:
+            arguments = entry.get("input")
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments)
