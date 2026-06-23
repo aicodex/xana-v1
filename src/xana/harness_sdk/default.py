@@ -766,6 +766,12 @@ class DefaultHarness(Harness):
                 live = messages_since_boundary(history_msgs)
                 if tokens >= int(force_at) and live and not compact_attempted:
                     compact_attempted = True
+                    from xana.context._compact_debug import log_auto_compact
+                    log_auto_compact(
+                        session_id, run_id, tokens=tokens,
+                        force_at=force_at, ctx_win=ctx_win,
+                        history_len=len(history_msgs),
+                    )
                     await self._report_compact(context, session_id, run_id, "start")
                     summary = await generate_summary(
                         client, provider=provider, model=context.model, messages=live)

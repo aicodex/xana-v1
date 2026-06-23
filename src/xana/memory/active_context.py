@@ -176,6 +176,9 @@ class InMemoryActiveContextStore(ActiveContextStore):
                 existing = buf[idx]
                 buf[idx:idx + 1] = sdk_msgs
                 if isinstance(existing, CompactPlaceholder):
+                    from xana.context._compact_debug import log_lock
+                    log_lock("leak_release", sid, run_id,
+                             "sdk_mirror_replace_placeholder")
                     ContextSDK._release_compact(st, run_id)
             return
 
@@ -282,6 +285,7 @@ class InMemoryActiveContextStore(ActiveContextStore):
         self._snapshots.pop((session_id, agent_name), None)
         _log_state("clear", session_id, agent_name, ())
         if self._sdk is not None:
+            from xana.context._compact_debug import log_lock
             from xana.context.message import CompactPlaceholder
             from xana.context.sdk import ContextSDK
             st = self._sdk._store.state(session_id)
@@ -289,6 +293,8 @@ class InMemoryActiveContextStore(ActiveContextStore):
                 buf = self._sdk._store.buffer(session_id, agent_name)
                 for item in list(buf):
                     if isinstance(item, CompactPlaceholder):
+                        log_lock("leak_release", session_id,
+                                 item._internal.run_id, "store.clear")
                         ContextSDK._release_compact(st, item._internal.run_id)
                 buf.clear()
         if self._on_clear is not None:

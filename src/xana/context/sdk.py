@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Sequence
 
 from xana.context import _internal as _ctx_internal  # noqa: F401 — smoke-tests guard
+from xana.context._compact_debug import log_event, log_lock
 from xana.context._internal import _PlaceholderInternal
 from xana.context._store import _ContextStore
 from xana.context.message import (
@@ -70,6 +71,7 @@ class ContextSDK:
         st = self._store.state(sid)
         # Block until any in-flight compact is fully replaced (c4).
         await st.compact_lock.acquire()
+        log_lock("acquire", sid, run_id, "append_compact_placeholder")
         try:
             async with st.write_lock:
                 buf = self._store.buffer(sid, agent)
@@ -87,13 +89,16 @@ class ContextSDK:
                     buf.insert(idx, ph)
                 # Mark a pending compact: future fork must wait.
                 st.compact_event.clear()
+                log_event("clear", sid, run_id, "append_compact_placeholder")
                 st.compact_holder = run_id
                 return ph
         except BaseException:
             # Failed to record PH — don't hold the lock.
             if st.compact_lock.locked():
                 st.compact_lock.release()
+                log_lock("leak_release", sid, run_id, "append_compact_placeholder/except")
             st.compact_event.set()
+            log_event("set", sid, run_id, "append_compact_placeholder/except")
             st.compact_holder = ""
             raise
 
@@ -133,8 +138,10 @@ class ContextSDK:
         if st.compact_holder == run_id:
             st.compact_holder = ""
         st.compact_event.set()
+        log_event("set", "?", run_id, "_release_compact")
         if st.compact_lock.locked():
             st.compact_lock.release()
+            log_lock("release", "?", run_id, "_release_compact")
 
     # ------------------------------------------------------------------
     # Snapshot (fork)
