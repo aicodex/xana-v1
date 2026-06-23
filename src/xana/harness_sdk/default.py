@@ -403,9 +403,12 @@ class DefaultHarness(Harness):
         await context.active_context_store.append_placeholder(session_id, agent_name, ph)
 
         # c) Build forked store seeded with pre_snapshot + user_msg.
+        parent_sdk_getter = getattr(context.active_context_store, "sdk", None)
+        parent_sdk = parent_sdk_getter() if callable(parent_sdk_getter) else None
         fork_store = _ForkedActiveContextStore(
             session_id=session_id, agent_name=agent_name,
             seed_messages=pre_msgs + (user_msg,),
+            sdk=parent_sdk,
         )
 
         # d) per-run JSONL mirror when wired (async writers ok), else keep
@@ -1167,6 +1170,7 @@ class _ForkedActiveContextStore(ActiveContextStore):
         session_id: str,
         agent_name: str,
         seed_messages: tuple[MemoryMessage | Placeholder, ...],
+        sdk: Any | None = None,
     ) -> None:
         self._session_id = session_id
         self._agent_name = agent_name
@@ -1176,9 +1180,13 @@ class _ForkedActiveContextStore(ActiveContextStore):
         self._messages: list[MemoryMessage | Placeholder] = list(seed_messages)
         self._produced: list[MemoryMessage] = []
         self._summary: str = ""
+        self._sdk = sdk
 
     def produced_messages(self) -> tuple[MemoryMessage, ...]:
         return tuple(self._produced)
+
+    def sdk(self) -> Any | None:
+        return self._sdk
 
     def _ctx(self) -> ActiveContext:
         pure = tuple(m for m in self._messages if isinstance(m, MemoryMessage))
