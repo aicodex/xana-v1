@@ -16,6 +16,7 @@ import os
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from xana.memory.contracts import ActiveContext, HistoryRow, InjectedBlock, MemoryMessage, Placeholder, ReplayResult
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror, MemoryInjector, MemoryInjectorRegistry
@@ -79,7 +80,12 @@ def _log_state(
 
 
 class InMemoryActiveContextStore(ActiveContextStore):
-    def __init__(self, context_sdk: "ContextSDK | None" = None) -> None:
+    def __init__(
+        self,
+        context_sdk: "ContextSDK | None" = None,
+        *,
+        on_clear: Callable[[str, str], None] | None = None,
+    ) -> None:
         self._store: dict[tuple[str, str], ActiveContext] = {}
         # per-(session,agent) 混合序列，按追加顺序记录 MemoryMessage 或 Placeholder。
         # 与 _store[key].messages 是独立视图：前者含 PH，后者只装 MemoryMessage。
@@ -90,6 +96,21 @@ class InMemoryActiveContextStore(ActiveContextStore):
         # a fallback when the SDK does not represent a payload (system
         # messages, currently).
         self._sdk: "ContextSDK | None" = context_sdk
+        # Bug B fix: optional callback fired on clear(sid, agent) so harness
+        # can pop stale per-(sid,agent) caches (e.g. _session_prompt_tokens).
+        # See docs/design/session-and-card-state.md §1.5.
+        self._on_clear = on_clear
+
+    def sdk(self) -> "ContextSDK | None":
+        """Return the wrapped ContextSDK (or None for legacy/test stores).
+
+        Bug C fix: lets the harness drive auto-compact through the SDK
+        (append_compact_placeholder + replace_placeholder) so it takes the
+        same per-sid compact_lock as manual /compact and the system-role
+        compact_boundary marker is no longer dropped by ``set()``'s mirror.
+        See docs/design/session-and-card-state.md §1.5 c3/c4.
+        """
+        return self._sdk
 
     # ------------------------------------------------------------------
     # SDK bridge helpers
@@ -129,8 +150,20 @@ class InMemoryActiveContextStore(ActiveContextStore):
     async def _sdk_mirror_replace_placeholder(
         self, run_id: str, replace_with: tuple[MemoryMessage, ...]
     ) -> None:
+        """Mirror a legacy replace_placeholder into the SDK buffer.
+
+        Bug A fix: if the SDK item being replaced is a CompactPlaceholder,
+        release the per-sid compact_lock + signal the compact_event so
+        snapshot_for_fork waiters unblock and future /compact calls don't
+        deadlock. Without this the legacy writeback path (e.g. harness
+        _finalize_writeback enqueuing ReplaceItem for a cancelled real run
+        whose run_id happens to equal the compact PH's run_id) silently
+        leaks the lock. See docs/design/session-and-card-state.md §1.5 c4.
+        """
         if self._sdk is None:
             return
+        from xana.context.message import CompactPlaceholder
+        from xana.context.sdk import ContextSDK
         from xana.memory._message_bridge import memory_message_to_sdk
         sdk_msgs = [m for m in (memory_message_to_sdk(x) for x in replace_with) if m is not None]
         # Find the buffer that holds this run_id.
@@ -140,7 +173,10 @@ class InMemoryActiveContextStore(ActiveContextStore):
                 continue
             st = self._sdk._store.state(sid)
             async with st.write_lock:
+                existing = buf[idx]
                 buf[idx:idx + 1] = sdk_msgs
+                if isinstance(existing, CompactPlaceholder):
+                    ContextSDK._release_compact(st, run_id)
             return
 
     async def _sdk_mirror_replace_range(
@@ -232,13 +268,34 @@ class InMemoryActiveContextStore(ActiveContextStore):
         return updated
 
     async def clear(self, session_id: str, agent_name: str) -> None:
+        """Wipe legacy + SDK buffers for (sid, agent).
+
+        Bug A fix: before clearing the SDK buffer, scan for any
+        CompactPlaceholder and release its compact_lock — otherwise a
+        /clear during an in-flight compact would leak the lock and block
+        the next /compact forever.
+        Bug B fix: fire the ``on_clear`` callback (wired by boot) so
+        harness-side per-(sid, agent) caches (``_session_prompt_tokens``)
+        are popped. See docs/design/session-and-card-state.md §1.5.
+        """
         self._store.pop((session_id, agent_name), None)
         self._snapshots.pop((session_id, agent_name), None)
         _log_state("clear", session_id, agent_name, ())
         if self._sdk is not None:
+            from xana.context.message import CompactPlaceholder
+            from xana.context.sdk import ContextSDK
             st = self._sdk._store.state(session_id)
             async with st.write_lock:
-                self._sdk._store.buffer(session_id, agent_name).clear()
+                buf = self._sdk._store.buffer(session_id, agent_name)
+                for item in list(buf):
+                    if isinstance(item, CompactPlaceholder):
+                        ContextSDK._release_compact(st, item._internal.run_id)
+                buf.clear()
+        if self._on_clear is not None:
+            try:
+                self._on_clear(session_id, agent_name)
+            except Exception:
+                pass
 
     async def snapshot(
         self, session_id: str, agent_name: str

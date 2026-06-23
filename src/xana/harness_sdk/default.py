@@ -772,42 +772,90 @@ class DefaultHarness(Harness):
                     if summary is None:
                         await self._report_compact(context, session_id, run_id, "failed")
                     else:
-                        # Group H: reroute through write_queue when wired.
-                        wq = context.metadata.get("write_queue")
+                        # Bug C fix: prefer SDK Compact-as-PH path so we
+                        # take the same per-sid compact_lock as manual
+                        # /compact (serializing auto vs manual) AND keep
+                        # the boundary marker in the SDK buffer (the
+                        # legacy ``set()`` mirror dropped role="system"
+                        # via _message_bridge, losing the boundary). See
+                        # docs/design/session-and-card-state.md §1.5
+                        # c3/c4.
                         revealed_now = sorted(
                             revealed_tools_from_messages(history_msgs))
-                        if wq is not None:
-                            from xana.memory.contracts import Placeholder
-                            from xana.memory.write_queue import ReplaceRangeItem
+                        from xana.context.sdk import ContextSDK as _SDK
+                        sdk: "_SDK | None" = None
+                        store = context.active_context_store
+                        sdk_getter = getattr(store, "sdk", None)
+                        if callable(sdk_getter):
+                            try:
+                                sdk = sdk_getter()
+                            except Exception:
+                                sdk = None
+                        wq = context.metadata.get("write_queue")
+                        if sdk is not None:
+                            from xana.context._internal import _PlaceholderInternal
                             from xana.context.message import CompactSummary
-                            from xana.harness_sdk.compact import (
-                                COMPACT_BOUNDARY_MARKER,
-                            )
-                            mixed = await context.active_context_store.snapshot(
-                                session_id, agent_name)
-                            fork_point = len(mixed)
-                            for i, item in enumerate(mixed):
-                                if isinstance(item, Placeholder) and item.status == "running":
-                                    fork_point = i
-                                    break
-                            boundary_meta: dict = {"compact_boundary": True}
-                            if revealed_now:
-                                boundary_meta["pre_compact_revealed_tools"] = revealed_now
-                            summary_msg = MemoryMessage(
-                                role="compact",
-                                content=CompactSummary.render(summary),
-                                metadata={**boundary_meta,
-                                          "compact_summary": True,
-                                          "boundary_marker": COMPACT_BOUNDARY_MARKER},
-                            )
-                            await wq.put(ReplaceRangeItem(
-                                session_id=session_id, agent_name=agent_name,
-                                start_idx=0, end_idx=fork_point, summary=summary_msg,
-                            ))
-                        else:
-                            await context.active_context_store.set(build_post_compact_context(
-                                session_id=session_id, agent_name=agent_name, summary=summary,
-                                revealed_tools=revealed_now))
+                            auto_run_id = f"autocompact-{session_id}-{run_id}"
+                            transcript = f"runs/{auto_run_id}.jsonl"
+                            try:
+                                await sdk.append_compact_placeholder(
+                                    session_id, agent_name,
+                                    run_id=auto_run_id, ph_id=auto_run_id,
+                                    transcript_path=transcript,
+                                )
+                                cs = CompactSummary(
+                                    summary=summary,
+                                    _internal=_PlaceholderInternal(
+                                        run_id=auto_run_id,
+                                        ph_id=auto_run_id,
+                                        transcript_path=transcript,
+                                    ),
+                                )
+                                await sdk.replace_placeholder(
+                                    session_id, agent_name, auto_run_id, (cs,),
+                                )
+                            except Exception:
+                                _logger.exception(
+                                    "auto-compact SDK writeback failed; "
+                                    "falling back to legacy path")
+                                sdk = None
+                        if sdk is None:
+                            # Legacy fallback (tests w/ no SDK-backed store).
+                            _logger.warning(
+                                "auto-compact using legacy fallback path "
+                                "(no ContextSDK on active_context_store)")
+                            if wq is not None:
+                                from xana.memory.contracts import Placeholder
+                                from xana.memory.write_queue import ReplaceRangeItem
+                                from xana.context.message import CompactSummary
+                                from xana.harness_sdk.compact import (
+                                    COMPACT_BOUNDARY_MARKER,
+                                )
+                                mixed = await context.active_context_store.snapshot(
+                                    session_id, agent_name)
+                                fork_point = len(mixed)
+                                for i, item in enumerate(mixed):
+                                    if isinstance(item, Placeholder) and item.status == "running":
+                                        fork_point = i
+                                        break
+                                boundary_meta: dict = {"compact_boundary": True}
+                                if revealed_now:
+                                    boundary_meta["pre_compact_revealed_tools"] = revealed_now
+                                summary_msg = MemoryMessage(
+                                    role="compact",
+                                    content=CompactSummary.render(summary),
+                                    metadata={**boundary_meta,
+                                              "compact_summary": True,
+                                              "boundary_marker": COMPACT_BOUNDARY_MARKER},
+                                )
+                                await wq.put(ReplaceRangeItem(
+                                    session_id=session_id, agent_name=agent_name,
+                                    start_idx=0, end_idx=fork_point, summary=summary_msg,
+                                ))
+                            else:
+                                await context.active_context_store.set(build_post_compact_context(
+                                    session_id=session_id, agent_name=agent_name, summary=summary,
+                                    revealed_tools=revealed_now))
                         self._session_prompt_tokens.pop(key, None)
                         await self._report_compact(context, session_id, run_id, "done")
                         snapshot = await context.active_context_store.get(session_id, agent_name)

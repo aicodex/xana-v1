@@ -37,6 +37,22 @@ class _QueuedActiveContextStore(ActiveContextStore):
         await self._enqueue(_WriteOp(coro_factory=factory, fut=fut))
         return await fut
 
+    def sdk(self):
+        """Passthrough to inner store's ``sdk()`` if present.
+
+        Bug C fix: harness uses this to drive auto-compact through the
+        ContextSDK (same compact_lock as manual /compact). Returns None if
+        the inner store does not back onto a ContextSDK.
+        See docs/design/session-and-card-state.md §1.5.
+        """
+        getter = getattr(self._inner, "sdk", None)
+        if callable(getter):
+            try:
+                return getter()
+            except Exception:
+                return None
+        return None
+
     async def get(self, session_id: str, agent_name: str) -> ActiveContext | None:
         return await self._inner.get(session_id, agent_name)
 

@@ -151,7 +151,18 @@ async def boot(
     # reads are served from the SDK (canonical). P3-D.
     from xana.context.sdk import ContextSDK
     context_sdk = ContextSDK()
-    active_ctx_inner = InMemoryActiveContextStore(context_sdk=context_sdk)
+    # Bug B fix: construct the harness early so we can wire its
+    # _session_prompt_tokens cache to the active-context store's on_clear
+    # callback (popping stale entries when /clear runs). See
+    # docs/design/session-and-card-state.md §1.5.
+    _harness = DefaultHarness(extension_registry=extension_registry)
+    def _on_clear_drop_token_cache(sid: str, agent: str) -> None:
+        _harness._session_prompt_tokens.pop((sid, agent), None)
+
+    active_ctx_inner = InMemoryActiveContextStore(
+        context_sdk=context_sdk,
+        on_clear=_on_clear_drop_token_cache,
+    )
     main_writer: MainWriter | None = None
     run_jsonl_writer: RunJsonlWriter | None = None
     mirror: HistoryMirror
@@ -293,7 +304,7 @@ async def boot(
 
     chat_agent = ChatAgent(
         spec=build_chat_agent_spec(),
-        harness=DefaultHarness(extension_registry=extension_registry),
+        harness=_harness,
         active_context_store=active_ctx,
         history_mirror=mirror,
         memory_injector_registry=injector_registry,
