@@ -91,7 +91,7 @@ compact 与普通 run 走同一套 PH `replace_placeholder` 协议,完全消除 
 #### A. 没有任何后台运行(空闲态)
 - 直接 append 一个 `Placeholder(kind="compact")` 在 main 末尾
 - compact run 跑完后调 `replace_placeholder(compact_run_id, (summary_msg,))` 写回自己
-- main 上多出一个 compact 摘要节点
+- compact 完成后 main 只保留这一条 `CompactSummary`,所有 PH 之前的节点都被替换覆盖(摘要已 100% 概括它们)
 
 #### B. 有后台 regular PH 在运行
 - 找到 main 里**最靠前**的 regular PH 位置 K
@@ -115,6 +115,7 @@ compact 与普通 run 走同一套 PH `replace_placeholder` 协议,完全消除 
 - 写回靠 `run_id`,不靠位置 —— `replace_placeholder` 按 run_id 查 PH。compact 不会动其他 PH。
 - compact PH 的占位 `content` 任意(reader 看不到);replace 时写入 `MemoryMessage(role="compact", content=<summary>)`,这条要被后续 fork 看见。
 - 取消:`replace_placeholder(compact_run_id, ())` 替换为空,等于撤销 PH;reader 看到等同没 compact 发生过。
+- `replace_placeholder` 检测到 `(CompactPlaceholder → CompactSummary)` 替换时,自动 collapse `[0:idx+1]`(摘要吃掉前面所有节点,案例 A、B 统一)。其他替换(空 = 取消、Bug A mirror 写回、regular PH)保持位置 swap 语义。
 
 ### 1.6 子会话的 compact(子 Run 内部触发的 compact)
 

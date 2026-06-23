@@ -14,6 +14,7 @@ from xana.context._internal import _PlaceholderInternal
 from xana.context._store import _ContextStore
 from xana.context.message import (
     CompactPlaceholder,
+    CompactSummary,
     Message,
     RegularPlaceholder,
     UserMessage,
@@ -120,7 +121,25 @@ class ContextSDK:
             if idx < 0:
                 return
             existing = buf[idx]
-            buf[idx : idx + 1] = list(replacements)
+            reps = list(replacements)
+            # §1.5: when a CompactPlaceholder is replaced by a single
+            # CompactSummary, the summary represents all prior nodes in
+            # full — collapse [0:idx+1] down to just the summary so the
+            # model never sees stale pre-summary content (or a previous
+            # CompactSummary that this one supersedes).
+            if (
+                isinstance(existing, CompactPlaceholder)
+                and len(reps) == 1
+                and isinstance(reps[0], CompactSummary)
+            ):
+                collapsed = idx  # number of pre-summary nodes absorbed
+                buf[0 : idx + 1] = reps
+                log_event(
+                    "collapse_prefix", sid, run_id,
+                    f"replace_placeholder collapsed={collapsed}",
+                )
+            else:
+                buf[idx : idx + 1] = reps
             # If we replaced a compact PH, release the compact lock and
             # signal blocked fork callers.
             if isinstance(existing, CompactPlaceholder):
