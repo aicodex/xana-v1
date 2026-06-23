@@ -95,20 +95,20 @@ def _w_trunc(s: str, cap: int, suffix: str = "\n…(已折叠)") -> str:
     return s[:cap].rstrip() + suffix
 
 
-def render_widgets(state: UnifiedCardState):  # type: ignore[no-untyped-def]
-    """UnifiedCardState → list[Widget] (Textual interactive view).
+def _make_card_button_cls():
+    """Lazy module-level CardButton factory (cached on first call).
 
-    Imported lazily so non-Textual oneshot path doesn't pay the import cost.
+    Defined at module scope so `isinstance(btn, CardButton)` from
+    external callers stays stable across renders. (Previously this was
+    a nested class inside render_widgets — every call produced a fresh
+    type object, breaking isinstance checks.)
     """
-    from textual.containers import Horizontal
-    from textual.widget import Widget
-    from textual.widgets import Button, Collapsible, Markdown, Static
-
+    cls = globals().get("_CardButton")
+    if cls is not None:
+        return cls
+    from textual.widgets import Button
     from xana.agent_adapter.channels.unified_card import (
-        AnswerSection as _Answer,
         Button as CardButtonSpec,
-        ButtonRow,
-        CompactSection as _Compact,
     )
 
     class CardButton(Button):
@@ -118,6 +118,28 @@ def render_widgets(state: UnifiedCardState):  # type: ignore[no-untyped-def]
             self.spec = spec
             self.ph_run_id = ph_run_id
             self.card_id = card_id
+
+    globals()["_CardButton"] = CardButton
+    return CardButton
+
+
+def render_widgets(state: UnifiedCardState):  # type: ignore[no-untyped-def]
+    """UnifiedCardState → list[Widget] (Textual interactive view).
+
+    Imported lazily so non-Textual oneshot path doesn't pay the import cost.
+    """
+    from textual.containers import Horizontal
+    from textual.widget import Widget
+    from textual.widgets import Collapsible, Markdown, Static
+
+    from xana.agent_adapter.channels.unified_card import (
+        AnswerSection as _Answer,
+        Button as CardButtonSpec,
+        ButtonRow,
+        CompactSection as _Compact,
+    )
+
+    CardButton = _make_card_button_cls()
 
     def _w_compact(sec: _Compact) -> list[Widget]:
         if sec.state == "completed":

@@ -49,7 +49,7 @@ def _evt_from_wire(data: dict):
 
 class XanacApp(App):
     CSS = """
-    Horizontal { height: auto; }
+    Horizontal { height: 1fr; }
     #fg-pane { width: 3fr; border: solid green; padding: 1 2; }
     #tab-pane { width: 1fr; border: solid grey; }
     Input { dock: bottom; }
@@ -80,6 +80,13 @@ class XanacApp(App):
         self._frozen_runs: set[str] = set()
         self._state = UnifiedCardState(card_id=session_id, ph_run_id=session_id)
         self._sse_task: asyncio.Task | None = None
+        # Per-run content hash → skip mount when state's visible topology
+        # + content lengths haven't changed. Prevents SSE-event flicker.
+        self._last_hash: dict[str, tuple] = {}
+        # Throttle handle for streaming text deltas (model_delta etc.).
+        self._pending_flush: asyncio.TimerHandle | None = None
+        self._pending_run_id: str | None = None
+        self._FLUSH_DELAY = 0.05  # 50ms — coalesce SSE bursts
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -96,6 +103,9 @@ class XanacApp(App):
             self._sse_task = asyncio.create_task(self._consume_sse())
 
     async def on_unmount(self) -> None:
+        if self._pending_flush is not None:
+            self._pending_flush.cancel()
+            self._pending_flush = None
         if self._sse_task is not None:
             self._sse_task.cancel()
             try:
@@ -142,14 +152,81 @@ class XanacApp(App):
         except Exception:
             log.exception("xanac SSE consume crashed")
 
+    def _state_hash(self, state: UnifiedCardState) -> tuple:
+        """Coarse content fingerprint — only rebuild when this changes.
+
+        Captures section topology (presence/count) + content lengths +
+        terminal states + button-row counts + footer text. Streaming
+        deltas (model_delta etc.) bump the length tuple so the rebuild
+        still fires, but identical-state events become no-ops.
+
+        NOTE: Phase 1 settled for hash-based skip rather than full
+        in-place mutation (kept as a TODO for Phase 3 follow-up).
+        """
+        c = state.compact
+        c_tup = None if c is None else (
+            c.state, c.compacted_n, c.progress_cells, len(c.summary_text or ""),
+        )
+        a = state.answer
+        if a is None:
+            a_tup = None
+        else:
+            tools_tup = tuple(
+                (t.header, len(t.body_md or "")) for t in a.tools
+            )
+            a_tup = (
+                a.state, len(a.thinking_text or ""),
+                len(a.answer_text or ""), a.tools_pending, tools_tup,
+            )
+        menu_tup = None if state.menu is None else len(state.menu.body_md or "")
+        top_tup = tuple(
+            tuple((b.text, b.action, b.action_arg, b.send) for b in r.buttons)
+            for r in state.top_buttons
+        )
+        bot_tup = tuple(
+            tuple((b.text, b.action, b.action_arg, b.send) for b in r.buttons)
+            for r in state.bottom_buttons
+        )
+        return (c_tup, a_tup, menu_tup, top_tup, bot_tup, state.footer.render())
+
     def update_card(self, run_id: str, state: UnifiedCardState) -> None:
-        """Replace fg-pane children with the latest widget tree."""
+        """Schedule a coalesced rebuild of fg-pane.
+
+        Earlier the daemon-SSE path called remove_children + mount on
+        EVERY wire event (model_delta, progress, …) → constant relayout
+        flicker. We now:
+          1) skip entirely if the coarse content hash hasn't changed
+             (covers no-op progress / replay events);
+          2) coalesce streaming text deltas into a single rebuild via
+             a 50ms throttle (asyncio loop call_later).
+
+        Phase 1 settled for hash-skip + throttle rather than full
+        in-place widget mutation — left as a TODO for Phase 3.
+        """
+        h = self._state_hash(state)
+        if self._last_hash.get(run_id) == h:
+            return
+        self._last_hash[run_id] = h
+        self._pending_run_id = run_id
+        if self._pending_flush is not None:
+            return
+        loop = asyncio.get_event_loop()
+        self._pending_flush = loop.call_later(
+            self._FLUSH_DELAY, self._flush_pending,
+        )
+
+    def _flush_pending(self) -> None:
+        self._pending_flush = None
+        run_id = self._pending_run_id
+        if run_id is None:
+            return
+        self._pending_run_id = None
         try:
             pane = self.query_one("#fg-pane", VerticalScroll)
         except Exception:
             return
         pane.remove_children()
-        for w in render_widgets(state):
+        for w in render_widgets(self._state):
             pane.mount(w)
 
     async def on_input_submitted(self, message: Input.Submitted) -> None:
