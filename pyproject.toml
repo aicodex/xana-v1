@@ -20,6 +20,9 @@ dependencies = [
 qr = ["qrcode>=7.4"]
 feishu-ws = ["lark-oapi>=1.4"]
 
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
 [project.scripts]
 xana = "xana.cli.xana:main"
 xanac = "xana.cli.xanac:main"
@@ -39,7 +42,7 @@ where = ["src"]
 "xana.config" = ["defaults/*.json"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 testpaths = ["tests"]
 asyncio_mode = "strict"
 markers = [
