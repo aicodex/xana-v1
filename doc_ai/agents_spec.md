@@ -10,26 +10,52 @@ status: active
 
 - [agents](agents.md) — 模块设计
 
-## 职责
-
-Agent identity, model, tools, skills, permissions, memory scope.
-
-## 相关接口 / 类型
-
-- `AgentSpec`
-- `DelegationPolicy`
-
 ## 代码锚点
 
-- [contracts.py](../src/xana/agents/contracts.py) — 数据结构和枚举
-- [interfaces.py](../src/xana/agents/interfaces.py) — 抽象接口
+- [contracts.py](../src/xana/agents/contracts.py) — `AgentSpec` 及相关枚举
+- [registry.py](../src/xana/agents/registry.py) — `agent_spec_from_doc()`：AGENT.md manifest+正文 → `AgentSpec` 字段映射
+- [system_prompt.py](../src/xana/harness_sdk/system_prompt.py) — `build_system_prompt`，identity/override 的实际消费方
 
-## 当前状态
+## 职责
 
-TODO: 当前是设计占位。实现时必须先更新本详细设计，再落代码和测试。
+`AgentSpec` 是 agent 的声明式配置（frozen dataclass）：身份、prompt、工具/技能/权限/沙箱约束、记忆范围、隔离与后台行为。它本身不执行任何逻辑，由 [ChatAgent](agents_registry.md) 和 [DefaultAgentRequestMapper](agents_request_mapping.md) 在运行时消费。
 
-## 验收要求
+## 字段语义
 
-- 输入/输出与 [agents](./agents.md) 的模块边界一致。
-- 不引入隐藏状态权威。
-- 不绕过 [replacement_rule](replacement_rule.md)。
+- `component: ComponentSpec` — agent 身份载体（kind/name/qualified_name/source），`name` 是 gateway 路由和 harness `agent_name` 的实际值。
+- `prompt_id: str` — prompt 模板标识（如 builtin chat 用 `"chat-default"`）；v1 未做模板查表，实际 prompt 由 harness 13 段拼装。
+- `when_to_use: str` — 描述该 agent 适用场景，供未来 registry/委派选择使用。
+- `allowed_tools` / `disallowed_tools` / `allowed_skills` / `hooks: tuple[str, ...]` — 工具/技能/钩子名白名单或黑名单，v1 仅声明，未在 mapper 强制执行。
+- `model: str | None` / `effort: str | int | None` — 默认模型与推理强度；运行时以 `SessionConfigStore` 的会话配置优先（见 [agents_request_mapping](agents_request_mapping.md)）。
+- `permission_policy: str | None` / `sandbox_policy: SandboxPolicySpec | None` — 指向 [policy](policy.md) 模块的合约，v1 未执行。
+- `memory_scope: MemoryScope | None` — `user / project / agent / session` 之一。
+- `isolation: IsolationMode`（`none / worktree / process / remote`）、`background: bool` — 声明执行形态，v1 未执行。
+- `parent_agent: str | None` — 父 agent 名，供 subagent 委派链使用（见 [agents_subagents](agents_subagents.md)）。
+- `max_turns: int | None` — turn 上限，v1 未执行。
+- `system_prompt: str | None` — `None` → 完整默认 13 段系统提示；非空 → 替换全部静态段（`build_system_prompt(override=...)`），动态段（环境/工具/技能/记忆）照常注入。
+- `identity: str` — Agent 身份段，追加在 INTRO 之后、SYSTEM 之前；仅 `system_prompt=None` 时生效。
+
+## AGENT.md 文档 → AgentSpec 映射（计划 §5.1）
+
+用户可在 `{XANA_HOME}/agents/{name}/AGENT.md`（默认 `~/.xana/agents/`，`XANA_HOME` 环境变量可覆盖）放角色定义文档，由 [FileAgentRegistry](agents_registry.md) 经共享解析器 [MarkdownDocParser](../src/xana/skills/markdown_loader.py)（frontmatter `kind: agent`）加载，`agent_spec_from_doc()` 做字段映射：
+
+| AGENT.md frontmatter | AgentSpec 字段 | 说明 |
+|---|---|---|
+| `kind: agent`（必填） | — | 区分文档 kind；缺省视为 skill |
+| `name`（必填） | `component.name` | 同名校验非空 |
+| `goal`（必填） | `component.description` + identity 第二行 | goal 映射到 manifest.description |
+| `tools`（必填，非空字符串列表） | `allowed_tools` | 工具白名单 |
+| `skills`（可选） | `allowed_skills` | 技能白名单 |
+| `budget`（可选，mapping） | `component.metadata["budget"]` | AgentSpec 无对应字段 |
+| `stop_rules`（可选，字符串列表） | `component.metadata["stop_rules"]` | 阶段四消费 |
+| `output_contract`（可选，字符串） | `component.metadata["output_contract"]` | 阶段四消费 |
+| 正文（frontmatter 之后） | `identity` 第三段起 | 工作流步骤等内容 |
+
+identity 渲染为 `"# {name}\n\n目标:{goal}\n\n{正文}"`，插在 INTRO 之后、SYSTEM 之前；`system_prompt=None` 保留默认 13 段系统提示（不用 override）。生成的其他字段：`qualified_name="user.{name}"`、`prompt_id="agent.{name}"`、`ComponentSource(source_type="user", scope="user", path=AGENT.md 路径)`。
+
+⚠️ `allowed_tools` / `allowed_skills` 目前**全库无消费者**：v1 的 mapper 不做白名单强制执行（见 [agents_request_mapping](agents_request_mapping.md)），声明位如实标注。
+
+## 不变量
+
+- Spec 为 frozen 值对象，运行期不可变；会话级覆盖走 `SessionConfigStore`，不改 spec。
+- `identity` / `system_prompt` 经 `DefaultAgentRequestMapper` 放入 `HarnessContext.config_snapshot`（键 `agent_identity` / `agent_system_prompt`），由 harness 拼 prompt 时消费，adapter 不可绕过。

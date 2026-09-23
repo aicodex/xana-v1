@@ -14,14 +14,6 @@ status: active
 - [memory](memory.md) — active context 和 history mirror
 - [agent_adapter](agent_adapter.md) — 外部协议入口
 
-## 相关入口
-
-- [Module IO Map](contracts/module_io_map.md) — 模块输入/输出/所有权总表
-- [runtime](modules/runtime.md) — 启动和生命周期
-- [harness_sdk](modules/harness_sdk.md) — turn lifecycle
-- [memory](modules/memory.md) — active context 和 history mirror
-- [agent_adapter](modules/agent_adapter.md) — 外部协议入口
-
 ## Core Idea
 
 The system is organized around explicit contracts. Each module has:

@@ -24,8 +24,10 @@ status: active
 - [tools](tools.md) — 工具校验、权限、沙箱、执行边界和输出 schema。
 - [skills](skills.md) — 技能元数据、激活规则、上下文/提示注入。
 - [agent_adapter](agent_adapter.md) — CLI/TG/Feishu/HTTP 等外部协议翻译。
+- [cli](cli.md) — 命令分发：`xana` 管理命令（setup/sync/serve/pair/login/logout）与 `xanac` 交互客户端。
 - [llm_driver](llm_driver.md) — 模型请求、流式响应、tool call 解析、usage 提取。
 - [memory](memory.md) — active context 权威、history mirror、treemem/search/injection。
+- [context](context.md) — active context 的运行时载体：`ContextSDK` facade、per-sid 锁、compact-as-placeholder。
 - [observability](observability.md) — health、trace、debug snapshot、诊断视图。
 
 ## 支撑模块
@@ -34,6 +36,16 @@ status: active
 - [hooks](hooks.md) — 生命周期 hook 合约。
 - [policy](policy.md) — 权限、沙箱、approval 策略合约。
 - [state](state.md) — session、run、checkpoint、resume、usage 状态合约。
+- extension_api — extension 合约（`src/xana/extension_api/`），尚无模块文档。
+  - 8 种 Contributor ABC（`interfaces.py`）：`ContextContributor`（system prompt 片段）、`TurnInputContributor`（per-turn 上下文注入）、`ToolContributor`（声明工具）、`ToolLifecycleContributor`（on_tool_start/finish）、`TurnLifecycleContributor`（on_turn_start/stop/abort）、`ThreadLifecycleContributor`（on_thread_start/stop）、`ConfigContributor`（on_config_changed）、`ApprovalReviewContributor`（权限覆盖复核，approval 实际走这里）。
+  - Runtime Service ABC（`capabilities.py`，构造注入给 extension）：`SchedulerService`（有实现 `runtime.scheduler.FileSchedulerService`）、`AgentSpawner`（首个实现 `agent_adapter.gateway.GatewayAgentSpawner`，spawn 链 + fork 前缀拷贝）、`SandboxManager`（仅接口合约，无实现）。
+  - 组装：`ExtensionRegistryBuilder().add(ext).build()` → frozen `ExtensionRegistry`，由 `boot(extension_registry=...)` 注入 `DefaultHarness`；`None` 时行为与未引入 Extension API 前一致。
+- [evolution_module](evolution_module.md) — 自进化迭代实现：`src/xana/evolution/`（账本 / 变更单 / episode 状态机 / 元 agent 服务）。
+- session_config — per-session 运行时旋钮（model/effort/streaming 等）持久化边界（`src/xana/session_config/`），尚无模块文档。
+
+## 设计方向
+
+- [evolution](evolution.md) — 24h 自进化迭代框架设计共识（status: active；四个阶段已全部落地，机制真相见 [evolution_module](evolution_module.md)，本文只保留远期方向）。
 
 ## 命名规则
 

@@ -26,7 +26,7 @@ Health report checks.
 
 ## 当前状态
 
-TODO: 当前是设计占位。实现时必须先更新本详细设计，再落代码和测试。
+仅接口合约，无实现。`src/xana/observability/` 下只有 contracts.py / interfaces.py，没有实现类和 boot 注册。
 
 ## 验收要求
 

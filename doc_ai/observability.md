@@ -8,7 +8,7 @@ status: active
 
 ## 定位
 
-health、trace、debug snapshot、诊断视图。
+health、trace、debug snapshot、诊断视图。仅接口合约，无实现——`src/xana/observability/` 只有 contracts.py / interfaces.py。
 
 ## 详细设计
 

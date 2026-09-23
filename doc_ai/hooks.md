@@ -8,7 +8,7 @@ status: active
 
 ## 定位
 
-生命周期 hook 合约。
+生命周期 hook 合约。仅接口合约，无实现——`src/xana/hooks/` 只有 contracts.py / interfaces.py；`HarnessContext.hook_runner` 字段存在但无人消费，无 `HookRunner` 实现（见 [hooks_runner](hooks_runner.md)）。
 
 ## 详细设计
 

@@ -8,7 +8,7 @@ status: active
 
 ## 定位
 
-权限、沙箱、approval 策略合约。
+权限、沙箱、approval 策略合约。仅接口合约，无实现——`src/xana/policy/` 只有 contracts.py / interfaces.py；approval 实际走 extension_api 的 `ApprovalReviewContributor`（见 [policy_approval](policy_approval.md)）。
 
 ## 详细设计
 

@@ -10,25 +10,25 @@ status: active
 
 - [agents](agents.md) — 模块设计
 
-## 职责
-
-Agent prompt blocks: identity, instructions, memory.
-
-## 相关接口 / 类型
-
-- `PromptProvider`
-
 ## 代码锚点
 
-- [contracts.py](../src/xana/agents/contracts.py) — 数据结构和枚举
-- [interfaces.py](../src/xana/agents/interfaces.py) — 抽象接口
+- [interfaces.py](../src/xana/agents/interfaces.py) — `PromptProvider` ABC
+- [system_prompt.py](../src/xana/harness_sdk/system_prompt.py) — v1 实际系统提示拼装（13 段）
+
+## 职责
+
+`PromptProvider` 定义 agent prompt 三个组成部分的取数合约：identity（身份段）、instructions（任务指令段）、memory_block（记忆段）。
+
+## 接口语义
+
+- `identity(spec: AgentSpec) -> str` — 由 spec 生成身份段文本。
+- `instructions(request: AgentRequest) -> str` — 由本次请求生成指令段。
+- `memory_block(session_id: str) -> str` — 取该会话的记忆注入段。
 
 ## 当前状态
 
-TODO: 当前是设计占位。实现时必须先更新本详细设计，再落代码和测试。
+仅接口合约，无实现：v1 没有任何 `PromptProvider` 实现类，三个方法均未被调用。
 
-## 验收要求
+v1 的实际 prompt 路径是 harness 静态拼装：`build_system_prompt` 按固定 13 段顺序输出，身份/覆盖来自 `AgentSpec.identity` / `AgentSpec.system_prompt`（经 [DefaultAgentRequestMapper](agents_request_mapping.md) 写入 `config_snapshot`），记忆注入由 harness 通过 `MemoryInjectorRegistry` 以动态段形式追加。`AgentSpec.prompt_id` 目前只是标识，没有模板查表机制。
 
-- 输入/输出与 [agents](./agents.md) 的模块边界一致。
-- 不引入隐藏状态权威。
-- 不绕过 [replacement_rule](replacement_rule.md)。
+后续若要实现 `PromptProvider`，需要先把 harness 的静态拼装点参数化，再落实现与测试。

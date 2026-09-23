@@ -27,7 +27,9 @@ Ask-user approval provider seam.
 
 ## 当前状态
 
-TODO: 当前是设计占位。实现时必须先更新本详细设计，再落代码和测试。
+仅接口合约，无实现。`src/xana/policy/` 下只有 contracts.py / interfaces.py，没有实现类。
+
+注意：approval 的实际运行路径不走 `policy.ApprovalProvider`。harness 在工具权限判定为 non-allow 时，调用 extension registry 中的 `ApprovalReviewContributor.review()`（`src/xana/harness_sdk/default.py:303-311`），第一个非 None 覆盖生效；`ApprovalProvider` 当前既无实现也无调用方。
 
 ## 验收要求
 

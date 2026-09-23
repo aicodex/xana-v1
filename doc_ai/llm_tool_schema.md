@@ -12,24 +12,35 @@ status: active
 
 ## 职责
 
-Adapt tool schema to provider dialect.
+`ModelRequest.tools_schema` 到各 provider 方言的转换。
 
 ## 相关接口 / 类型
 
-- `ProviderToolSchema`
-- `ToolSchemaAdapter`
+- `ProviderToolSchema` — 数据合约，当前无实现消费
+- `ToolSchemaAdapter`（ABC）— 仅接口合约，无实现
 
 ## 代码锚点
 
-- [contracts.py](../src/xana/llm_driver/contracts.py) — 数据结构和枚举
-- [interfaces.py](../src/xana/llm_driver/interfaces.py) — 抽象接口
+- [contracts.py](../src/xana/llm_driver/contracts.py) — `ProviderToolSchema`, `ModelRequest.tools_schema`
+- [interfaces.py](../src/xana/llm_driver/interfaces.py) — `ToolSchemaAdapter`
+- [providers/anthropic_deepseek.py](../src/xana/llm_driver/providers/anthropic_deepseek.py) — Anthropic 方言透传
+- [providers/kimi.py](../src/xana/llm_driver/providers/kimi.py) — `_convert_tools`
 
-## 当前状态
+## 真相
 
-TODO: 当前是设计占位。实现时必须先更新本详细设计，再落代码和测试。
+模块内 tools_schema 的权威形状是 Anthropic 风格 `{name, description, input_schema}`（`ModelRequest.tools_schema: tuple[dict]`），由各 provider 私有函数各自转换：
 
-## 验收要求
+- anthropic_deepseek：原样透传（`body["tools"] = [dict(t) for t in tools_schema]`）——调用方需直接给 Anthropic 形状。
+- kimi 的 `_convert_tools`：转成 OpenAI function tools——`{"type": "function", "function": {"name", "description", "parameters": input_schema}}`；input_schema 缺失时补 `{"type": "object", "properties": {}}`。
 
-- 输入/输出与 [llm_driver](./llm_driver.md) 的模块边界一致。
-- 不引入隐藏状态权威。
-- 不绕过 [replacement_rule](replacement_rule.md)。
+`ToolSchemaAdapter` ABC 与 `ProviderToolSchema` 合约存在但没有实现使用：当前转换是各 client 内部私有函数，不经 ABC。
+
+## Native web_search（server tool）
+
+harness 在互斥剔除函数版 web_search 之后，经 `request.metadata["web_search_native"]` 通知 anthropic_deepseek 在 tools 末尾追加 server tool，verbatim 形状、不过工具转换器：
+
+```json
+{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
+```
+
+v1 明确不做：native web_search 的服务端重跑（drop policy）、系统块 cache_control、工具结果消息转换。

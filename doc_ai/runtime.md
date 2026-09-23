@@ -8,13 +8,13 @@ status: active
 
 ## 定位
 
-进程生命周期、启动顺序、调度外壳。
+进程生命周期、`boot()` 组装、daemon HTTP+SSE、定时任务调度外壳。
 
 ## 详细设计
 
-- [runtime_boot](runtime_boot.md) — Boot order: load config, restore memory, build components, start adapters.
-- [runtime_lifecycle](runtime_lifecycle.md) — Component install/start/stop/uninstall lifecycle.
-- [runtime_scheduler](runtime_scheduler.md) — Spawn/cancel/status task shell without owning task behavior.
+- [runtime_boot](runtime_boot.md) — `boot()` 唯一组合点：memory 底座 → config → registry → gateway，`BootResult` 全量出口
+- [runtime_lifecycle](runtime_lifecycle.md) — `xana serve` 启动/运行/关闭序列，daemon HTTP（/healthz、token 鉴权、SSE）
+- [runtime_scheduler](runtime_scheduler.md) — `SchedulerService`/`FileSchedulerService` + `SchedulerRunner` + cron 工具 + schedule skill 的定时任务闭环
 
 ## 全局合约
 
@@ -31,17 +31,14 @@ Agent behavior, tool execution logic, LLM provider logic, memory semantics, or a
 
 ## Inputs
 
-- `RuntimeConfig`
-- component registries
-- adapter factories
-- memory restore result
+- `project_root`
+- `DefaultConfigProvider`（可注入）
+- `extension_registry`（可空）
+- `history_root`（持久化开关，可空）
 
 ## Outputs
 
-- runtime health
-- lifecycle events
-- started/stopped component handles
-
-## Lifecycle
-
-`load_config -> restore_memory -> build_registries -> start_harness -> start_adapters -> accept_inbound -> shutdown`
+- `BootResult`（gateway、全部 registry、state、writer、scheduler 等组装产物）
+- daemon HTTP app（`build_daemon_app`）
+- runtime health（`/healthz`）
+- 定时任务触发（到点 prompt 注回 session）

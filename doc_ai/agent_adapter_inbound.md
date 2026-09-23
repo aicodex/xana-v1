@@ -10,26 +10,31 @@ status: active
 
 - [agent_adapter](agent_adapter.md) — 模块设计
 
-## 职责
-
-Parse external protocol payloads into InboundMessage.
-
-## 相关接口 / 类型
-
-- `InboundMessage`
-- `InboundParser`
-
 ## 代码锚点
 
-- [contracts.py](../src/xana/agent_adapter/contracts.py) — 数据结构和枚举
-- [interfaces.py](../src/xana/agent_adapter/interfaces.py) — 抽象接口
+- [contracts.py](../src/xana/agent_adapter/contracts.py) — `InboundMessage`
+- [interfaces.py](../src/xana/agent_adapter/interfaces.py) — `InboundParser` / `AgentRequestRouter` ABC
+- [router.py](../src/xana/agent_adapter/router.py) — `DefaultAgentRequestRouter`
+- [feishu_events.py](../src/xana/agent_adapter/channels/feishu_events.py) — 飞书消息事件解析
+- [telegram.py](../src/xana/agent_adapter/channels/telegram.py) — TG long-polling 入站循环
 
-## 当前状态
+## 职责
 
-TODO: 当前是设计占位。实现时必须先更新本详细设计，再落代码和测试。
+把外部协议负载归一化为 `InboundMessage`，再路由为 [agents](agents.md) 层的 `AgentRequest`。
 
-## 验收要求
+## 契约
 
-- 输入/输出与 [agent_adapter](./agent_adapter.md) 的模块边界一致。
-- 不引入隐藏状态权威。
-- 不绕过 [replacement_rule](replacement_rule.md)。
+`InboundMessage`（frozen）：`adapter_id`（来源 adapter，如 `cli` / `telegram` / `feishu`）、`session_id`、 `text`、`user_id`、`attachments`、`metadata`。gateway 与 router 之间的所有跨层数据（`chat_id`、`gateway_run_id`、`abort_signal`、`command_run_id`）都走 metadata，不扩契约字段。
+
+## InboundParser
+
+仅接口合约，无实现：v1 没有 `InboundParser` 实现类。各 channel adapter 在自己的事件循环里直接解析协议负载（飞书 `parse_message_event` 把 im.message.receive_v1 事件转成 InboundMessage；TG 在 long-polling 循环里处理 Update），解析结果投入 adapter 内部队列，`receive()` 迭代产出。
+
+## DefaultAgentRequestRouter
+
+v1 唯一的 `AgentRequestRouter` 实现：把 `InboundMessage` 直译为 `AgentRequest`（session_id/text/attachments/metadata 原样，`source=adapter_id`），`target_agent` 恒为构造时传入的 `default_agent`（boot 里是 `"chat"`）。未来版本才可能解析 `/agent_name` 前缀或按 channel 查表。
+
+## 不变量
+
+- adapter 只做协议翻译，不决定 agent 选择逻辑（v1 只有单一 chat agent，选择退化为常量）。
+- 未通过 pairing 校验的用户消息在 adapter 内被拦下，不产生 InboundMessage（见 [agent_adapter_rendering](agent_adapter_rendering.md) 的 PairingStore）。

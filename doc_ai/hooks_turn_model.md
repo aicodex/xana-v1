@@ -28,7 +28,7 @@ Pre/post turn and pre/post model request hooks.
 
 ## 当前状态
 
-TODO: 当前是设计占位。实现时必须先更新本详细设计，再落代码和测试。
+仅接口合约，无实现。`src/xana/hooks/` 下只有 contracts.py / interfaces.py；`HarnessContext.hook_runner` 字段存在（`src/xana/harness_sdk/contracts.py:80`）但无人消费，无 `HookRunner` 实现。
 
 ## 验收要求
 

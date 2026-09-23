@@ -8,7 +8,7 @@ status: active
 
 ## 定位
 
-共享组件元数据、加载、校验、override、registry 合约。
+共享组件元数据、加载、校验、override、registry 合约。仅接口合约，无实现——`src/xana/component/` 只有 contracts.py / interfaces.py。
 
 ## 详细设计
 

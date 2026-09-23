@@ -43,3 +43,5 @@ It does not own:
 - Search index is rebuildable.
 - Search output carries `node_path` and may carry the `MemoryNode` for zero extra read.
 - L1 injection and L2 tool query must share the same engine contract.
+- 持久文件库（boot 注入 `~/.xana/sessions/search-{project_hash}.db`）connect 时按行水合，重启不丢索引；运行期靠 reindex 钩子增量更新（见 [memory_markdown_backend](memory_markdown_backend.md) L1 索引联动）。
+- frontmatter `status: deprecated` 的节点从搜索命中中过滤（`_is_deprecated`，FTS 与 LIKE 两条路径都查），supersede 链的旧条目对模型不可见但仍在盘上（见 [memory_rules_gate](memory_rules_gate.md)）。

@@ -30,9 +30,14 @@ status: active
 
 ### L2 中等（接 real provider 时一起做）
 
-- [ ] **`DefaultHarness` provider 静默 fallback 到 `"fake"`**。`src/xana/harness_sdk/default.py` 顶部常量 `_DEFAULT_PROVIDER = "fake"`，在 `_invoke` 里 `context.config_snapshot.get("provider", _DEFAULT_PROVIDER)`。一旦注册了 `"anthropic"` 真客户端而 `HarnessContext.config_snapshot` 配错，会无声路由到 fake，产生看似正常但完全错误的回复。
-  - 接 real provider 那一刻改成：缺 `provider` 直接 emit `HarnessEvent(kind="error", payload={"error": "config_snapshot.provider missing"})` 并 return。
-  - 与之配套：`ChatAgent` 的 `DefaultAgentRequestMapper` 必须始终填 `config_snapshot={"provider": self.provider}`，目前已经填好。
+- [x] ~~**`DefaultHarness` provider 静默 fallback 到 `"fake"`**~~（2026-09-19 已修，
+  见 `tests/test_provider_resolution.py`）。实际落地的规则：缺 `provider` 且注册表里有
+  `fake`（canonical fake pipeline / 测试的故意形态）→ 放行并打 warning 日志；缺
+  `provider` 且没注册 fake → error 事件报 `config_snapshot.provider missing`。
+  注：原处方「缺 provider 直接 error」与不许动的 canonical 测试冲突，故取此折中。
+  配套已完成项：`ChatAgent` mapper 始终填 provider；boot 的 deepseek 分支缺 key 时
+  由静默改 warning 日志；`anthropic_deepseek` 与 `deepseek-*` 两种 type 写法都能命中
+  DS client（原来 startswith 只认后者，wizard 提示的名字会静默落 fake）。
 
 - [ ] **`CliAdapter.bind_session` 是空实现，gateway 也不会调它**。`DefaultAgentGateway.attach` 自己维护 `bindings: dict[str, SessionBinding]`，从不转发到 `adapter.bind_session`。
   - 当前实现：`cli.py::bind_session` 直接 `return None`，没有 dead state，但抽象方法形同虚设。

@@ -13,11 +13,13 @@ status: active
 ## 详细设计
 
 - [memory_active_context](memory_active_context.md) — `ActiveContextStore`，当前 turn 可见上下文的运行时权威
+- [context](context.md) — `ContextSDK`，active context 的运行时载体与 compact-as-placeholder 协议
 - [memory_history_mirror](memory_history_mirror.md) — `HistoryMirror` / `MemoryReplayer`，history 只是副本写和恢复输入
 - [memory_tree](memory_tree.md) — `MemoryTree`，知识树节点和原子变更操作
 - [memory_search_engine](memory_search_engine.md) — `MemorySearchEngine`，统一检索接口
 - [memory_injector](memory_injector.md) — `MemoryInjector` / registry，L1 prompt 注入
 - [memory_markdown_backend](memory_markdown_backend.md) — markdown + SQLite concrete backend
+- [memory_rules_gate](memory_rules_gate.md) — `memory_write`，L2 规则唯一写入口（查重门禁 + supersede 链）
 
 ## 全局合约
 
@@ -43,6 +45,7 @@ Agent behavior, LLM calls, adapter protocol, or tool execution.
 - Cold start may replay history to rebuild active context.
 - Markdown memory content is source of truth; SQLite/search indexes are rebuildable views.
 - `todo_ai/` is a special memory tree for pending work, not design truth.
+- L2 规则条目唯一写入口是 `memory_write` 工具（查重门禁 + supersede 链）；裸 Write/Edit 进 `L2/` 被 policy 拒绝。
 
 ## Inputs
 

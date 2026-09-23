@@ -25,7 +25,7 @@ Registry for permission policy, approval provider, sandbox planner.
 
 ## 当前状态
 
-TODO: 当前是设计占位。实现时必须先更新本详细设计，再落代码和测试。
+仅接口合约，无实现。`src/xana/policy/` 下只有 contracts.py / interfaces.py，没有实现类，boot 也不注册任何 policy 组件。
 
 ## 验收要求
 
