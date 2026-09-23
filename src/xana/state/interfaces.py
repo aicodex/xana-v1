@@ -55,6 +55,15 @@ class RunStore(ABC):
     @abstractmethod
     async def list_by_session(self, session_id: str) -> tuple[RunRecord, ...]: ...
 
+    @abstractmethod
+    async def list_all(self, *, status: str | None = None) -> tuple[RunRecord, ...]:
+        """返回全部记录(§2.2 已批准上 ABC)。
+
+        消费者:任务面板(§4.4)+ shutdown 遗留扫描。status 非 None 时按
+        RunRecord.status 过滤(如 status="running" 取在途集合)。
+        """
+        ...
+
 
 class ResumePolicy(ABC):
     @abstractmethod

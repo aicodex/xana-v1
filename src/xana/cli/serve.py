@@ -97,17 +97,22 @@ def build_adapters_from_env(*, bindings_root: Path, env: dict[str, str]) -> list
     return build_adapters(bindings_root=bindings_root, env=env, system=SystemConfig())
 
 
-def _make_scheduler_dispatch(gateway):
+def _make_scheduler_dispatch(gateway, meta_service=None):
     """SchedulerRunner 的 dispatch 回调:把到点任务的 prompt 注入 gateway。
 
     入口选择:gateway.submit(InboundMessage) —— 与 adapter 入站泵同一条路径
     (router 在 gateway 内部把 InboundMessage 转成 AgentRequest,adapter.render
     把回复送回渠道)。adapter_id 按任务记录的 session_id 前缀推断
     (tg-… → telegram,feishu-… → feishu),没匹配时退回首个已注册 adapter。
+    元 agent cron(§6.3,marker 任务)由 meta_service.fire() 消费:产出
+    episode + 全新窗口注入元 prompt。
     """
     prefix_to_adapter = {"tg": "telegram", "feishu": "feishu"}
 
     async def dispatch(*, session_id: str, text: str) -> None:
+        if meta_service is not None and meta_service.owns(text):
+            await meta_service.fire()
+            return
         from xana.agent_adapter.contracts import InboundMessage
 
         adapter_id = prefix_to_adapter.get(session_id.split("-", 1)[0])
@@ -379,7 +384,10 @@ async def _run_inner(argv: argparse.Namespace) -> int:
 
         runner = SchedulerRunner(
             scheduler=boot_result.scheduler,
-            dispatch=_make_scheduler_dispatch(boot_result.gateway),
+            dispatch=_make_scheduler_dispatch(
+                boot_result.gateway,
+                meta_service=getattr(boot_result, "meta_service", None),
+            ),
         )
         runner.start()
         print("[xana serve] scheduler runner started")

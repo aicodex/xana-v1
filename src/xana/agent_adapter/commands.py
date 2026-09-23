@@ -79,6 +79,7 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/project",  description="项目管理"),
             CommandSpec(name="/search_provider", description="搜索引擎切换"),
             CommandSpec(name="/resume",  description="列出可恢复的后台 run,或 /resume <run_id> 续跑"),
+            CommandSpec(name="/tasks",   description="任务面板:列出在途/后台/已完成的 run(可 /tasks <session_id> 过滤)"),
         )
         self._handlers: dict[str, _HandlerFn] = {
             "/help":            DefaultCommandRouter._cmd_help,
@@ -95,6 +96,7 @@ class DefaultCommandRouter(CommandRouter):
             "/attach":          DefaultCommandRouter._cmd_attach,
             "/project":         DefaultCommandRouter._cmd_project,
             "/resume":          DefaultCommandRouter._cmd_resume,
+            "/tasks":           DefaultCommandRouter._cmd_tasks,
             # 隐藏命令:卡片取消按钮触发,不进 _specs(/help 不显示)。
             "/compact_cancel":  DefaultCommandRouter._cmd_compact_cancel,
         }
@@ -597,6 +599,28 @@ class DefaultCommandRouter(CommandRouter):
             return CommandResult(ok=True, message="\n".join(lines))
         await self.gateway.resume(inbound.session_id, rid)
         return CommandResult(ok=True, message=f"[resume] 续跑 {rid}")
+
+    async def _cmd_tasks(self, inbound: InboundMessage, args: str) -> CommandResult:
+        """/tasks [session_id] → 任务面板(§4.4):run_id/状态/运行时长/label。
+
+        数据面 = gateway.list_inflight():_inflight 活体 + RunStore 持久状态合并。
+        cli daemon 渲染文本即可;feishu/tg 卡片后续接入同一数据面。
+        """
+        gateway = self.gateway
+        if gateway is None or not hasattr(gateway, "list_inflight"):
+            return CommandResult(ok=False, message="gateway 未注入")
+        sid = args.strip() or None
+        rows = await gateway.list_inflight(sid)
+        if not rows:
+            return CommandResult(ok=True, message="没有 run 记录",
+                                 payload={"triggers_turn": False})
+        lines = ["run_id · 状态 · 时长 · 标签"]
+        for r in sorted(rows, key=lambda r: (r.session_id, r.run_id)):
+            dur = f"{int(r.duration_s)}s" if r.duration_s is not None else "-"
+            fg = "" if r.attached else " [后台]"
+            lines.append(f"{r.run_id} · {r.status} · {dur} · {r.label}{fg}  ({r.session_id})")
+        return CommandResult(ok=True, message="\n".join(lines),
+                             payload={"triggers_turn": False})
 
     async def _cmd_project(self, inbound: InboundMessage, args: str) -> CommandResult:
         target = args.strip()

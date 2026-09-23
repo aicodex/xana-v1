@@ -155,9 +155,11 @@ def revealed_tools_from_messages(messages) -> set[str]:
 def build_post_compact_context(
     *, session_id: str, agent_name: str, summary: str,
     revealed_tools: Sequence[str] = (),
+    transcript_path: str = "",
 ) -> ActiveContext:
     """compact 后上下文清空,只留 boundary + 一条 post-compact 消息(CC 行为,不逐字保留近期消息)。
-    revealed_tools 非空时写进 boundary metadata,压缩后 deferred 工具的揭示状态不丢。"""
+    revealed_tools 非空时写进 boundary metadata,压缩后 deferred 工具的揭示状态不丢。
+    transcript_path 是落盘的真实消息区间文件,摘要据此引用(诚信修复)。"""
     boundary_meta: dict = {"compact_boundary": True}
     if revealed_tools:
         boundary_meta["pre_compact_revealed_tools"] = sorted(revealed_tools)
@@ -165,7 +167,7 @@ def build_post_compact_context(
         role="system", content=COMPACT_BOUNDARY_MARKER, metadata=boundary_meta
     )
     summary_msg = MemoryMessage(
-        role="user", content=_CompactSummary.render(summary),
+        role="user", content=_CompactSummary.render(summary, transcript_path=transcript_path),
     )
     return ActiveContext(
         session_id=session_id, agent_name=agent_name,

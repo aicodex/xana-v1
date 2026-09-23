@@ -82,3 +82,23 @@ class InflightRun:
     label: str
     task: _asyncio.Task[Any] | None = None
     is_attached: bool = True
+
+
+@dataclass(frozen=True)
+class TaskPanelRow:
+    """任务面板一行(§4.4):_inflight 活体状态 + RunStore 持久状态的合并视图。
+
+    live=True 表示该 run 当前在 gateway._inflight 里(在途);live=False
+    表示只来自持久化 RunStore(detached 遗留 / 已完成)。
+    """
+    run_id: str
+    session_id: str
+    label: str
+    status: RunStatus
+    attached: bool
+    duration_s: float | None
+    live: bool
+
+
+# Re-exported for adapter-side typing convenience (状态字面量单一来源)。
+from xana.state.contracts import RunStatus  # noqa: E402

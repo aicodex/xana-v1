@@ -31,9 +31,20 @@ class SandboxManager(ABC):
 
 class AgentSpawner(ABC):
     @abstractmethod
-    async def spawn(self, *, agent_name: str, prompt: str, session_id: str) -> str:
+    async def spawn(
+        self,
+        *,
+        agent_name: str,
+        prompt: str,
+        session_id: str,
+        parent_run_id: str | None = None,
+        fork: bool = False,
+    ) -> str:
         """Spawn a new agent run attached to session_id (the caller-provided session).
 
         session_id is the existing session the spawned run joins; returns the
-        new run_id assigned to the spawned run.
+        new run_id assigned to the spawned run. ``parent_run_id`` records
+        lineage on the child's RunRecord/SessionRecord (§4.2); ``fork=True``
+        copies the parent's context prefix into the child session before the
+        run starts (read-only share — the child only appends a private suffix).
         """

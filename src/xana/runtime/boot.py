@@ -13,6 +13,9 @@ so config_snapshot["provider"] resolves cleanly inside the harness.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,10 +37,13 @@ from xana.harness_sdk.interfaces import ProgressSink
 from xana.llm_driver.fake_client import FakeModelClient, InMemoryModelRegistry, ScriptedTurn
 from xana.llm_driver.interfaces import ModelClient, ModelRegistry
 from xana.llm_driver.providers.anthropic_deepseek import (
-    SUPPORTED_EFFORTS,
+    SUPPORTED_EFFORTS as DEEPSEEK_EFFORTS,
     AnthropicDeepSeekClient,
     AnthropicDeepSeekConfig,
 )
+from xana.llm_driver.providers.kimi import SUPPORTED_EFFORTS as KIMI_EFFORTS
+from xana.llm_driver.providers.kimi import KimiClient, KimiConfig
+from xana.llm_driver.providers.kimi_oauth import KimiTokenStore, api_base as kimi_api_base
 from xana.memory.active_context import (
     DefaultMemoryInjectorRegistry,
     InMemoryActiveContextStore,
@@ -60,9 +66,11 @@ from xana.skills.bundled.loop import LoopSkill
 from xana.skills.bundled.schedule import ScheduleSkill
 from xana.skills.bundled.skill_creator import SkillCreatorSkill
 from xana.skills.interfaces import SkillRegistry
+from xana.skills.markdown_loader import MarkdownDocParser
 from xana.skills.registry import InMemorySkillRegistry
 from xana.memory.main_writer import MainWriter
 from xana.memory.write_queue import WriteQueue, WriteQueueConsumer
+from xana.state.budget import BudgetTracker
 from xana.state.file_runs import FileRunStore, RunJsonlWriter
 from xana.state.in_memory import InMemorySessionStore, InMemoryStateRepository
 from xana.state.interfaces import RunStore, SessionStore, StateRepository
@@ -79,6 +87,7 @@ from xana.tools.builtin.enter_worktree import EnterWorktreeTool
 from xana.tools.builtin.glob_tool import GlobTool
 from xana.tools.builtin.grep_tool import GrepTool
 from xana.tools.builtin.memory_search import MemorySearchTool
+from xana.tools.builtin.memory_write import MemoryWriteTool
 from xana.tools.builtin.read import ReadTool
 from xana.tools.builtin.skill_load import SkillLoadTool
 from xana.tools.builtin.todo_write import TodoWriteTool
@@ -93,6 +102,7 @@ from xana.tools.registry import InMemoryToolRegistry
 _INJECTOR_TOP_K = 3
 _INJECTOR_BUDGET_CHARS = 2000
 _FAKE_PROVIDER = "fake"
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -119,6 +129,13 @@ class BootResult:
     write_queue: WriteQueue | None = None
     write_consumer: WriteQueueConsumer | None = None
     write_consumer_task: asyncio.Task | None = None
+    budget_tracker: BudgetTracker | None = None
+    agent_spawner: Any = None
+    subagent_dispatcher: Any = None
+    agent_registry: Any = None
+    ledger: Any = None
+    episode_runner: Any = None
+    meta_service: Any = None
 
 
 class _CompositeStateRepository(StateRepository):
@@ -127,6 +144,23 @@ class _CompositeStateRepository(StateRepository):
         self._runs = runs
     def sessions(self) -> SessionStore: return self._sessions
     def runs(self) -> RunStore: return self._runs
+
+
+def _xana_home() -> Path:
+    override = os.environ.get("XANA_HOME")
+    return Path(override).expanduser() if override else Path.home() / ".xana"
+
+
+def _search_db_path(project_root: Path) -> Path:
+    """L1: 持久索引文件 ~/.xana/sessions/search-{project_hash}.db。
+
+    文件库让索引跨重启保留(connect 时按行水合),运行期靠 Write/Edit 的
+    reindex 钩子增量更新,boot 的 rebuild_from_tree 只做幂等校准。
+    """
+    digest = hashlib.sha256(str(project_root).encode("utf-8")).hexdigest()[:16]
+    sessions = _xana_home() / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    return sessions / f"search-{digest}.db"
 
 
 async def boot(
@@ -138,9 +172,9 @@ async def boot(
 ) -> BootResult:
     project_root = Path(project_root).resolve()
 
-    tree = MarkdownMemoryTree(root=project_root, entrypoint="README_ai.md")
+    engine = SQLiteMemorySearchEngine(_search_db_path(project_root))
+    tree = MarkdownMemoryTree(root=project_root, entrypoint="README_ai.md", search_engine=engine)
     await tree.load()
-    engine = SQLiteMemorySearchEngine(":memory:")
     await engine.rebuild_from_tree(tree)
     injector = SearchMemoryInjector(engine, top_k=_INJECTOR_TOP_K, budget_chars=_INJECTOR_BUDGET_CHARS)
     injector_registry = DefaultMemoryInjectorRegistry()
@@ -193,18 +227,21 @@ async def boot(
 
     tools = InMemoryToolRegistry()
     await tools.register(MemorySearchTool(engine))
+    await tools.register(MemoryWriteTool(tree=tree, engine=engine))
     await tools.register(ReadTool())
-    await tools.register(EditTool())
-    await tools.register(WriteTool())
+    # L2 门禁:裸写 L2/ 规则目录与 ~/.xana/agents Agent 文档目录被拒
+    # (protected_dir 多目录,§6.3);root 内 .md 写后走 post_tool_use 增量
+    # reindex(memory_tree)。
+    l2_root = project_root / "L2"
+    agents_root = _xana_home() / "agents"
+    await tools.register(EditTool(memory_tree=tree, protected_dir=(l2_root, agents_root)))
+    await tools.register(WriteTool(memory_tree=tree, protected_dir=(l2_root, agents_root)))
     await tools.register(GlobTool())
     await tools.register(GrepTool())
     await tools.register(BashTool())
-    # P5 e2e 测试用,验证完删除
-    from xana.tools.builtin.slow_write import SlowWriteTool
-    await tools.register(SlowWriteTool())
     await tools.register(ToolSearchTool(tool_registry=tools))
     scheduler = FileSchedulerService(
-        path=Path.home() / ".xana" / "scheduled_tasks.json", session_id="default")
+        path=_xana_home() / "scheduled_tasks.json", session_id="default")
     await tools.register(CronCreateTool(scheduler))
     await tools.register(CronListTool(scheduler))
     await tools.register(CronDeleteTool(scheduler))
@@ -213,7 +250,8 @@ async def boot(
     worktree_root = Path.home() / ".xana" / "worktrees"
     session_config_root = Path.home() / ".xana" / "sessions"
     session_config_store: SessionConfigStore = FileSessionConfigStore(root=session_config_root)
-    await tools.register(TodoWriteTool(TodoStore(root=todo_root)))
+    todo_store = TodoStore(root=todo_root)
+    await tools.register(TodoWriteTool(todo_store))
     await tools.register(EnterPlanModeTool(session_config_store=session_config_store))
     await tools.register(EnterWorktreeTool(session_config_store=session_config_store, worktree_root=worktree_root))
 
@@ -221,9 +259,20 @@ async def boot(
 
     # bundled skills:独立 registry,零每轮注入;全文经 skill_load 按需取,
     # 列表段由 SkillsListingContributor 注入(仅当调用方未传 extension_registry)。
+    # §5.1 文件 SKILL.md 与 bundled 注册进同一个 registry、走同一个
+    # skill_load 两阶段路径(不新建平行机制);坏文档记 warning 不阻塞 boot。
+    from xana.skills.markdown_loader import FileSkillLoader, scan_skill_docs
+    _doc_parser = MarkdownDocParser()
     bundled_skills = InMemorySkillRegistry()
     for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill()):
         await bundled_skills.register(bundled)
+    _file_skills, _skill_doc_errors = await scan_skill_docs(
+        _xana_home() / "skills", loader=FileSkillLoader(parser=_doc_parser),
+    )
+    for _err in _skill_doc_errors:
+        _logger.warning("SKILL.md 加载失败: %s", _err)
+    for _file_skill in _file_skills:
+        await bundled_skills.register(_file_skill)
     await tools.register(SkillLoadTool(skills=bundled_skills))
     if extension_registry is None:
         extension_registry = (ExtensionRegistryBuilder()
@@ -251,8 +300,15 @@ async def boot(
     provider = runtime_config.default_model.provider
     model = runtime_config.default_model.model
     client = _build_model_client(provider, model, cp)
-    model_registry = InMemoryModelRegistry()
+    # §4.3: 消费 SystemConfig.limit().max_concurrent —— per-provider 并发位,
+    # InMemoryModelRegistry 外包 semaphore;未配置的 provider 不限制。
+    model_registry = InMemoryModelRegistry(concurrency_limits={
+        name: limit.max_concurrent for name, limit in system_cfg.limits.items()
+    })
     await model_registry.register(provider, client)
+
+    # §4.3 预算护栏:concrete helper(boot 组装,不抽 ABC),注入 harness ctx.metadata。
+    budget_tracker = BudgetTracker()
 
     state: StateRepository
     run_store: RunStore | None = None
@@ -269,6 +325,28 @@ async def boot(
     # P5: wire RunStore + RunJsonlWriter so /resume + cancel_all have backing.
     gateway.run_store = run_store
     gateway.run_jsonl_writer = run_jsonl_writer
+    # §4.2: spawn/lineage 首个实现(gateway 内),构造注入。
+    from xana.agent_adapter.gateway import GatewayAgentSpawner, GatewaySubagentDispatcher
+    agent_spawner = GatewayAgentSpawner(
+        gateway=gateway,
+        session_store=state.sessions(),
+        context_sdk=context_sdk,
+        active_context_store=active_ctx,
+    )
+    # §6.1/§6.2: 进化账本 + episode 状态机(boot 组装的 concrete helper,
+    # 不抽 ABC)。Ledger 落 {XANA_HOME}/evolution/ledger.jsonl。
+    from xana.evolution.episode import EpisodeGatedSpawner, EpisodeRunner
+    from xana.evolution.ledger import Ledger
+    ledger = Ledger()
+    episode_runner = EpisodeRunner(ledger=ledger, run_store=run_store)
+    # spawn/分叉门禁(§6.2 机制兜底):landing/closing/closed 期类型化拒绝。
+    gated_spawner = EpisodeGatedSpawner(inner=agent_spawner, runner=episode_runner)
+    subagent_dispatcher = GatewaySubagentDispatcher(
+        spawner=gated_spawner,
+        session_store=state.sessions(),
+    )
+    gateway.agent_spawner = gated_spawner
+    gateway.subagent_dispatcher = subagent_dispatcher
 
     # P5.5/5.6: after replay, scan runs/ dir → PH-replace completed, mark
     # unfinished as resumable (exit_reason=shutdown_force).
@@ -317,15 +395,80 @@ async def boot(
         provider=provider,
         session_config_store=session_config_store,
         progress_sink=progress_sink,
+        todo_store=todo_store,
         context_window=runtime_config.default_model.context_window,
         force_compact=runtime_config.default_model.force_compact,
         model_thresholds=model_thresholds,
         main_writer=main_writer,
         run_jsonl_writer=run_jsonl_writer,
         write_queue=write_queue,
+        budget_tracker=budget_tracker,
+        episode_runner=episode_runner,
     )
 
     gateway.agents["chat"] = chat_agent
+
+    # §5.1 Agent 文档:~/.xana/agents/*/AGENT.md → AgentSpec → ChatAgent
+    # (共享 harness/stores,spec 来自文档:identity=工作流正文,tools/skills
+    # 白名单映射进现有字段)。builtin.chat 保持默认不变;坏文档记 warning。
+    from xana.agents.contracts import AgentSpec
+    from xana.agents.registry import FileAgentRegistry
+
+    def _doc_agent_factory(spec: AgentSpec) -> Agent:
+        return ChatAgent(
+            spec=spec,
+            harness=_harness,
+            active_context_store=active_ctx,
+            history_mirror=mirror,
+            memory_injector_registry=injector_registry,
+            tool_registry=tools,
+            skill_registry=skills,
+            model_registry=model_registry,
+            state_repository=state,
+            cwd=str(project_root),
+            model=model,
+            provider=provider,
+            session_config_store=session_config_store,
+            progress_sink=progress_sink,
+            context_window=runtime_config.default_model.context_window,
+            force_compact=runtime_config.default_model.force_compact,
+            model_thresholds=model_thresholds,
+            main_writer=main_writer,
+            run_jsonl_writer=run_jsonl_writer,
+            write_queue=write_queue,
+            todo_store=todo_store,
+            budget_tracker=budget_tracker,
+            episode_runner=episode_runner,
+        )
+
+    agent_registry = FileAgentRegistry(
+        root=_xana_home() / "agents",
+        parser=_doc_parser,
+        agent_factory=_doc_agent_factory,
+    )
+    for _err in await agent_registry.load():
+        _logger.warning("AGENT.md 加载失败: %s", _err)
+    for _spec in await agent_registry.list_specs():
+        _doc_agent = await agent_registry.get(_spec.component.name)
+        if _doc_agent is not None:
+            gateway.agents[_spec.component.name] = _doc_agent
+
+    # §6.3: 元 agent 服务。迭代对象 = 首个文档 agent(没有则 builtin.chat);
+    # cron 幂等安装,首个 episode 时创建。
+    from xana.evolution.meta import MetaEvolutionService
+    _meta_agent_name = "chat"
+    _agent_specs = await agent_registry.list_specs()
+    if _agent_specs:
+        _meta_agent_name = _agent_specs[0].component.name
+    meta_service = MetaEvolutionService(
+        scheduler=scheduler,
+        gateway=gateway,
+        episode_runner=episode_runner,
+        ledger=ledger,
+        todo_store=todo_store,
+        agents_root=_xana_home() / "agents",
+        agent_name=_meta_agent_name,
+    )
 
     # §1.5 Compact-as-PH: ContextSDK constructed above and bound into the
     # legacy active_context_store; same instance is wired into the
@@ -335,9 +478,11 @@ async def boot(
         active_context_store=active_ctx,
         gateway=gateway,
         context_sdk=context_sdk,
-        available_models=tuple(getattr(runtime_config, "models", {}).keys()) or (model,),
+        # 只列同 provider 的模型:进程内只注册了当前 provider 的 client,
+        # 跨 provider 的模型名发给它会出错。
+        available_models=tuple(e.name for e in system_cfg.models if e.type == provider) or (model,),
         available_search_providers=("native", "brave", "duckduckgo"),
-        available_efforts=SUPPORTED_EFFORTS,
+        available_efforts=KIMI_EFFORTS if provider.startswith("kimi") else DEEPSEEK_EFFORTS,
         model_registry=model_registry,
         provider=provider,
         model=model,
@@ -348,7 +493,7 @@ async def boot(
 
     return BootResult(
         gateway=gateway,
-        agents={"chat": chat_agent},
+        agents=dict(gateway.agents),
         memory_tree=tree,
         search_engine=engine,
         active_context_store=active_ctx,
@@ -369,6 +514,13 @@ async def boot(
         write_queue=write_queue,
         write_consumer=write_consumer,
         write_consumer_task=write_consumer_task,
+        budget_tracker=budget_tracker,
+        agent_spawner=gated_spawner,
+        subagent_dispatcher=subagent_dispatcher,
+        agent_registry=agent_registry,
+        ledger=ledger,
+        episode_runner=episode_runner,
+        meta_service=meta_service,
     )
 
 
@@ -383,10 +535,17 @@ def _build_model_client(provider: str, model: str, cp: DefaultConfigProvider) ->
     """
     if provider == _FAKE_PROVIDER:
         return _fake()
-    if provider.startswith("deepseek"):
+    if "deepseek" in provider:
+        # type 匹配用包含而非前缀:wizard 提示的名字是 "anthropic_deepseek",
+        # 用户手填的多是 "deepseek-v4-flash" — 两种都要命中。
         system = cp.load_system_config()
         entry = system.model(model)
         if entry is None or not entry.api_key:
+            _logger.warning(
+                "deepseek 模型 %s 的 entry 缺失或 api_key 为空 — 当前回落 fake client;"
+                "请检查 system.json models[]",
+                model,
+            )
             return _fake()
         config = (
             AnthropicDeepSeekConfig(api_key=entry.api_key, base_url=entry.base_url)
@@ -394,6 +553,23 @@ def _build_model_client(provider: str, model: str, cp: DefaultConfigProvider) ->
             else AnthropicDeepSeekConfig(api_key=entry.api_key)
         )
         return AnthropicDeepSeekClient(config)
+    if provider.startswith("kimi"):
+        # kimi 走 OAuth(见 `xana login`),不用 api_key;token 到期自动刷新。
+        # 未登录时回落 fake 并给出明确指引,与 deepseek 缺 key 的行为一致。
+        system = cp.load_system_config()
+        entry = system.model(model)
+        store = KimiTokenStore()
+        tokens = store.load()
+        if tokens is None:
+            _logger.warning(
+                "kimi 模型 %s 已配置但未登录 — 请先运行 `xana login`;当前回落 fake client",
+                model,
+            )
+            return _fake()
+        base_url = (entry.base_url if entry and entry.base_url else None) or kimi_api_base(
+            tokens.region
+        )
+        return KimiClient(KimiConfig(base_url=base_url), token_store=store)
     return _fake()
 
 

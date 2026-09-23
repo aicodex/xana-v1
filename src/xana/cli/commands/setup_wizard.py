@@ -103,7 +103,8 @@ def run_wizard(
 
 def _do_models(data: dict, *, ask: AskFn, out: TextIO) -> tuple[int, bool]:
     print("[xana setup] 配置模型(写入 system.json models[]):", file=out)
-    mtype = ask("  provider type (如 anthropic_deepseek): ").strip()
+    print("  (Kimi 订阅用户请直接运行 `xana login` 走 OAuth,无需在此填 api key)", file=out)
+    mtype = ask("  provider type (如 anthropic_deepseek / kimi): ").strip()
     name = ask("  模型名称 (自定, 如 ds-main): ").strip()
     api_key = ask("  api key: ").strip()
     base_url = ask("  base url (可选, 回车跳过): ").strip()

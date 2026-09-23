@@ -13,9 +13,14 @@ Behavior depends on whether a `ScriptedTurn` overrides the default:
   sequence. Once the scripted list is exhausted (`cursor >= len(turns)`)
   the client returns a no-op `usage` + `done` so any subsequent harness
   iteration ends cleanly instead of looping forever on the last script.
+
+`InMemoryModelRegistry` optionally wraps per-provider clients in a
+semaphore guard driven by `concurrency_limits` (§4.3: 消费
+SystemConfig.limit().max_concurrent,第二个并发请求排队)。
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, AsyncIterator
 
@@ -165,12 +170,49 @@ class FakeModelClient(ModelClient):
         return ProviderCapabilities(provider="fake", supports_streaming=True, supports_tools=True)
 
 
+class _ConcurrencyGuardedClient(ModelClient):
+    """per-provider semaphore 包装(§4.3):同 provider 并发 stream 受
+    max_concurrent 限制,超出的请求排队等待空闲并发位。"""
+
+    def __init__(self, inner: ModelClient, semaphore: asyncio.Semaphore) -> None:
+        self._inner = inner
+        self._semaphore = semaphore
+
+    async def _guarded_stream(self, request: ModelRequest) -> AsyncGenerator[ModelEvent, None]:
+        async with self._semaphore:
+            async for event in self._inner.stream(request):
+                yield event
+
+    def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
+        return self._guarded_stream(request)
+
+    async def cancel(self, request_id: str) -> None:
+        await self._inner.cancel(request_id)
+
+    async def capabilities(self) -> ProviderCapabilities:
+        return await self._inner.capabilities()
+
+
 class InMemoryModelRegistry(ModelRegistry):
-    def __init__(self) -> None:
+    def __init__(self, concurrency_limits: dict[str, int] | None = None) -> None:
         self._clients: dict[str, ModelClient] = {}
+        # §4.3: provider → max_concurrent(SystemConfig.limit() 的消费者)。
+        # None/缺省 = 不限制,直通原始 client(零行为变更)。
+        self._concurrency_limits: dict[str, int] = dict(concurrency_limits or {})
+        self._semaphores: dict[str, asyncio.Semaphore] = {}
 
     async def register(self, provider: str, client: ModelClient) -> None:
         self._clients[provider] = client
 
     async def get(self, provider: str) -> ModelClient | None:
-        return self._clients.get(provider)
+        client = self._clients.get(provider)
+        if client is None:
+            return None
+        limit = self._concurrency_limits.get(provider)
+        if not limit or limit <= 0:
+            return client
+        semaphore = self._semaphores.get(provider)
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(limit)
+            self._semaphores[provider] = semaphore
+        return _ConcurrencyGuardedClient(client, semaphore)

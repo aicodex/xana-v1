@@ -7,6 +7,7 @@ rebuildable SQLite FTS index.
 """
 from __future__ import annotations
 
+import ast
 import re
 import sqlite3
 import time
@@ -47,8 +48,22 @@ _INCLUDE_RE = re.compile(r"(?<!`)@([^\s`]+(?:\\ [^\s`]+)*)")
 _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 _WIKI_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
-_TOKEN_RE = re.compile(r"[A-Za-z0-9_\-/\.]+")
-_FTS5_PUNCT_RE = re.compile(r"[^\w\s]", flags=re.UNICODE)
+_ASCII_TERM_RE = re.compile(r"[A-Za-z0-9_]+")
+_CJK_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]+")
+
+
+def search_terms(text: str) -> list[str]:
+    """检索词切分:ASCII 按词(小写),CJK 连续段按相邻二字(单字段保留单字)。
+
+    索引、查询与 memory_write 查重共用这一份切分,中文无需分词库即可检索。
+    """
+    terms = [t.lower() for t in _ASCII_TERM_RE.findall(text)]
+    for run in _CJK_RUN_RE.findall(text):
+        if len(run) == 1:
+            terms.append(run)
+        else:
+            terms.extend(run[i:i + 2] for i in range(len(run) - 1))
+    return terms
 
 
 class MarkdownMemoryTree(MemoryTree):
@@ -57,11 +72,21 @@ class MarkdownMemoryTree(MemoryTree):
     The markdown files are the source of truth. The in-memory node map is a
     rebuilt view over entry links, frontmatter references, markdown links,
     wikilinks, and bounded @include edges.
+
+    `search_engine` is optional: when wired (boot composes this), the
+    incremental `reindex_paths` hook keeps the engine in sync as tools edit
+    markdown at runtime, so a full rebuild is only needed at boot.
     """
 
-    def __init__(self, root: str | Path, entrypoint: str = "README_ai.md") -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        entrypoint: str = "README_ai.md",
+        search_engine: "MemorySearchEngine | None" = None,
+    ) -> None:
         self.root = Path(root).resolve()
         self.entrypoint = entrypoint
+        self.search_engine = search_engine
         self.nodes: dict[str, MemoryNode] = {}
         self._edge_sources: dict[tuple[str, str], str] = {}
 
@@ -267,6 +292,44 @@ class MarkdownMemoryTree(MemoryTree):
     def edge_source(self, source: str, target: str) -> str | None:
         return self._edge_sources.get((source, target))
 
+    async def reindex_paths(self, paths: Any) -> tuple[str, ...]:
+        """Incremental refresh after runtime markdown edits.
+
+        For each path under the root with a ``.md`` suffix: reload the node
+        (or drop it if the file is gone) and mirror the change into the
+        wired ``search_engine`` (index / remove). Children attachment is
+        recomputed from the surviving edge set. Returns the refreshed
+        relative paths. Paths outside the root or non-markdown are ignored.
+        """
+        refreshed: list[str] = []
+        for raw in paths:
+            path = Path(raw)
+            if not path.is_absolute():
+                path = self.root / path
+            resolved = path.resolve()
+            if not self._is_under_root(resolved) or resolved.suffix != ".md":
+                continue
+            rel = self._rel(resolved)
+            if not resolved.exists():
+                self.nodes.pop(rel, None)
+                self._edge_sources = {
+                    k: v for k, v in self._edge_sources.items()
+                    if k[0] != rel and k[1] != rel
+                }
+                if self.search_engine is not None:
+                    await self.search_engine.remove(rel)
+                if self.nodes:
+                    self._attach_children_from_edges()
+                refreshed.append(rel)
+                continue
+            self._load_file(resolved, depth=0, stack=())
+            self._attach_children_from_edges()
+            node = self.nodes.get(rel)
+            if self.search_engine is not None and node is not None:
+                await self.search_engine.index(node)
+            refreshed.append(rel)
+        return tuple(refreshed)
+
     def _load_file(self, path: Path, depth: int, stack: tuple[Path, ...]) -> str | None:
         resolved = path.resolve()
         if not self._is_under_root(resolved) or resolved.suffix not in TEXT_EXTENSIONS:
@@ -411,12 +474,37 @@ class MarkdownMemoryTree(MemoryTree):
 
 
 class SQLiteMemorySearchEngine(MemorySearchEngine):
-    """SQLite-backed MemorySearchEngine using FTS5 when available."""
+    """SQLite-backed MemorySearchEngine using FTS5 when available.
+
+    With a file-backed ``db_path`` the index survives process restarts:
+    rows already on disk are hydrated into ``nodes`` at connect time, so a
+    restart can search without a full ``rebuild_from_tree``. Nodes whose
+    frontmatter marks them ``status: deprecated`` are excluded from hits.
+    """
 
     def __init__(self, db_path: str | Path = ":memory:") -> None:
         self.conn = sqlite3.connect(str(db_path))
         self.nodes: dict[str, MemoryNode] = {}
         self._has_fts = self._init_schema()
+        self._hydrate_from_disk()
+
+    def _hydrate_from_disk(self) -> None:
+        try:
+            rows = self.conn.execute(
+                "select path, title, body, frontmatter from memory_nodes"
+            ).fetchall()
+        except sqlite3.Error:
+            return
+        for path, title, body, frontmatter in rows:
+            try:
+                fm = ast.literal_eval(frontmatter) if frontmatter else {}
+            except (ValueError, SyntaxError):
+                fm = {}
+            if not isinstance(fm, dict):
+                fm = {}
+            self.nodes[path] = MemoryNode(
+                path=path, kind="doc", title=title, body=body, frontmatter=fm,
+            )
 
     async def index(self, node: MemoryNode) -> None:
         self.nodes[node.path] = node
@@ -426,10 +514,10 @@ class SQLiteMemorySearchEngine(MemorySearchEngine):
                 (node.path, node.title, node.body, repr(node.frontmatter)),
             )
             if self._has_fts:
-                self.conn.execute("delete from memory_fts where path = ?", (node.path,))
+                self.conn.execute("delete from memory_terms_fts where path = ?", (node.path,))
                 self.conn.execute(
-                    "insert into memory_fts(path, title, body) values (?, ?, ?)",
-                    (node.path, node.title, node.body),
+                    "insert into memory_terms_fts(path, terms) values (?, ?)",
+                    (node.path, " ".join(search_terms(f"{node.title}\n{node.body}"))),
                 )
 
     async def remove(self, node_path: str) -> None:
@@ -437,7 +525,7 @@ class SQLiteMemorySearchEngine(MemorySearchEngine):
         with self.conn:
             self.conn.execute("delete from memory_nodes where path = ?", (node_path,))
             if self._has_fts:
-                self.conn.execute("delete from memory_fts where path = ?", (node_path,))
+                self.conn.execute("delete from memory_terms_fts where path = ?", (node_path,))
 
     async def search(self, query: SearchQuery) -> tuple[SearchHit, ...]:
         if not query.text.strip():
@@ -452,7 +540,7 @@ class SQLiteMemorySearchEngine(MemorySearchEngine):
         with self.conn:
             self.conn.execute("delete from memory_nodes")
             if self._has_fts:
-                self.conn.execute("delete from memory_fts")
+                self.conn.execute("delete from memory_terms_fts")
         self.nodes = {}
         for node in tree.nodes.values():
             await self.index(node)
@@ -463,47 +551,72 @@ class SQLiteMemorySearchEngine(MemorySearchEngine):
                 "create table if not exists memory_nodes(path text primary key, title text not null, body text not null, frontmatter text not null)"
             )
             try:
-                self.conn.execute("create virtual table if not exists memory_fts using fts5(path unindexed, title, body)")
-                return True
+                # 旧版 memory_fts 按原文 unicode61 分词,中文整段成一个词无法命中;
+                # 索引是可重建缓存,直接换表(boot 会 rebuild_from_tree)。
+                self.conn.execute("drop table if exists memory_fts")
+                self.conn.execute(
+                    "create virtual table if not exists memory_terms_fts using fts5(path unindexed, terms)")
             except sqlite3.OperationalError:
                 return False
+            if self.conn.execute("select count(*) from memory_terms_fts").fetchone()[0] == 0:
+                for path, title, body in self.conn.execute(
+                        "select path, title, body from memory_nodes").fetchall():
+                    self.conn.execute(
+                        "insert into memory_terms_fts(path, terms) values (?, ?)",
+                        (path, " ".join(search_terms(f"{title}\n{body}"))))
+            return True
+
+    def _is_deprecated(self, path: str) -> bool:
+        node = self.nodes.get(path)
+        return bool(node is not None and node.frontmatter.get("status") == "deprecated")
 
     def _search_fts(self, query: SearchQuery) -> list[SearchHit]:
-        # FTS5 bareword grammar errors on punctuation (`/`, `-`, `.`, `~`, …):
-        # collapse them to spaces before tokenizing so a query like
-        # `~/.xana/code` becomes `xana OR code`, not a parser-error.
-        cleaned = _FTS5_PUNCT_RE.sub(" ", query.text)
-        q = " OR ".join(_TOKEN_RE.findall(cleaned))
-        if not q:
+        terms = list(dict.fromkeys(search_terms(query.text)))
+        if not terms:
             return []
+        # 每个词加双引号作为字面短语,避免 FTS5 语法字符(AND/OR/NEAR 等)。
+        q = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
         rows = self.conn.execute(
-            "select path, bm25(memory_fts) as rank, snippet(memory_fts, 2, '[', ']', ' ... ', 12) from memory_fts where memory_fts match ? order by rank limit ?",
+            "select path from memory_terms_fts where memory_terms_fts match ? "
+            "order by bm25(memory_terms_fts) limit ?",
             (q, max(query.top_k * 4, query.top_k)),
         ).fetchall()
         hits: list[SearchHit] = []
-        for path, rank, snippet in rows:
-            if query.scope_paths and not any(path.startswith(scope) for scope in query.scope_paths):
-                continue
-            node = self.nodes.get(path)
-            score = 1.0 / (1.0 + max(float(rank), 0.0))
-            hits.append(SearchHit(node_path=path, score=score, matched_spans=(snippet,), node=node))
+        for (path,) in rows:
+            hit = self._score(path, terms, query)
+            if hit is not None:
+                hits.append(hit)
         return hits
 
     def _search_like(self, query: SearchQuery) -> list[SearchHit]:
-        tokens = [t.lower() for t in _TOKEN_RE.findall(query.text)]
-        hits: list[SearchHit] = []
-        for path, node in self.nodes.items():
-            if query.scope_paths and not any(path.startswith(scope) for scope in query.scope_paths):
-                continue
-            haystack = f"{node.title}\n{node.body}".lower()
-            overlap = [t for t in tokens if t in haystack]
-            if not overlap:
-                continue
-            score = len(set(overlap)) / max(len(set(tokens)), 1)
-            spans = tuple(line for line in node.body.splitlines() if any(t in line.lower() for t in overlap))[:2]
-            hits.append(SearchHit(node_path=path, score=score, matched_spans=spans, node=node))
+        terms = list(dict.fromkeys(search_terms(query.text)))
+        if not terms:
+            return []
+        hits = [h for h in (self._score(p, terms, query) for p in self.nodes) if h is not None]
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits
+
+    def _score(self, path: str, terms: list[str], query: SearchQuery) -> SearchHit | None:
+        """命中词占查询词比例作分数(0..1);摘要取命中最多的两行原文。"""
+        if self._is_deprecated(path):
+            return None
+        if query.scope_paths and not any(path.startswith(scope) for scope in query.scope_paths):
+            return None
+        node = self.nodes.get(path)
+        if node is None:
+            return None
+        node_terms = set(search_terms(f"{node.title}\n{node.body}"))
+        overlap = [t for t in terms if t in node_terms]
+        if not overlap:
+            return None
+        wanted = set(overlap)
+        lines = sorted(
+            (line for line in node.body.splitlines() if line.strip()),
+            key=lambda line: -len(wanted.intersection(search_terms(line))),
+        )
+        spans = tuple(line.strip()[:200] for line in lines[:2])
+        return SearchHit(node_path=path, score=len(overlap) / len(terms),
+                         matched_spans=spans, node=node)
 
 
 class SearchMemoryInjector(MemoryInjector):

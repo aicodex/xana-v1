@@ -66,6 +66,9 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         main_writer: Any = None,
         run_jsonl_writer: Any = None,
         write_queue: Any = None,
+        todo_store: Any = None,
+        budget_tracker: Any = None,
+        episode_runner: Any = None,
     ) -> None:
         self.context_window = context_window
         self.force_compact = force_compact
@@ -73,6 +76,9 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         self.main_writer = main_writer
         self.run_jsonl_writer = run_jsonl_writer
         self.write_queue = write_queue
+        self.todo_store = todo_store
+        self.budget_tracker = budget_tracker
+        self.episode_runner = episode_runner
         self.active_context_store = active_context_store
         self.history_mirror = history_mirror
         self.memory_injector_registry = memory_injector_registry
@@ -145,6 +151,15 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
                 runs_dir = getattr(jw, "_dir", None)
                 if runs_dir is not None:
                     metadata["runs_dir"] = runs_dir
+        if self.todo_store is not None:
+            # L3: harness 每轮把 TodoStore 渲染进 dynamic_middle 尾部。
+            metadata["todo_store"] = self.todo_store
+        if self.budget_tracker is not None:
+            # §4.3: 预算护栏 concrete helper,在 update_usage 写点累计/检查。
+            metadata["budget_tracker"] = self.budget_tracker
+        if self.episode_runner is not None:
+            # §6.2: episode 状态机,软/硬阈值在 usage 写点消费。
+            metadata["episode_runner"] = self.episode_runner
         # P5 fix — gateway owns AbortSignal lifecycle. If it pre-registered
         # one for this run, reuse the same instance so gateway.cancel() flips
         # the bool the harness's tool-abort poll is watching. Fall back to a
@@ -152,6 +167,11 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         abort_signal = request.metadata.get("abort_signal")
         if not isinstance(abort_signal, AbortSignal):
             abort_signal = AbortSignal()
+        # EnterPlanMode 持久化的 mode="plan" 标记在这里真正进入权限上下文,
+        # 由 harness 的工具权限检查点消费(非只读工具在 plan 模式被拒)。
+        permission_mode = "default"
+        if cfg is not None and cfg.metadata.get("mode") == "plan":
+            permission_mode = "plan"
         return HarnessContext(
             session_id=request.session_id,
             agent_name=spec.component.name,
@@ -159,7 +179,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             model=model,
             effort=effort,
             run_id=run_id,
-            permission=PermissionContext(mode="default", session_id=request.session_id),
+            permission=PermissionContext(mode=permission_mode, session_id=request.session_id),
             abort=abort_signal,
             state_repository=self.state_repository,
             active_context_store=self.active_context_store,
@@ -218,6 +238,9 @@ class ChatAgent(Agent):
         main_writer: Any = None,
         run_jsonl_writer: Any = None,
         write_queue: Any = None,
+        todo_store: Any = None,
+        budget_tracker: Any = None,
+        episode_runner: Any = None,
     ) -> None:
         self._spec = spec
         self.harness = harness
@@ -241,6 +264,9 @@ class ChatAgent(Agent):
             main_writer=main_writer,
             run_jsonl_writer=run_jsonl_writer,
             write_queue=write_queue,
+            todo_store=todo_store,
+            budget_tracker=budget_tracker,
+            episode_runner=episode_runner,
         )
         self.event_mapper = DefaultAgentEventMapper()
         self._pending_cancel_sessions: set[str] = set()

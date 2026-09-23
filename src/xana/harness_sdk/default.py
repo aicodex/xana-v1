@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import os
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -266,6 +268,15 @@ class DefaultHarness(Harness):
 
         await _fire_tool_start()
 
+        # provider 解析不出合法 arguments(如 kimi 的非 JSON 片段)→ 不执行,
+        # 以失败结果回给模型让其重发,而不是静默用 {} 调用工具。
+        if tc.get("input_error"):
+            result = ToolResult(ok=False, content=None, error=tc["input_error"],
+                                failure_kind="validation",
+                                rendered=f"[invalid tool arguments] {tc['input_error']}")
+            await _fire_tool_finish(result, result.rendered or "")
+            return result, result.rendered or ""
+
         # Extension tools first; fall back to the shared registry. The
         # "registry missing / unknown tool" failures only apply when the
         # extension map also misses.
@@ -299,7 +310,17 @@ class DefaultHarness(Harness):
         )
         try:
             await tool.validate(invocation)
-            perm = await tool.check_permission(invocation, tool_ctx)
+            # plan 模式(EnterPlanMode 持久化的 mode="plan" 经 ChatAgent 映射进
+            # PermissionContext)在这里真正消费:非只读工具直接拒绝。
+            if tool_ctx.permission.mode == "plan" and not getattr(tool.spec(), "read_only", False):
+                perm = PermissionResult(
+                    decision="deny",
+                    reason=(
+                        "plan 模式:只允许只读工具。完成设计、退出 plan 模式后再执行修改性操作。"
+                    ),
+                )
+            else:
+                perm = await tool.check_permission(invocation, tool_ctx)
             if perm.decision != "allow" and ext is not None and ext.approval_review:
                 # reviewer sits inside the catch-all try, so exceptions become
                 # a synthetic execution-failure ToolResult (first non-None override wins).
@@ -600,12 +621,29 @@ class DefaultHarness(Harness):
         agent_name = request.agent_name
         run_id = context.run_id or _ANON_RUN_ID
 
+        # §4.3 预算护栏:budget 上限经 request.metadata 进入(同 parent_run_id
+        # 的 lineage 通道);tracker 是 boot 组装的 concrete helper,经
+        # ctx.metadata 注入(todo_store 同款松散注入)。
+        run_budget = request.metadata.get("budget")
+        if not isinstance(run_budget, dict):
+            run_budget = {}
+        budget_tracker = context.metadata.get("budget_tracker")
+        budget_exceeded: str | None = None
+        # §6.2 episode 状态机:软阈值 → landing(拒新 spawn/评估),
+        # 硬阈值 → closing(当前 turn 收尾,同 budget_exceeded 语义优雅落地)。
+        episode_runner = context.metadata.get("episode_runner")
+        episode_exceeded: str | None = None
+
         if context.state_repository is not None:
             await context.state_repository.runs().create(
                 RunRecord(
                     run_id=run_id, session_id=session_id, agent_name=agent_name,
                     status="running",
                     input_request={"text": request.user_input or ""},
+                    label=(request.user_input or "")[:40],
+                    parent_run_id=request.metadata.get("parent_run_id") or None,
+                    budget=dict(run_budget),
+                    metadata={"started_at": time.time()},
                 )
             )
 
@@ -679,7 +717,31 @@ class DefaultHarness(Harness):
             for c in ext.turn_input:
                 for frag in await c.contribute_turn_input(tic, thread_store, turn_store):
                     extension_tail.append(frag.content)
+        # L3: 易变状态永远排在 dynamic_middle 尾部(前缀缓存纪律:
+        # 静态段 → env → L1/L2 注入 → L3)。每轮重读 TodoStore。
+        todo_block = ""
+        todo_store = context.metadata.get("todo_store")
+        if todo_store is not None:
+            try:
+                todos = todo_store.load(session_id)
+            except Exception:
+                _logger.exception("todo_store.load failed; skipping todo block")
+                todos = ()
+            if todos:
+                lines = ["<todo_status>"]
+                for idx, item in enumerate(todos, start=1):
+                    mark = {"in_progress": "⏳", "completed": "✅"}.get(
+                        getattr(item, "status", ""), "☐"
+                    )
+                    content = getattr(item, "content", "") or ""
+                    active = getattr(item, "active_form", "") or ""
+                    label = f"{active} ({content})" if active and active != content else content
+                    lines.append(f"{idx}. {mark} {label}")
+                lines.append("</todo_status>")
+                todo_block = "\n".join(lines)
         base_parts = injected_head + skill_blocks + injected_tail + extension_tail
+        if todo_block:
+            base_parts.append(todo_block)
         if ext is not None and ext.context:
             dynamic_middle_text = await ExtensionPromptAssembler(ext).assemble(
                 thread_store=thread_store, turn_store=turn_store, base_parts=base_parts,
@@ -692,7 +754,18 @@ class DefaultHarness(Harness):
         # system prompt 与 tools_schema 在每轮 turn 循环内组装(deferred 揭示
         # 后下一轮即生效),这里只准备不变的输入。
 
-        provider = str(context.config_snapshot.get("provider", _DEFAULT_PROVIDER))
+        provider_opt = context.config_snapshot.get("provider")
+        if provider_opt is None:
+            # 缺 provider 多半是装配错误。fake 已注册说明调用方是有意的
+            # (canonical fake pipeline / 测试),放行;否则报出真正的原因,
+            # 而不是让人摸不着头脑的 "provider 'fake' not registered"。
+            provider = _DEFAULT_PROVIDER
+            _logger.warning(
+                "config_snapshot 缺 provider — 回退到 %r;生产路径(ChatAgent)应始终填写",
+                _DEFAULT_PROVIDER,
+            )
+        else:
+            provider = str(provider_opt)
         if context.model_registry is None:
             await self._fire_turn_end(
                 ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
@@ -707,8 +780,12 @@ class DefaultHarness(Harness):
                 ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
                 thread_store=thread_store, turn_store=turn_store, status="error",
             )
+            if provider_opt is None:
+                message = "config_snapshot.provider missing (no 'fake' fallback registered)"
+            else:
+                message = f"provider {provider!r} not registered"
             yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
-                               payload={"error": f"provider {provider!r} not registered"})
+                               payload={"error": message})
             return
 
         specs: tuple = ()
@@ -781,6 +858,12 @@ class DefaultHarness(Harness):
                     if summary is None:
                         await self._report_compact(context, session_id, run_id, "failed")
                     else:
+                        # 诚信修复:compact 前把将被压缩的消息区间落盘,摘要引用
+                        # 真实可读路径;落盘失败退回旧式相对路径不阻断 compact。
+                        transcript = await _persist_compact_transcript(
+                            context, session_id, tuple(live))
+                        if transcript is None:
+                            transcript = f"runs/autocompact-{session_id}-{run_id}.jsonl"
                         # Bug C fix: prefer SDK Compact-as-PH path so we
                         # take the same per-sid compact_lock as manual
                         # /compact (serializing auto vs manual) AND keep
@@ -805,7 +888,6 @@ class DefaultHarness(Harness):
                             from xana.context._internal import _PlaceholderInternal
                             from xana.context.message import CompactSummary
                             auto_run_id = f"autocompact-{session_id}-{run_id}"
-                            transcript = f"runs/{auto_run_id}.jsonl"
                             try:
                                 await sdk.append_compact_placeholder(
                                     session_id, agent_name,
@@ -852,7 +934,7 @@ class DefaultHarness(Harness):
                                     boundary_meta["pre_compact_revealed_tools"] = revealed_now
                                 summary_msg = MemoryMessage(
                                     role="compact",
-                                    content=CompactSummary.render(summary),
+                                    content=CompactSummary.render(summary, transcript_path=transcript),
                                     metadata={**boundary_meta,
                                               "compact_summary": True,
                                               "boundary_marker": COMPACT_BOUNDARY_MARKER},
@@ -864,7 +946,7 @@ class DefaultHarness(Harness):
                             else:
                                 await context.active_context_store.set(build_post_compact_context(
                                     session_id=session_id, agent_name=agent_name, summary=summary,
-                                    revealed_tools=revealed_now))
+                                    revealed_tools=revealed_now, transcript_path=transcript))
                         self._session_prompt_tokens.pop(key, None)
                         await self._report_compact(context, session_id, run_id, "done")
                         snapshot = await context.active_context_store.get(session_id, agent_name)
@@ -898,6 +980,8 @@ class DefaultHarness(Harness):
                 schemas = [s for s in schemas if s.get("name") != "web_search"]
                 deferred_names = [d for d in deferred_names if d[0] != "web_search"]
                 request_metadata["web_search_native"] = True
+            # 前缀缓存路由键:同会话请求落到同一缓存(kimi prompt_cache_key)。
+            request_metadata["prompt_cache_key"] = session_id
             # SessionConfig.thinking(bool)→ provider 方言开关;缺省不发,保持原行为
             if "thinking" in context.config_snapshot:
                 request_metadata.setdefault(
@@ -957,16 +1041,59 @@ class DefaultHarness(Harness):
                         yield HarnessEvent(kind="model_delta", session_id=session_id,
                                            run_id=run_id, payload=dict(event.payload))
                     elif event.kind == "tool_call":
-                        iter_tool_calls.append({
+                        _tc: dict[str, Any] = {
                             "tool_name": event.payload.get("tool_name", ""),
                             "input": event.payload.get("input", {}) or {},
                             "call_id": event.payload.get("call_id", _ANON_CALL_ID),
-                        })
+                        }
+                        if event.payload.get("input_error"):
+                            _tc["input_error"] = event.payload["input_error"]
+                        iter_tool_calls.append(_tc)
                     elif event.kind == "usage":
                         usage = await self.usage_accumulator.apply_model_event(usage, event)
+                        # §4.3:RunRecord.budget 有上限的 run 每轮检查,超限置
+                        # 收尾标记;循环在 assistant 落库后优雅退出(非裸死)。
+                        if budget_tracker is not None and budget_exceeded is None and run_budget:
+                            _reason = budget_tracker.check(
+                                session_id=session_id, budget=run_budget, usage=usage,
+                            )
+                            if _reason is not None:
+                                budget_exceeded = _reason
+                                if context.progress_sink is not None:
+                                    await context.progress_sink.report(ProgressEvent(
+                                        session_id=session_id, run_id=run_id,
+                                        message="budget_exceeded",
+                                        payload={
+                                            "kind": "budget_exceeded",
+                                            "session_id": session_id,
+                                            "run_id": run_id,
+                                            "reason": _reason,
+                                            "tokens_in": usage.exact_input_tokens or usage.estimated_input_tokens or 0,
+                                            "tokens_out": usage.exact_output_tokens or usage.estimated_output_tokens or 0,
+                                        },
+                                    ))
                         if usage.exact_input_tokens:
                             self._session_prompt_tokens[(session_id, agent_name)] = (
                                 usage.exact_input_tokens, len(history_msgs))
+                        if episode_runner is not None and episode_exceeded is None:
+                            _ep_tokens = (
+                                (usage.exact_input_tokens or usage.estimated_input_tokens or 0)
+                                + (usage.exact_output_tokens or usage.estimated_output_tokens or 0)
+                            )
+                            _ep_reason = await episode_runner.record_usage(_ep_tokens)
+                            if _ep_reason is not None:
+                                episode_exceeded = _ep_reason
+                                if context.progress_sink is not None:
+                                    await context.progress_sink.report(ProgressEvent(
+                                        session_id=session_id, run_id=run_id,
+                                        message="episode_threshold",
+                                        payload={
+                                            "kind": "episode_threshold",
+                                            "session_id": session_id,
+                                            "run_id": run_id,
+                                            "reason": _ep_reason,
+                                        },
+                                    ))
                         if context.progress_sink is not None:
                             await context.progress_sink.report(ProgressEvent(
                                 session_id=session_id, run_id=run_id,
@@ -982,6 +1109,19 @@ class DefaultHarness(Harness):
                                 },
                             ))
                     elif event.kind == "done":
+                        break
+                    elif event.kind == "rate_limited":
+                        # provider 已放弃重试的限流:按错误收尾,避免静默空回复。
+                        _rl = event.rate_limit
+                        _rl_msg = "模型服务限流(HTTP 429)" + (
+                            f": {_rl.reason}" if _rl is not None and _rl.reason else "")
+                        await self._fire_turn_end(
+                            ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                            thread_store=thread_store, turn_store=turn_store, status="error",
+                        )
+                        yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
+                                           payload={"error": _rl_msg})
+                        stream_error_yielded = True
                         break
                     elif event.kind == "error" and event.error is not None:
                         # Fire turn-end BEFORE yielding so extensions see the
@@ -1024,6 +1164,11 @@ class DefaultHarness(Harness):
                     ts=0.0,
                 )
             )
+
+            # §4.3/§6.2 收尾:预算/episode 硬阈值超限 → 不再开新轮/派发工具,
+            # 带已产出文本落地。
+            if budget_exceeded is not None or episode_exceeded is not None:
+                break
 
             if not iter_tool_calls:
                 break
@@ -1099,7 +1244,24 @@ class DefaultHarness(Harness):
         final_text = "\n".join(cumulative_text)
         if context.state_repository is not None:
             await context.state_repository.runs().update_usage(run_id, usage)
-            await context.state_repository.runs().update_status(run_id, "completed")
+            # §4.1/§4.3 收尾写点:finished_at 支撑任务面板时长;budget_exceeded
+            # 是预算护栏的收尾信号(阶段四 episode 状态机的消费方)。
+            _fields: dict | None = None
+            _rec = await context.state_repository.runs().get(run_id)
+            if _rec is not None:
+                _md = dict(_rec.metadata)
+                _md["finished_at"] = time.time()
+                if budget_exceeded is not None:
+                    _md["budget_exceeded"] = budget_exceeded
+                if episode_exceeded is not None:
+                    _md["episode_exceeded"] = episode_exceeded
+                _fields = {"metadata": _md}
+            await context.state_repository.runs().update_status(
+                run_id, "completed", fields=_fields
+            )
+        if budget_tracker is not None:
+            # §4.3 跨 run 累计:per-session / per-day token 入账。
+            budget_tracker.record(session_id, usage)
         await self._fire_turn_end(
             ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
             thread_store=thread_store, turn_store=turn_store, status="final",
@@ -1125,6 +1287,39 @@ def _assemble_for_model(system_content: str, history: tuple[MemoryMessage, ...])
 
 def _default_permission(session_id: str) -> PermissionContext:
     return PermissionContext(mode="default", session_id=session_id)
+
+
+def _sessions_root_from(context: HarnessContext) -> Path:
+    runs_dir = context.metadata.get("runs_dir")
+    if runs_dir:
+        return Path(runs_dir).parent
+    override = os.environ.get("XANA_HOME")
+    base = Path(override).expanduser() if override else Path.home() / ".xana"
+    return base / "sessions"
+
+
+async def _persist_compact_transcript(
+    context: HarnessContext, session_id: str, messages: tuple
+) -> str | None:
+    """Compact 前把将被压缩的消息区间落盘 ~/.xana/sessions/{sid}/compact-{ts}.jsonl。
+
+    诚信修复:CompactSummary 引用的 transcript 路径必须真实存在且可读回原
+    消息(此前 default.py 虚构 runs/autocompact-*.jsonl,文件并不存在)。
+    """
+    try:
+        target_dir = _sessions_root_from(context) / session_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"compact-{int(time.time() * 1_000_000)}.jsonl"
+        with path.open("w", encoding="utf-8") as fh:
+            for m in messages:
+                fh.write(json.dumps(
+                    {"role": m.role, "content": m.content, "metadata": dict(m.metadata)},
+                    ensure_ascii=False,
+                ) + "\n")
+        return str(path)
+    except Exception:
+        _logger.exception("compact transcript persist failed")
+        return None
 
 
 def _to_anthropic_tool_schema(spec) -> dict:

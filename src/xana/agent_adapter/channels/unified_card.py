@@ -121,15 +121,15 @@ def _format_elapsed(secs: int) -> str:
 
 @dataclass
 class FooterText:
-    """分段脚标。固定顺序拼接,空段跳过:
+    """分段脚标,四种形态(规格 session-and-card-state.md §5.6):
 
-        modelname · 上下文 Nk/Mk · 回答 T · 🟡 后台运行中 · 菜单 <label> <t>
+        fg_running:  🟡 model · 上下文 Nk/Mk · 回答用时 T
+        terminal:    🟢/🔴 model · 上下文 Nk/Mk · 回答用时 T
+        bg_frozen:   🟡 正在后台回答 [· {label} 用时 t]
+        menu:        {label} 用时 t
 
-    - 模型名永远在第一位(空字符串就跳)
-    - 上下文 / 回答 只在非 menu 态出现(bg_frozen 隐藏 ctx)
-    - 🟡 后台运行中 当 state=bg_frozen 时出
-    - 菜单 <label> <t> 当 menu_label 非空时出(永远在最后,解决 compact 与后台
-      竞态:菜单段固定排尾)
+    - model + 上下文 + 回答用时 三件套绑定,缺一不渲染(I9)。
+    - fg_running / terminal 绝不带菜单段;菜单段只出现在 menu 与 bg_frozen(排尾)。
     """
     model: str = ""
     ctx_used: int = 0
@@ -141,18 +141,7 @@ class FooterText:
     cancelled: bool = False           # 用户已取消 → 终态显示 🔴 而非 🟢
 
     def render(self) -> str:
-        """脚标段(固定顺序,空段跳):
-            [model · 上下文 Nk/Mk]   只在 fg/terminal,model+ctx 一整组
-            🟡/🟢 回答用时 T          🟡=进行中 / 🟢=已完成
-            后台运行中                只在 bg_frozen,无小黄点
-            菜单 <label> <t>          永远排最尾(解决 compact+bg 竞态)
-        """
-        """脚标格式(dot 永远在最左):
-            fg_running: 🟡 model · 上下文 Nk/Mk · 回答用时 T [· 菜单 X 用时 t]
-            terminal:   🟢 model · 上下文 Nk/Mk · 回答用时 T [· 菜单 X 用时 t]
-            bg_frozen:  🟡 正在后台回答                        [· 菜单 X 用时 t]
-            menu:       model · 菜单 X 用时 t
-        """
+        """按 state 渲染四种形态之一,见类文档。"""
         parts: list[str] = []
         # 1) menu 卡: {label} 用时 T (无 dot, 无 ctx, 无回答用时)
         if self.state == "menu":

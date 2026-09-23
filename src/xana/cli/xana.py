@@ -4,6 +4,8 @@ Subcommands:
   setup    First-time install: system.json + sync + launchers + PATH.
   sync     Refresh ~/.xana/code/ + ~/.xana/mem/ from the xana source.
   pair     Manage channel user pairing (list/approve/reject/revoke).
+  login    Kimi OAuth device-flow login (registers k3 / kimi-for-coding).
+  logout   Remove stored Kimi credentials.
 
 xanac (chat client) is a separate entry point — this CLI is for machine
 administration, not interactive chat.
@@ -14,6 +16,7 @@ import argparse
 import sys
 from typing import TextIO
 
+from xana.cli.commands import login as login_cmd
 from xana.cli.commands import pair as pair_cmd
 from xana.cli.commands import setup as setup_cmd
 from xana.cli.commands import sync as sync_cmd
@@ -46,6 +49,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pair_cmd.add_arguments(pair_parser)
     pair_parser.set_defaults(func=pair_cmd.run)
+
+    login_parser = subparsers.add_parser(
+        "login", help="kimi OAuth device-flow login (k3 / kimi-for-coding, 1M ctx)"
+    )
+    login_cmd.add_arguments(login_parser)
+    login_parser.set_defaults(func=login_cmd.run)
+
+    logout_parser = subparsers.add_parser(
+        "logout", help="remove stored kimi credentials"
+    )
+    logout_parser.set_defaults(func=login_cmd.run_logout)
 
     return parser
 

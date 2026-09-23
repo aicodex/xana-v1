@@ -79,10 +79,13 @@ class InMemoryRunStore(RunStore):
     async def list_by_session(self, session_id: str) -> tuple[RunRecord, ...]:
         return tuple(r for r in self._store.values() if r.session_id == session_id)
 
-    async def list_all(self) -> tuple[RunRecord, ...]:
-        """Return every record. Not on the RunStore ABC — used by startup_scan
-        to find orphan running/paused records that lack an exit_reason."""
-        return tuple(self._store.values())
+    async def list_all(self, *, status: str | None = None) -> tuple[RunRecord, ...]:
+        """返回全部记录,status 非 None 时按 status 过滤(§4.4 任务面板 +
+        shutdown 遗留扫描;§2.2 已批准上 RunStore ABC)。"""
+        recs = tuple(self._store.values())
+        if status is not None:
+            return tuple(r for r in recs if r.status == status)
+        return recs
 
 
 class InMemoryStateRepository(StateRepository):

@@ -8,12 +8,18 @@ audit trail.
 from __future__ import annotations
 
 import difflib
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
 from xana.tools.builtin._path import resolve_path
+from xana.tools.builtin._reindex import maybe_reindex_markdown
 from xana.tools.contracts import ToolContext, ToolDiff, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
+
+if TYPE_CHECKING:
+    from xana.memory.markdown import MarkdownMemoryTree
 
 
 _SPEC = ToolSpec(
@@ -39,6 +45,21 @@ _SPEC = ToolSpec(
 
 
 class EditTool(Tool):
+    def __init__(
+        self,
+        *,
+        memory_tree: MarkdownMemoryTree | None = None,
+        protected_dir: "Path | tuple[Path, ...] | list[Path] | None" = None,
+    ) -> None:
+        # 语义同 WriteTool:md 增量 reindex + 受保护目录裸写门禁(§6.3 扩多目录)。
+        self._memory_tree = memory_tree
+        if protected_dir is None:
+            self._protected_dirs: tuple[Path, ...] = ()
+        elif isinstance(protected_dir, Path):
+            self._protected_dirs = (protected_dir.resolve(),)
+        else:
+            self._protected_dirs = tuple(Path(d).resolve() for d in protected_dir)
+
     def spec(self) -> ToolSpec:
         return _SPEC
 
@@ -50,6 +71,21 @@ class EditTool(Tool):
             raise ValueError("Edit old_string must differ from new_string")
 
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
+        target = resolve_path(invocation.input["file_path"], context.cwd).resolve()
+        for protected in self._protected_dirs:
+            try:
+                target.relative_to(protected)
+            except ValueError:
+                continue
+            return PermissionResult(
+                decision="deny",
+                reason=(
+                    f"{target} 位于受保护目录,裸 Edit 被拒绝;"
+                    "规则的唯一写入口是 memory_write 工具"
+                    "(action=refine/supersede);"
+                    "Agent 文档的唯一变更路径是 episode 提案→评估→判决闭环(§6.3)。"
+                ),
+            )
         return PermissionResult(decision="allow", reason="file edit allowed")
 
     async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
@@ -104,6 +140,10 @@ class EditTool(Tool):
         )
 
     async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
+        if result.ok and self._memory_tree is not None:
+            await maybe_reindex_markdown(
+                self._memory_tree, invocation.input["file_path"], context.cwd
+            )
         return result
 
     async def render_result(self, result: ToolResult) -> str:

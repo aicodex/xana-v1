@@ -78,6 +78,12 @@ class RunRecord:
     abort_reason: str | None = None
     error: str | None = None
     exit_reason: ExitReason | None = None
+    # §4.2 lineage:spawn 链的父 run(顶级 run 为 None)。
+    parent_run_id: str | None = None
+    # §4.4 任务面板展示名(gateway inflight label 同款,用户输入前 40 字符)。
+    label: str = ""
+    # §4.3 预算护栏:上限字典,如 {"max_tokens": N}。空 dict = 无上限。
+    budget: dict = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
