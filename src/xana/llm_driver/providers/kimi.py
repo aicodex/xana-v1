@@ -36,6 +36,7 @@ Wire shape(同 xana ``ModelEventKind``):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -111,17 +112,18 @@ class KimiClient(ModelClient):
             attempt += 1
             emitted = False
             retry: ModelEvent | None = None
-            async for event in self._stream_once(request, token):
-                err = event.error if event.kind == "error" else None
-                if err is not None and not emitted:
-                    if err.kind == "auth" and err.raw_status == 401 and not refreshed:
-                        retry = event
-                        break
-                    if err.retryable and attempt < _MAX_ATTEMPTS:
-                        retry = event
-                        break
-                emitted = True
-                yield event
+            async with contextlib.aclosing(self._stream_once(request, token)) as events:
+                async for event in events:
+                    err = event.error if event.kind == "error" else None
+                    if err is not None and not emitted:
+                        if err.kind == "auth" and err.raw_status == 401 and not refreshed:
+                            retry = event
+                            break
+                        if err.retryable and attempt < _MAX_ATTEMPTS:
+                            retry = event
+                            break
+                    emitted = True
+                    yield event
             if retry is None:
                 return
             err = retry.error

@@ -5,6 +5,7 @@ boundary/summary/保留消息全部是普通 MemoryMessage,summary 字段不再�
 """
 from __future__ import annotations
 
+import collections.abc
 from typing import Awaitable, Callable, Sequence
 
 from xana.context.message import CompactSummary as _CompactSummary
@@ -101,8 +102,9 @@ async def generate_summary(
                        metadata={"thinking": "disabled"})  # CC: compact 调用关思考
     for _ in range(_COMPACT_RETRIES):
         parts: list[str] = []
+        stream = client.stream(req)
         try:
-            async for event in client.stream(req):
+            async for event in stream:
                 if event.kind == "text_delta":
                     # CC 的 compact 调用 thinking=disabled;provider 暂无请求级开关,
                     # 等价处理:reasoning 通道不进摘要缓冲(否则思考过程混进结果)。
@@ -117,6 +119,9 @@ async def generate_summary(
             raise  # 用户取消 → 不重试,直接穿透给调用方
         except Exception:
             continue  # 传输层异常 = 一次失败重试,与缺 <summary> 同等对待
+        finally:
+            if isinstance(stream, collections.abc.AsyncGenerator):
+                await stream.aclose()
         extracted = _extract_summary("".join(parts))
         if extracted:
             return extracted

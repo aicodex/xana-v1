@@ -20,6 +20,7 @@ for durable log, RunStore (via StateRepository) for run metadata.
 from __future__ import annotations
 
 import asyncio
+import collections.abc
 import contextlib
 import json
 import logging
@@ -1022,8 +1023,10 @@ class DefaultHarness(Harness):
             iter_tool_calls: list[dict[str, Any]] = []
             stream_error_yielded = False
 
+            # break 出循环时显式关闭 provider 流,避免由 GC 在别的上下文里 aclose。
+            model_stream = client.stream(model_request)
             try:
-                async for event in client.stream(model_request):
+                async for event in model_stream:
                     # 用户在 model streaming 中点取消 → 立刻退出生成循环,
                     # 否则要等模型自己 done 才被 outer loop 抓到,体感很慢。
                     if context.abort.aborted:
@@ -1142,6 +1145,9 @@ class DefaultHarness(Harness):
                 yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
                                    payload={"error": str(exc)})
                 return
+            finally:
+                if isinstance(model_stream, collections.abc.AsyncGenerator):
+                    await model_stream.aclose()
 
             if stream_error_yielded:
                 return  # turn-end already fired before the error yield
