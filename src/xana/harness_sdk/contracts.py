@@ -55,14 +55,12 @@ PromptMode = Literal["interactive", "unattended"]
 TimeSignal = Literal["off", "elapsed", "budget"]
 
 _PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
-    # 交互:有人随时响应(飞书/TG/TUI 聊天);官方建议此场景不加无人值守指令
-    "interactive": dict(standing_order=False, answered_as_done=True, explore_first=False,
-                        grounded_progress=True, progress_preamble=True, time_signal="off",
-                        goal_mode=False),
-    # 无人值守:定时任务、自迭代、后台长任务
+    # 交互:照 Claude Code 默认不额外干预(它的"开工前说一句""如实报告"已在基础 system 中)
+    "interactive": dict(standing_order=False, answered_as_done=False, explore_first=False,
+                        grounded_progress=False, time_signal="off", goal_mode=False),
+    # 无人值守(长程):CC 自主运行段 + Anthropic 指南的长期指令、进度核查、时间信号 + 目标模式
     "unattended": dict(standing_order=True, answered_as_done=False, explore_first=False,
-                       grounded_progress=True, progress_preamble=False, time_signal="elapsed",
-                       goal_mode=True),
+                       grounded_progress=True, time_signal="elapsed", goal_mode=True),
 }
 
 
@@ -74,10 +72,9 @@ class PromptProfile:
     """
     mode: PromptMode = "interactive"
     standing_order: bool = False
-    answered_as_done: bool = True
+    answered_as_done: bool = False
     explore_first: bool = False
-    grounded_progress: bool = True
-    progress_preamble: bool = True
+    grounded_progress: bool = False
     time_signal: TimeSignal = "off"
     goal_mode: bool = False
 
