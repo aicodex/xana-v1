@@ -99,6 +99,10 @@ class TurnStopInput:
     status: Literal["final", "error"]
     thread_store: ExtensionData
     turn_store: ExtensionData
+    # 本轮已产出的回答文本(续跑判断用,如目标评估器)
+    final_text: str = ""
+    # 本轮是否已因 stop 续跑而再次运行(同 CC stop_hook_active):为 True 时 hook 应避免再次拦截
+    continuation_active: bool = False
 
 
 @dataclass(frozen=True)

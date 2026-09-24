@@ -338,10 +338,11 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
     tool_blocks: dict[int, dict[str, str]] = {}
     usage_payload: dict[str, Any] | None = None
     tool_calls_finished = False
+    finish_reason: str | None = None
     data_lines: list[str] = []
 
     async def _handle(payload: dict[str, Any]) -> AsyncGenerator[ModelEvent, None]:
-        nonlocal usage_payload, tool_calls_finished
+        nonlocal usage_payload, tool_calls_finished, finish_reason
         if payload.get("usage"):
             usage_payload = payload["usage"]
         for choice in payload.get("choices") or []:
@@ -365,6 +366,8 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
                     block["name"] = fn["name"]
                 if fn.get("arguments"):
                     block["arguments"] += fn["arguments"]
+            if choice.get("finish_reason"):
+                finish_reason = str(choice["finish_reason"])
             if choice.get("finish_reason") == "tool_calls":
                 tool_calls_finished = True
 
@@ -424,4 +427,5 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
             cache_read_tokens=(usage_payload.get("prompt_tokens_details") or {}).get("cached_tokens"),
         ),
     )
-    yield ModelEvent(kind="done")
+    # stop_reason 归一:length = 输出被 max tokens 截断(harness 据此续写)
+    yield ModelEvent(kind="done", payload={"stop_reason": finish_reason or ""})

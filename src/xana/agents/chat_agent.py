@@ -130,6 +130,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             "agent_identity": spec.identity,
             "agent_system_prompt": spec.system_prompt,
             "async_mode": async_mode,
+            "max_turns": spec.max_turns,
         }
         if cfg is not None:
             config_snapshot.update({

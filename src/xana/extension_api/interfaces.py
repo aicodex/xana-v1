@@ -68,12 +68,16 @@ class ToolLifecycleContributor(ABC):
 
 
 class TurnLifecycleContributor(ABC):
-    """Observes turn lifecycle: start, stop (final/error), abort."""
+    """Observes turn lifecycle: start, stop (final/error), abort.
+
+    ``on_turn_stop`` 在 status="final" 时可返回非空字符串作为**续跑理由**(Stop hook):
+    harness 把它作为一条 stop_hook note 追加并让模型继续,连续拦截上限 8 次。
+    返回 None 表示放行。status="error" 时返回值被忽略。"""
 
     async def on_turn_start(self, input: TurnStartInput) -> None:
         return None
 
-    async def on_turn_stop(self, input: TurnStopInput) -> None:
+    async def on_turn_stop(self, input: TurnStopInput) -> str | None:
         return None
 
     async def on_turn_abort(self, input: TurnAbortInput) -> None:

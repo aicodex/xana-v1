@@ -170,7 +170,7 @@ frozen dataclass,放 `agents/contracts.py`:
 ### 6.1 stop 续跑点(三家共有)
 
 - 扩展 `TurnLifecycleContributor.on_turn_stop`:返回值由 `None` 改为 `str | None`,非空即续跑理由(对应 CC/Codex/Kimi 的 Stop hook)。
-- 理由作为一条 user 消息追加(不是 note,它是本轮的续跑指令),然后再调用模型。
+- 理由以 `stop_hook` note 追加("Stop hook 反馈:{理由}"),然后再调用模型。用 note 而非普通 user 消息,是为了标明它不是用户输入(对应 CC 的 isMeta);只有思考 / 截断续写用 `continuation` note。hook 的输入带 `final_text` 与 `continuation_active`(对应 CC stop_hook_active)。(阶段 B 实施时修订)
 - **连续阻断上限 8 次**(CC 2.1.281);Kimi 为每回合 1 次。取 CC 值,达上限结束并标注 `continuation_exhausted`。
 - 这是对 Extension API 契约的修改,实施前需确认(§11)。
 

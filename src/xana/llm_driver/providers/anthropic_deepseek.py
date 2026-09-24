@@ -333,6 +333,7 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
     event_type: str | None = None
     data_lines: list[str] = []
 
+    stop_reason: str | None = None
     async for raw_line in resp.aiter_lines():
         if raw_line == "":
             if event_type is not None and data_lines:
@@ -346,6 +347,7 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
                         _merge_usage(usage_acc, (payload.get("message") or {}).get("usage"))
                     elif event_type == "message_delta":
                         _merge_usage(usage_acc, payload.get("usage"))
+                        stop_reason = (payload.get("delta") or {}).get("stop_reason") or stop_reason
             event_type, data_lines = None, []
             continue
         if raw_line.startswith(":"):
@@ -392,7 +394,9 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
             cache_write_tokens=usage_acc.get("cache_creation_input_tokens"),
         ),
     )
-    yield ModelEvent(kind="done")
+    # stop_reason 归一:max_tokens → length(与 OpenAI 方言一致)
+    yield ModelEvent(kind="done", payload={
+        "stop_reason": "length" if stop_reason == "max_tokens" else (stop_reason or "")})
 
 
 def _decode_sse_data(data_lines: list[str]) -> dict[str, Any] | None:

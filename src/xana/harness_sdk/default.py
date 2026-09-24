@@ -26,7 +26,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterator
 
@@ -51,10 +51,14 @@ from xana.harness_sdk.compact import (
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest, ProgressEvent
 from xana.harness_sdk.interfaces import Harness
 from xana.harness_sdk.context_notes import (
+    CONTINUE_THINKING_ONLY,
+    CONTINUE_TRUNCATED,
     changed_note,
+    continuation_note,
     deferred_tools_note,
     memory_recall_note,
     model_switch_text,
+    stop_hook_text,
     todo_reminder_note,
 )
 from xana.harness_sdk.system_prompt import build_system_prompt, env_section
@@ -74,7 +78,19 @@ _logger = logging.getLogger(__name__)
 _DEFAULT_PROVIDER = "fake"
 _ANON_RUN_ID = "run-anon"
 _ANON_CALL_ID = "call-anon"
-_MAX_TURNS = 25  # cc's default; yuxu uses max_iterations=200 but caps differently per agent
+_MAX_TURNS = 25  # 缺省工具轮上限;AgentSpec.max_turns(config_snapshot["max_turns"])可覆盖
+# 续跑上限(照 Claude Code 2.1.281):只有思考推 1 次、截断续写 3 次、stop hook 连续拦截 8 次
+_MAX_TRUNCATION_CONTINUES = 3
+_MAX_STOP_HOOK_BLOCKS = 8
+
+
+@dataclass
+class _StopState:
+    """一次 run 内的续跑计数。"""
+    thinking_nudged: bool = False
+    truncations: int = 0
+    hook_blocks: int = 0
+    stop_hooks_fired: bool = False
 
 # P5.2 — synthetic warning 中文文案,注入到 tool_result.content,告诉模型勿自动重试。
 _SYNTHETIC_WARNING_TEXT_KILLED = (
@@ -172,6 +188,56 @@ class DefaultHarness(Harness):
             await coro
         except Exception:
             _logger.exception("extension hook %s failed", hook_name)
+
+    async def _stop_decision(
+        self,
+        ext: "ExtensionRegistry | None",
+        st: _StopState,
+        *,
+        session_id: str,
+        agent_name: str,
+        run_id: str,
+        thread_store: ExtensionData | None,
+        turn_store: ExtensionData | None,
+        turn_text: str,
+        had_thinking: bool,
+        stop_reason: str,
+        final_text: str,
+    ) -> tuple[str, str] | None:
+        """模型以纯文本结束本轮时的 Stop 决策:返回 (note kind, 续跑文本) 或 None=结束。
+
+        顺序照 Claude Code 2.1.281:只有思考无可见输出 → 推 1 次;输出被截断 → 续写
+        ≤3 次;Stop hook(``on_turn_stop`` 返回理由)→ 连续拦截 ≤8 次。"""
+        if not turn_text.strip() and had_thinking and not st.thinking_nudged:
+            st.thinking_nudged = True
+            return "continuation", CONTINUE_THINKING_ONLY
+        if stop_reason == "length" and st.truncations < _MAX_TRUNCATION_CONTINUES:
+            st.truncations += 1
+            return "continuation", CONTINUE_TRUNCATED
+        if ext is None or not ext.turn_lifecycle:
+            return None
+        assert thread_store is not None and turn_store is not None
+        reason: str | None = None
+        for c in ext.turn_lifecycle:
+            try:
+                got = await c.on_turn_stop(TurnStopInput(
+                    session_id=session_id, agent_name=agent_name, run_id=run_id,
+                    status="final", thread_store=thread_store, turn_store=turn_store,
+                    final_text=final_text, continuation_active=st.hook_blocks > 0,
+                ))
+            except Exception:
+                _logger.exception("extension hook on_turn_stop failed")
+                continue
+            if got and reason is None:
+                reason = got
+        if reason is not None and st.hook_blocks < _MAX_STOP_HOOK_BLOCKS:
+            st.hook_blocks += 1
+            return "stop_hook", stop_hook_text(reason)
+        if reason is not None:
+            _logger.warning("stop hook 连续 %d 次阻止本轮结束,已覆盖并结束本轮", st.hook_blocks)
+        # 本轮就此结束,on_turn_stop 已以 final 调用过,收尾时不再重复触发
+        st.stop_hooks_fired = True
+        return None
 
     async def _fire_turn_end(
         self,
@@ -859,7 +925,9 @@ class DefaultHarness(Harness):
                 },
             ))
 
-        for turn_index in range(_MAX_TURNS):
+        max_turns = int(context.config_snapshot.get("max_turns") or _MAX_TURNS)
+        stop_state = _StopState()
+        for turn_index in range(max_turns):
             if context.abort.aborted:
                 await self._fire_turn_end(
                     ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
@@ -1068,6 +1136,7 @@ class DefaultHarness(Harness):
             iter_thinking: list[str] = []
             iter_tool_calls: list[dict[str, Any]] = []
             stream_error_yielded = False
+            stop_reason = ""
 
             # break 出循环时显式关闭 provider 流,避免由 GC 在别的上下文里 aclose。
             model_stream = client.stream(model_request)
@@ -1158,6 +1227,7 @@ class DefaultHarness(Harness):
                                 },
                             ))
                     elif event.kind == "done":
+                        stop_reason = str(event.payload.get("stop_reason") or "")
                         break
                     elif event.kind == "rate_limited":
                         # provider 已放弃重试的限流:按错误收尾,避免静默空回复。
@@ -1223,7 +1293,21 @@ class DefaultHarness(Harness):
                 break
 
             if not iter_tool_calls:
-                break
+                decision = await self._stop_decision(
+                    ext, stop_state, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                    thread_store=thread_store, turn_store=turn_store, turn_text=turn_text,
+                    had_thinking=bool(iter_thinking), stop_reason=stop_reason,
+                    final_text="\n".join(cumulative_text),
+                )
+                if decision is None:
+                    break
+                note_kind, note_text = decision
+                await self._append_note(context, session_id, agent_name, run_id,
+                                        continuation_note(note_kind, note_text),
+                                        f"{turn_index}:continue")
+                yield HarnessEvent(kind="continuation", session_id=session_id, run_id=run_id,
+                                   payload={"reason": note_kind, "text": note_text})
+                continue
 
             for call_idx, tc in enumerate(iter_tool_calls):
                 yield HarnessEvent(
@@ -1289,7 +1373,7 @@ class DefaultHarness(Harness):
                 kind="error",
                 session_id=session_id,
                 run_id=run_id,
-                payload={"error": f"max_turns ({_MAX_TURNS}) exceeded — tool loop did not converge"},
+                payload={"error": f"max_turns ({max_turns}) exceeded — tool loop did not converge"},
             )
             return
 
@@ -1314,10 +1398,11 @@ class DefaultHarness(Harness):
         if budget_tracker is not None:
             # §4.3 跨 run 累计:per-session / per-day token 入账。
             budget_tracker.record(session_id, usage)
-        await self._fire_turn_end(
-            ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
-            thread_store=thread_store, turn_store=turn_store, status="final",
-        )
+        if not stop_state.stop_hooks_fired:
+            await self._fire_turn_end(
+                ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                thread_store=thread_store, turn_store=turn_store, status="final",
+            )
         yield HarnessEvent(
             kind="final",
             session_id=session_id,
