@@ -48,7 +48,19 @@ from xana.harness_sdk.compact import (
     BLOCKING_HEADROOM, build_post_compact_context, estimate_tokens,
     generate_summary, messages_since_boundary, revealed_tools_from_messages,
 )
-from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest, ProgressEvent
+from xana.harness_sdk.contracts import (
+    HarnessContext,
+    HarnessEvent,
+    HarnessRequest,
+    ProgressEvent,
+    PromptProfile,
+)
+from xana.harness_sdk.goal import (
+    GOAL_ACTIVATED,
+    REPORT_GOAL_TOOL,
+    evaluate_goal,
+    goal_continue_text,
+)
 from xana.harness_sdk.interfaces import Harness
 from xana.harness_sdk.context_notes import (
     CONTINUE_THINKING_ONLY,
@@ -61,9 +73,10 @@ from xana.harness_sdk.context_notes import (
     stop_hook_text,
     todo_reminder_note,
 )
-from xana.harness_sdk.system_prompt import build_system_prompt, env_section
+from xana.harness_sdk.system_prompt import build_system_prompt, env_section, profile_sections
 from xana.harness_sdk.usage import DefaultUsageAccumulator
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
+from xana.llm_driver.interfaces import ModelClient
 from xana.memory.contracts import ActiveContext, HistoryRow, MemoryMessage, Placeholder, ReplayResult
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror
 from xana.policy.contracts import PermissionContext, PermissionResult
@@ -91,6 +104,9 @@ class _StopState:
     truncations: int = 0
     hook_blocks: int = 0
     stop_hooks_fired: bool = False
+    # 目标模式:report_goal 声明的终态 / 最终判定(achieved / impossible / blocked / failed / unevaluated)
+    goal_report: tuple[str, str] | None = None
+    goal_status: str = ""
 
 # P5.2 — synthetic warning 中文文案,注入到 tool_result.content,告诉模型勿自动重试。
 _SYNTHETIC_WARNING_TEXT_KILLED = (
@@ -133,6 +149,7 @@ class DefaultHarness(Harness):
                 override=context.config_snapshot.get("agent_system_prompt") or None,
                 env=env_section(cwd=context.cwd or None, model=context.model),
                 extension_sections=extension_system_text,
+                profile_tail=profile_sections(_profile(context)),
             )
             self._session_systems[(session_id, agent_name)] = (context.model, text)
             return text, []
@@ -203,6 +220,10 @@ class DefaultHarness(Harness):
         had_thinking: bool,
         stop_reason: str,
         final_text: str,
+        goal_condition: str = "",
+        goal_client: ModelClient | None = None,
+        provider: str = "",
+        context: HarnessContext | None = None,
     ) -> tuple[str, str] | None:
         """模型以纯文本结束本轮时的 Stop 决策:返回 (note kind, 续跑文本) 或 None=结束。
 
@@ -214,11 +235,11 @@ class DefaultHarness(Harness):
         if stop_reason == "length" and st.truncations < _MAX_TRUNCATION_CONTINUES:
             st.truncations += 1
             return "continuation", CONTINUE_TRUNCATED
-        if ext is None or not ext.turn_lifecycle:
-            return None
-        assert thread_store is not None and turn_store is not None
         reason: str | None = None
-        for c in ext.turn_lifecycle:
+        hooks = ext.turn_lifecycle if ext is not None else ()
+        if hooks:
+            assert thread_store is not None and turn_store is not None
+        for c in hooks:
             try:
                 got = await c.on_turn_stop(TurnStopInput(
                     session_id=session_id, agent_name=agent_name, run_id=run_id,
@@ -235,9 +256,44 @@ class DefaultHarness(Harness):
             return "stop_hook", stop_hook_text(reason)
         if reason is not None:
             _logger.warning("stop hook 连续 %d 次阻止本轮结束,已覆盖并结束本轮", st.hook_blocks)
+        elif goal_condition:
+            goal = await self._goal_decision(st, goal_condition, goal_client, provider, context)
+            if goal is not None:
+                return goal
         # 本轮就此结束,on_turn_stop 已以 final 调用过,收尾时不再重复触发
-        st.stop_hooks_fired = True
+        st.stop_hooks_fired = bool(hooks)
         return None
+
+    async def _goal_decision(
+        self, st: _StopState, condition: str, client: ModelClient | None, provider: str,
+        context: HarnessContext | None,
+    ) -> tuple[str, str] | None:
+        """目标模式(CC /goal):独立评估器判断条件;与 stop hook 共用连续拦截上限。"""
+        if st.goal_report is not None and st.goal_report[0] in ("blocked", "failed"):
+            st.goal_status = st.goal_report[0]
+            return None
+        if st.hook_blocks >= _MAX_STOP_HOOK_BLOCKS:
+            st.goal_status = "unevaluated"
+            _logger.warning("目标模式连续 %d 次未达成,已结束本轮等人查看", st.hook_blocks)
+            return None
+        assert client is not None and context is not None and context.active_context_store is not None
+        snap = await context.active_context_store.get(context.session_id, context.agent_name)
+        try:
+            verdict = await evaluate_goal(
+                client, provider=provider, model=context.model, condition=condition,
+                history=snap.messages if snap is not None else ())
+        except Exception:
+            _logger.exception("goal evaluator failed")
+            st.goal_status = "unevaluated"
+            return None
+        if verdict.ok:
+            st.goal_status = "achieved"
+            return None
+        if verdict.impossible:
+            st.goal_status = "impossible"
+            return None
+        st.hook_blocks += 1
+        return "goal", goal_continue_text(verdict.reason)
 
     async def _fire_turn_end(
         self,
@@ -843,6 +899,15 @@ class DefaultHarness(Harness):
             "turn_input", "\n\n".join(p for p in turn_input_parts if p), _hist)
         if turn_input_note is not None:
             pending_notes.append(turn_input_note)
+        profile = _profile(context)
+        goal_condition = ""
+        if profile.goal_mode:
+            goal_condition = str(request.metadata.get("goal") or request.user_input)
+            goal_note = changed_note(
+                "goal", GOAL_ACTIVATED.format(condition=goal_condition), _hist)
+            if goal_note is not None:
+                pending_notes.append(goal_note)
+        run_started = time.monotonic()
         for n_idx, note in enumerate(pending_notes):
             await self._append_note(context, session_id, agent_name, run_id,
                                     note, f"pre:{n_idx}")
@@ -1070,6 +1135,9 @@ class DefaultHarness(Harness):
             # ---- per-turn tools_schema + system prompt(deferred 揭示后下轮生效)----
             revealed = _revealed_tools(history_msgs)
             schemas, deferred_names = _split_tool_schemas(specs, revealed)
+            if not profile.goal_mode:  # report_goal 只在目标模式会话中出现
+                schemas = [sc for sc in schemas if sc["name"] != REPORT_GOAL_TOOL]
+                deferred_names = [d for d in deferred_names if d[0] != REPORT_GOAL_TOOL]
             if ext_tools:
                 # extension 工具不参与 defer:永远全量 schema,且覆盖同名内置工具
                 ext_tool_names = set(ext_tools)
@@ -1298,6 +1366,8 @@ class DefaultHarness(Harness):
                     thread_store=thread_store, turn_store=turn_store, turn_text=turn_text,
                     had_thinking=bool(iter_thinking), stop_reason=stop_reason,
                     final_text="\n".join(cumulative_text),
+                    goal_condition=goal_condition, goal_client=client, provider=provider,
+                    context=context,
                 )
                 if decision is None:
                     break
@@ -1335,7 +1405,14 @@ class DefaultHarness(Harness):
                 }
                 if result.metadata.get("revealed_tools"):
                     tool_meta["revealed_tools"] = list(result.metadata["revealed_tools"])
-                tool_msg = MemoryMessage(role="tool", content=rendered, metadata=tool_meta)
+                if result.metadata.get("goal_status"):
+                    stop_state.goal_report = (str(result.metadata["goal_status"]),
+                                              str(result.metadata.get("goal_reason", "")))
+                model_content = rendered
+                if profile.time_signal != "off":
+                    # 时间软信号(Anthropic 指南):写进工具结果、保留在历史中,不改 system
+                    model_content += f"\n\n已用 {int(time.monotonic() - run_started)} 秒"
+                tool_msg = MemoryMessage(role="tool", content=model_content, metadata=tool_meta)
                 await context.active_context_store.append_message(session_id, agent_name, tool_msg)
                 await context.history_mirror.append(
                     HistoryRow(
@@ -1407,9 +1484,16 @@ class DefaultHarness(Harness):
             kind="final",
             session_id=session_id,
             run_id=run_id,
-            payload={"text": final_text},
+            payload={"text": final_text,
+                     **({"goal_status": stop_state.goal_status} if stop_state.goal_status else {})},
             usage=usage,
         )
+
+
+def _profile(context: HarnessContext) -> PromptProfile:
+    """会话的 PromptProfile(ChatAgent 在会话首次使用时固化进 config_snapshot)。"""
+    raw = context.config_snapshot.get("prompt_profile")
+    return PromptProfile.from_dict(raw) if raw else PromptProfile()
 
 
 def _assemble_for_model(system_content: str, history: tuple[MemoryMessage, ...]) -> tuple[ModelMessage, ...]:

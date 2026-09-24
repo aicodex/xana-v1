@@ -11,6 +11,8 @@ import os
 import platform
 from pathlib import Path
 
+from xana.harness_sdk.contracts import PromptProfile
+
 INTRO = """\
 你是 xana——一个交互式编码助手，帮助用户完成软件工程任务。使用下方说明和可用工具来协助用户。
 
@@ -120,6 +122,7 @@ def build_system_prompt(
     override: str | None = None,
     env: str = "",
     extension_sections: str = "",
+    profile_tail: str = "",
 ) -> str:
     """13 段拼装(PROMPT_ASSEMBLY_ORDER.md)。override 非空 → 跳过全部静态段。
 
@@ -136,4 +139,47 @@ def build_system_prompt(
     parts += [env, tools_section(), extension_sections]
     if not override:
         parts += list(STATIC_TAIL)
+    parts.append(profile_tail)  # PromptProfile 开关文本固定在最末
     return "\n\n".join(p for p in parts if p)
+
+
+# ---------------------------------------------------------------------------
+# PromptProfile 开关文本(turn-control-design §4)。放在 system 末尾,顺序固定。
+# 来源:Anthropic 官方指南与 Claude Code 2.1.281(均为中文版),见 docs/prompt_guides/。
+# ---------------------------------------------------------------------------
+
+GROUNDED_PROGRESS = (
+    "汇报进度前,把每条说法对照本会话中的某个工具结果核实。只报告你能指出证据的工作;"
+    "未验证的明确说未验证。如实报告:测试失败就附输出说失败,跳过了就说跳过,"
+    "做完并验证过的就直接说,不要含糊其辞。"
+)
+PROGRESS_PREAMBLE = "第一次调用工具之前,先用一句话说明打算做什么;结束时给一个简短的回顾。"
+EXPLORE_FIRST = (
+    "在采取任何行动之前,先通过工具调用广泛地查看:列出并打开可能与这个任务相关的日志、运行记录、"
+    "记忆树中的规则和项目文件,包括任务中没有明确提到的,并利用你找到的信息。"
+)
+ANSWERED_AS_DONE = '回答过的问题，就把答案当作已完成。在之后的回合里，把思考集中在用户现在问的问题上，除非用户问到之前的回答或者指出了其中的问题，否则不要重新检查之前的回答。'
+STANDING_ORDER = '这是来自用户（也就是你为之工作的人）的一条长期有效的指令，内容是关于你如何结束自己的回合。不包含工具调用的消息会结束你的回合，工作会停在那里，直到有人让你继续。在用户要求的工作还没有完成时，用户见过你用以下四种方式结束回合，这四种都不是用户想要的。一：写一段很长的总结，说明已经做了什么，最后宣布下一步，却没有工具调用，于是下一步始终没有开始。二：提出「除非用户另有想法，否则我将继续做某事」，然后停下来等待一个用户本来就不会给的回答。三：列出一系列需要用户做的决定，而按你自己的判断，其中没有一项会阻碍其余的工作。四：因为这一回合已经很长，或者完成了一个阶段，就认为这是汇报的好时机。欢迎你给出状态说明，也欢迎你对待定的事项提出建议，但请把它们放在与下一次工具调用相同的消息里，然后继续做不依赖用户回答的工作。如果你发现自己在请用户给你调整方向，或者提出要等一等，就删掉这些内容，去做下一件事。用户希望你停下的情况是：没有用户就无法推进，或者阻碍你的东西是被有意保护起来、不允许你接触的。这一条不影响对高风险或破坏性操作进行确认的要求。'
+AUTONOMOUS_SECTION = (
+    "结束本轮前检查最后一段;如果是计划、分析、问题、下一步清单或还没兑现的承诺,现在就用工具去做。"
+)
+ELAPSED_ONLY_NOTE = "时间在这里很重要:不要花费可以避免的时间,越早得到正确的结果越好。"
+
+
+def profile_sections(profile: PromptProfile) -> str:
+    """按 PromptProfile 拼 system 尾段。顺序:核查 → 前言 → 广泛查看 → 已答视为完成 → 无人值守。"""
+    parts: list[str] = []
+    if profile.grounded_progress:
+        parts.append(GROUNDED_PROGRESS)
+    if profile.progress_preamble:
+        parts.append(PROGRESS_PREAMBLE)
+    if profile.explore_first:
+        parts.append(EXPLORE_FIRST)
+    if profile.time_signal == "elapsed":
+        parts.append(ELAPSED_ONLY_NOTE)
+    if profile.answered_as_done:
+        parts.append(ANSWERED_AS_DONE)
+    if profile.standing_order:
+        parts.append(AUTONOMOUS_SECTION)
+        parts.append(STANDING_ORDER)
+    return "\n\n".join(parts)

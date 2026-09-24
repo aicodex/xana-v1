@@ -183,7 +183,7 @@ frozen dataclass,放 `agents/contracts.py`:
 
 ### 6.3 目标模式(CC 2.1.281 /goal + Kimi Code goal)
 
-- 实现为一个内置 stop contributor(走 §6.1,不另开通路)。
+- 实现在 harness Stop 决策内(`DefaultHarness._goal_decision` + `harness_sdk/goal.py`),位于 stop hook 之后,与 stop hook 共用连续拦截上限 8。不做成 extension contributor:评估器需要模型客户端与会话 profile,做成 contributor 只能靠隐式注入(违反 AGENTS.md 规则 7)。(阶段 C 实施时修订)
 - 目标条件在会话开始时给定(无人值守 run 默认用任务文本)。注入目标说明(CC 译文,按 xana 改写):
   > 目标模式已开启,条件为"{条件}"。简短确认目标,然后立刻开始(或继续)朝它推进。把条件本身当作指令,不要停下来问该做什么。条件成立之前,每轮结束都会被拦下继续。
 - 每轮正常结束时由**独立评估器**(小模型一次调用,只看目标条件与最近输出)判断是否满足;不满足则以评估器给出的理由续跑,满足则结束。
@@ -231,7 +231,7 @@ frozen dataclass,放 `agents/contracts.py`:
 | **B Stop 决策** | 决策点;`on_turn_stop` 续跑(每回合一次);max_turns 读 AgentSpec;continuation 事件 | 单测覆盖各分支与上限 |
 | **C 提示词开关 + 目标模式** | PromptProfile;system 尾段;`report_goal` 与 goal 续跑 | 单测;无人值守 live 脚本多步任务跑完并报告终态 |
 | **D 进度** | progress_update;无进度提醒;卡片显示(先改规格) | 单测 + driver_scenarios |
-| **E 预算信号** | 时间行;token 阈值提醒(随 P3) | 单测;token 信号 A/B |
+| **E 预算信号** | 时间预算"已用 N 秒 / M 秒";token 阈值提醒(随 P3)。("已用 N 秒"已随阶段 C 落地,因 unattended 默认 time_signal=elapsed) | 单测;token 信号 A/B |
 | (可选)todo 续跑 | §6.2 内置 stop contributor + TodoStatus 终态 | A/B 后决定默认值 |
 | (P2) | 后台工作等待 + background_result | 随 Task 工具验收 |
 

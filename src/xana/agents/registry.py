@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+from xana.harness_sdk.contracts import PromptProfile
 from xana.agents.contracts import AgentSpec
 from xana.agents.interfaces import Agent, AgentRegistry
 from xana.component.contracts import ComponentSource, ComponentSpec
@@ -37,6 +38,14 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path) -> Ag
         if key in md:
             component_metadata[key] = md[key]
     identity = f"# {manifest.name}\n\n目标:{manifest.description}\n\n{body}".strip()
+    prompt_profile = None
+    if "prompt_profile" in md:
+        raw = md["prompt_profile"]
+        try:
+            prompt_profile = PromptProfile.from_dict(raw if isinstance(raw, dict) else {"mode": raw})
+        except (TypeError, ValueError) as exc:
+            raise SkillManifestError(path=path, kind="agent", field="prompt_profile",
+                                     reason=str(exc)) from exc
     return AgentSpec(
         component=ComponentSpec(
             kind="agent",
@@ -50,6 +59,7 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path) -> Ag
         allowed_tools=manifest.allowed_tools,
         allowed_skills=tuple(md.get("skills", ())),
         identity=identity,
+        prompt_profile=prompt_profile,
     )
 
 

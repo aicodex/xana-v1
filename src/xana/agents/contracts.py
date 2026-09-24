@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from xana.component.contracts import ComponentSpec
-from xana.harness_sdk.contracts import HarnessEvent
+from xana.harness_sdk.contracts import HarnessEvent, PromptProfile
 from xana.policy.contracts import SandboxPolicySpec
 
 AgentEventKind = Literal["draft", "tool", "final", "control_result", "error", "cancelled"]
@@ -39,6 +39,8 @@ class AgentSpec:
     system_prompt: str | None = None
     # Agent 身份,追加在 INTRO 之后(仅 system_prompt=None 时生效)
     identity: str = ""
+    # 会话级提示词开关;None = 交互模式默认值。会话创建时固化进 SessionConfig
+    prompt_profile: PromptProfile | None = None
 
 
 @dataclass(frozen=True)

@@ -89,7 +89,7 @@ class MarkdownDocParser(SkillManifestParser):
 
     - kind=skill(默认):必填 name/description;可选 when_to_use/allowed_tools。
     - kind=agent:必填 name/goal/tools;goal 映射到 manifest.description,
-      tools 映射到 allowed_tools;skills/budget/stop_rules/output_contract
+      tools 映射到 allowed_tools;skills/budget/stop_rules/output_contract/prompt_profile
       放入 metadata,由 AgentRegistry 消费。
     """
 
@@ -134,6 +134,15 @@ class MarkdownDocParser(SkillManifestParser):
                         reason="output_contract 必须是字符串",
                     )
                 metadata["output_contract"] = output_contract
+            prompt_profile = fm.get("prompt_profile")
+            if prompt_profile is not None:
+                if not isinstance(prompt_profile, (str, dict)):
+                    raise SkillManifestError(
+                        path=path, kind=kind, field="prompt_profile",
+                        reason="prompt_profile 必须是模式名或 mapping",
+                    )
+                metadata["prompt_profile"] = (
+                    dict(prompt_profile) if isinstance(prompt_profile, dict) else prompt_profile)
             return SkillManifest(
                 name=name,
                 description=goal,

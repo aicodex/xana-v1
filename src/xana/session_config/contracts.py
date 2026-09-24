@@ -21,4 +21,6 @@ class SessionConfig:
     search_provider: str | None = None
     project_root: str | None = None
     async_mode: bool = True  # P3 完成,默认 async
+    # 会话创建时由 AgentSpec.prompt_profile 解析后写入(PromptProfile.to_dict),之后只读
+    prompt_profile: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

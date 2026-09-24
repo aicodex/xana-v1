@@ -1,6 +1,7 @@
 """ChatAgent: default agent that calls DefaultHarness with mapped request/context."""
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agents.contracts import (
@@ -16,7 +17,13 @@ from xana.agents.interfaces import (
     AgentRequestMapper,
 )
 from xana.component.contracts import ComponentSource, ComponentSpec
-from xana.harness_sdk.contracts import AbortSignal, HarnessContext, HarnessEvent, HarnessRequest
+from xana.harness_sdk.contracts import (
+    AbortSignal,
+    HarnessContext,
+    HarnessEvent,
+    HarnessRequest,
+    PromptProfile,
+)
 from xana.harness_sdk.interfaces import Harness, ProgressSink
 from xana.llm_driver.interfaces import ModelRegistry
 from xana.memory.interfaces import (
@@ -113,6 +120,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         effort: str | int | None = None
         async_mode = True  # P3 完成,默认 async
         cfg = None
+        profile = spec.prompt_profile or PromptProfile()
         if self.session_config_store is not None:
             cfg = await self.session_config_store.get(request.session_id)
             if cfg.model:
@@ -120,6 +128,12 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             if cfg.effort is not None:
                 effort = cfg.effort
             async_mode = cfg.async_mode
+            # PromptProfile 在会话首次使用时固化,之后改 AGENT.md 不影响已有会话(system 会话内不变)
+            if cfg.prompt_profile is None:
+                cfg = replace(cfg, prompt_profile=profile.to_dict())
+                await self.session_config_store.save(cfg)
+            else:
+                profile = PromptProfile.from_dict(cfg.prompt_profile)
         ctx_win, force_at = self.context_window, self.force_compact
         if self.model_thresholds and model in self.model_thresholds:
             ctx_win, force_at = self.model_thresholds[model]
@@ -131,6 +145,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             "agent_system_prompt": spec.system_prompt,
             "async_mode": async_mode,
             "max_turns": spec.max_turns,
+            "prompt_profile": profile.to_dict(),
         }
         if cfg is not None:
             config_snapshot.update({

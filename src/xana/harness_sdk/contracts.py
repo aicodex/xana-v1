@@ -4,7 +4,7 @@ The harness owns turn lifecycle and event stream shape. Run state is owned by st
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, TYPE_CHECKING
 
 from xana.policy.contracts import PermissionContext
@@ -49,6 +49,54 @@ class ProgressEvent:
     run_id: str | None
     message: str
     payload: dict[str, Any] = field(default_factory=dict)
+
+
+PromptMode = Literal["interactive", "unattended"]
+TimeSignal = Literal["off", "elapsed", "budget"]
+
+_PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
+    # 交互:有人随时响应(飞书/TG/TUI 聊天);官方建议此场景不加无人值守指令
+    "interactive": dict(standing_order=False, answered_as_done=True, explore_first=False,
+                        grounded_progress=True, progress_preamble=True, time_signal="off",
+                        goal_mode=False),
+    # 无人值守:定时任务、自迭代、后台长任务
+    "unattended": dict(standing_order=True, answered_as_done=False, explore_first=False,
+                       grounded_progress=True, progress_preamble=False, time_signal="elapsed",
+                       goal_mode=True),
+}
+
+
+@dataclass(frozen=True)
+class PromptProfile:
+    """会话级提示词开关(turn-control-design §4)。会话创建时固定,之后只读。
+
+    开关文本在 system 末尾按固定顺序拼接,见 ``system_prompt.profile_sections``。
+    """
+    mode: PromptMode = "interactive"
+    standing_order: bool = False
+    answered_as_done: bool = True
+    explore_first: bool = False
+    grounded_progress: bool = True
+    progress_preamble: bool = True
+    time_signal: TimeSignal = "off"
+    goal_mode: bool = False
+
+    @classmethod
+    def for_mode(cls, mode: PromptMode = "interactive", **overrides: Any) -> "PromptProfile":
+        if mode not in _PROFILE_DEFAULTS:
+            raise ValueError(f"未知 prompt_profile.mode {mode!r}")
+        unknown = set(overrides) - set(_PROFILE_DEFAULTS[mode])
+        if unknown:
+            raise ValueError(f"未知 prompt_profile 字段 {sorted(unknown)}")
+        return cls(mode=mode, **{**_PROFILE_DEFAULTS[mode], **overrides})
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PromptProfile":
+        data = dict(data)
+        return cls.for_mode(data.pop("mode", "interactive"), **data)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)

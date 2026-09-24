@@ -93,6 +93,7 @@ from xana.tools.builtin.skill_load import SkillLoadTool
 from xana.tools.builtin.todo_write import TodoWriteTool
 from xana.tools.builtin.tool_search import ToolSearchTool
 from xana.tools.builtin.web_fetch import WebFetchTool
+from xana.tools.builtin.report_goal import ReportGoalTool
 from xana.tools.builtin.web_search import WebSearchTool
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import ToolRegistry
@@ -240,6 +241,7 @@ async def boot(
     await tools.register(GrepTool())
     await tools.register(BashTool())
     await tools.register(ToolSearchTool(tool_registry=tools))
+    await tools.register(ReportGoalTool())  # 仅目标模式会话可见(harness 按 PromptProfile 过滤)
     scheduler = FileSchedulerService(
         path=_xana_home() / "scheduled_tasks.json", session_id="default")
     await tools.register(CronCreateTool(scheduler))
