@@ -31,8 +31,8 @@ status: active
 - `memory_scope: MemoryScope | None` — `user / project / agent / session` 之一。
 - `isolation: IsolationMode`（`none / worktree / process / remote`）、`background: bool` — 声明执行形态，v1 未执行。
 - `parent_agent: str | None` — 父 agent 名，供 subagent 委派链使用（见 [agents_subagents](agents_subagents.md)）。
-- `max_turns: int | None` — turn 上限，v1 未执行。
-- `system_prompt: str | None` — `None` → 完整默认 13 段系统提示；非空 → 替换全部静态段（`build_system_prompt(override=...)`），动态段（环境/工具/技能/记忆）照常注入。
+- `max_turns: int | None` — 单次 run 的工具轮上限，经 `config_snapshot["max_turns"]` 传入 harness；`None` 用缺省 25。
+- `system_prompt: str | None` — `None` → 完整默认 13 段系统提示；非空 → 替换全部静态段（`build_system_prompt(override=...)`），环境段照常保留；记忆、技能等每轮变化的上下文以 ContextNote 追加进历史（见 [harness_prompt_assembly](harness_prompt_assembly.md)）。
 - `identity: str` — Agent 身份段，追加在 INTRO 之后、SYSTEM 之前；仅 `system_prompt=None` 时生效。
 
 ## AGENT.md 文档 → AgentSpec 映射（计划 §5.1）
