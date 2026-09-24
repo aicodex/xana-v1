@@ -40,6 +40,9 @@ class UserMessage(Message):
 class AssistantMessage(Message):
     text: str
     tool_calls: tuple["_ToolCallInternal", ...] = ()
+    # 模型本轮的思考文本。DeepSeek / Kimi 要求原样回传(保留思考),
+    # 必须随历史穿过 SDK;Anthropic thinking 需签名,to_anthropic 不发。
+    reasoning: str = ""
 
     def to_anthropic(self) -> list[dict]:
         blocks: list[dict] = []
@@ -58,6 +61,8 @@ class AssistantMessage(Message):
 
     def to_openai(self) -> list[dict]:
         msg: dict = {"role": "assistant", "content": self.text}
+        if self.reasoning:
+            msg["reasoning_content"] = self.reasoning
         if self.tool_calls:
             msg["tool_calls"] = [
                 {

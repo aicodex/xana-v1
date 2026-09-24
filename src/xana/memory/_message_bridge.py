@@ -44,7 +44,10 @@ def memory_message_to_sdk(mm: MemoryMessage) -> Message | None:
         return UserMessage(text=mm.content)
     if role == "assistant":
         tool_calls = _parse_assistant_tool_calls(mm.metadata)
-        return AssistantMessage(text=mm.content, tool_calls=tool_calls)
+        return AssistantMessage(
+            text=mm.content, tool_calls=tool_calls,
+            reasoning=str(mm.metadata.get("reasoning_content") or ""),
+        )
     if role == "tool":
         return ToolResultMessage(
             tool_use_id=str(mm.metadata.get("tool_use_id", "")),
@@ -141,10 +144,14 @@ def sdk_to_legacy_item(m: Message) -> MemoryMessage | Placeholder | None:
     if isinstance(m, AssistantMessage):
         meta: dict = {}
         if m.tool_calls:
+            # 与 harness 产出的 assistant metadata 同形(tool_name / input / call_id),
+            # provider 只需认这一种;否则跨 run 回放时工具名与参数会丢。
             meta["tool_calls"] = [
-                {"call_id": tc.call_id, "name": tc.name, "arguments": tc.arguments}
+                {"call_id": tc.call_id, "tool_name": tc.name, "input": tc.arguments}
                 for tc in m.tool_calls
             ]
+        if m.reasoning:
+            meta["reasoning_content"] = m.reasoning
         return MemoryMessage(role="assistant", content=m.text, metadata=meta)
     if isinstance(m, ToolResultMessage):
         return MemoryMessage(
