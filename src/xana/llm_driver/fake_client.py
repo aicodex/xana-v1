@@ -55,7 +55,7 @@ def _echo_prompt_body(messages: tuple[ModelMessage, ...]) -> str:
 
 def _last_user_text(messages: tuple[ModelMessage, ...]) -> str:
     for msg in reversed(messages):
-        if msg.role == "user" and msg.content.strip():
+        if msg.role == "user" and msg.content.strip() and not msg.metadata.get("note_kind"):
             return msg.content
     return "(no user input)"
 

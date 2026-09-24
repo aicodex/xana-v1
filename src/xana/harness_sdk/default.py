@@ -50,7 +50,14 @@ from xana.harness_sdk.compact import (
 )
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest, ProgressEvent
 from xana.harness_sdk.interfaces import Harness
-from xana.harness_sdk.system_prompt import build_system_prompt, deferred_tools_section, env_section
+from xana.harness_sdk.context_notes import (
+    changed_note,
+    deferred_tools_note,
+    memory_recall_note,
+    model_switch_text,
+    todo_reminder_note,
+)
+from xana.harness_sdk.system_prompt import build_system_prompt, env_section
 from xana.harness_sdk.usage import DefaultUsageAccumulator
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
 from xana.memory.contracts import ActiveContext, HistoryRow, MemoryMessage, Placeholder, ReplayResult
@@ -90,6 +97,53 @@ class DefaultHarness(Harness):
         self._session_prompt_tokens: dict[tuple[str, str], tuple[int, int]] = {}  # key → (prompt_tokens, history_len_at_record)
         # Phase 3 Task 6: background async run tasks (kept for shutdown drain).
         self._background_tasks: "set[Any]" = set()
+        # system 会话内固定(§5 turn-control-design):(session, agent) → (建立时的模型, 文本)。
+        # 变化的上下文一律以 ContextNote 追加进历史,不再改 system。
+        self._session_systems: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def _session_system(
+        self,
+        context: HarnessContext,
+        session_id: str,
+        agent_name: str,
+        extension_system_text: str,
+        history: tuple[MemoryMessage, ...],
+    ) -> tuple[str, list[MemoryMessage]]:
+        """本会话固定的 system;会话内换模型时不改 system,改为追加 model_switch note。"""
+        cached = self._session_systems.get((session_id, agent_name))
+        if cached is None:
+            text = build_system_prompt(
+                identity=str(context.config_snapshot.get("agent_identity", "") or ""),
+                override=context.config_snapshot.get("agent_system_prompt") or None,
+                env=env_section(cwd=context.cwd or None, model=context.model),
+                extension_sections=extension_system_text,
+            )
+            self._session_systems[(session_id, agent_name)] = (context.model, text)
+            return text, []
+        model, text = cached
+        notes: list[MemoryMessage] = []
+        switched_before = any(m.metadata.get("note_kind") == "model_switch" for m in history)
+        if context.model != model or switched_before:
+            switch = changed_note("model_switch", model_switch_text(context.model), history)
+            if switch is not None:
+                notes.append(switch)
+        return text, notes
+
+    async def _append_note(
+        self,
+        context: HarnessContext,
+        session_id: str,
+        agent_name: str,
+        run_id: str,
+        note: MemoryMessage,
+        seq: str,
+    ) -> None:
+        assert context.active_context_store is not None and context.history_mirror is not None
+        await context.active_context_store.append_message(session_id, agent_name, note)
+        await context.history_mirror.append(HistoryRow(
+            row_id=f"{run_id}:note:{seq}", session_id=session_id, agent_name=agent_name,
+            kind="user", payload=note, ts=0.0,
+        ))
 
     async def close_thread(self, session_id: str) -> None:
         """Fire on_thread_stop and drop the thread-scoped extension store.
@@ -686,17 +740,19 @@ class DefaultHarness(Harness):
         # (PH ritual, spec §1.5). _run_query_loop runs against a forked
         # store that is already seeded with the user_msg.
 
-        injected_head: list[str] = []
-        injected_tail: list[str] = []
+        # §5 ContextNote:每条用户消息一次的上下文(记忆召回、技能/扩展片段)以 note
+        # 追加在本条用户消息之后,只在有新内容时注入;system 不再承载它们。
+        _snap = await context.active_context_store.get(session_id, agent_name)
+        _hist: tuple[MemoryMessage, ...] = _snap.messages if _snap is not None else ()
+        pending_notes: list[MemoryMessage] = []
         if context.memory_injector_registry is not None:
             blocks = await context.memory_injector_registry.collect(
                 session_id, agent_name, request.user_input, context.cwd
             )
-            for block in blocks:
-                target = injected_tail if block.placement == "system_tail" else injected_head
-                target.append(block.content)
-
-        skill_blocks: list[str] = []
+            recall = memory_recall_note(blocks, _hist, request.user_input)
+            if recall is not None:
+                pending_notes.append(recall)
+        turn_input_parts: list[str] = []
         if context.skill_registry is not None:
             activation = SkillActivation(
                 kind="model",
@@ -708,8 +764,7 @@ class DefaultHarness(Harness):
             skills = await context.skill_registry.discover(activation)
             for skill in skills:
                 contribution = await skill.activate(activation)
-                skill_blocks.extend(contribution.prompt_blocks)
-        extension_tail: list[str] = []
+                turn_input_parts.extend(contribution.prompt_blocks)
         if ext is not None and ext.turn_input:
             tic = TurnInputContext(
                 session_id=session_id, agent_name=agent_name, run_id=run_id,
@@ -717,38 +772,22 @@ class DefaultHarness(Harness):
             )
             for c in ext.turn_input:
                 for frag in await c.contribute_turn_input(tic, thread_store, turn_store):
-                    extension_tail.append(frag.content)
-        # L3: 易变状态永远排在 dynamic_middle 尾部(前缀缓存纪律:
-        # 静态段 → env → L1/L2 注入 → L3)。每轮重读 TodoStore。
-        todo_block = ""
-        todo_store = context.metadata.get("todo_store")
-        if todo_store is not None:
-            try:
-                todos = todo_store.load(session_id)
-            except Exception:
-                _logger.exception("todo_store.load failed; skipping todo block")
-                todos = ()
-            if todos:
-                lines = ["<todo_status>"]
-                for idx, item in enumerate(todos, start=1):
-                    mark = {"in_progress": "⏳", "completed": "✅"}.get(
-                        getattr(item, "status", ""), "☐"
-                    )
-                    content = getattr(item, "content", "") or ""
-                    active = getattr(item, "active_form", "") or ""
-                    label = f"{active} ({content})" if active and active != content else content
-                    lines.append(f"{idx}. {mark} {label}")
-                lines.append("</todo_status>")
-                todo_block = "\n".join(lines)
-        base_parts = injected_head + skill_blocks + injected_tail + extension_tail
-        if todo_block:
-            base_parts.append(todo_block)
+                    turn_input_parts.append(frag.content)
+        turn_input_note = changed_note(
+            "turn_input", "\n\n".join(p for p in turn_input_parts if p), _hist)
+        if turn_input_note is not None:
+            pending_notes.append(turn_input_note)
+        for n_idx, note in enumerate(pending_notes):
+            await self._append_note(context, session_id, agent_name, run_id,
+                                    note, f"pre:{n_idx}")
+        # ContextContributor 片段进 system,契约要求会话内稳定;system 按会话缓存,
+        # 首轮的输出即为本会话的版本。
+        extension_system_text = ""
         if ext is not None and ext.context:
-            dynamic_middle_text = await ExtensionPromptAssembler(ext).assemble(
-                thread_store=thread_store, turn_store=turn_store, base_parts=base_parts,
+            extension_system_text = await ExtensionPromptAssembler(ext).assemble(
+                thread_store=thread_store, turn_store=turn_store, base_parts=[],
             )
-        else:
-            dynamic_middle_text = "\n\n".join(p for p in base_parts if p)
+        todo_store = context.metadata.get("todo_store")
         # TODO(claude_md): CC 把 CLAUDE.md 包 <system-reminder> 作为 messages[0]
         # prepend(PROMPT_ASSEMBLY_ORDER.md),不进 system prompt;xana 实现
         # 项目级规则文件加载后在这里 prepend 首条 user message。
@@ -989,15 +1028,22 @@ class DefaultHarness(Harness):
                     "thinking",
                     "enabled" if context.config_snapshot.get("thinking") else "disabled")
             tools_schema: tuple[dict, ...] = tuple(schemas)
-            system_content = build_system_prompt(
-                identity=str(context.config_snapshot.get("agent_identity", "") or ""),
-                override=context.config_snapshot.get("agent_system_prompt") or None,
-                env=env_section(cwd=context.cwd or None, model=context.model),
-                dynamic_middle=(
-                    deferred_tools_section(tuple(deferred_names)),
-                    dynamic_middle_text,
-                ),
-            )
+            system_content, loop_notes = self._session_system(
+                context, session_id, agent_name, extension_system_text, history_msgs)
+            deferred_note = deferred_tools_note(tuple(deferred_names), history_msgs)
+            if deferred_note is not None:
+                loop_notes.append(deferred_note)
+            if todo_store is not None:
+                try:
+                    todo_note = todo_reminder_note(history_msgs, todo_store.load(session_id))
+                except Exception:
+                    _logger.exception("todo_store.load failed; skipping todo reminder")
+                    todo_note = None
+                if todo_note is not None:
+                    loop_notes.append(todo_note)
+            for n_idx, note in enumerate(loop_notes):
+                await self._append_note(context, session_id, agent_name, run_id,
+                                        note, f"{turn_index}:{n_idx}")
 
             # PH-first: re-read mixed snapshot (may contain Placeholders from
             # other concurrent runs) and expand them into synthetic
@@ -1416,7 +1462,9 @@ class _ForkedActiveContextStore(ActiveContextStore):
         self, session_id: str, agent_name: str, message: MemoryMessage
     ) -> ActiveContext:
         self._messages.append(message)
-        if message.role in ("assistant", "tool", "system"):
+        # 本 run 产出的消息随 PH 替换写回主历史;ContextNote 虽是 user 角色,
+        # 也是本 run 追加的历史,必须写回(用户消息本身由 _invoke 直接写主历史)。
+        if message.role in ("assistant", "tool", "system") or message.metadata.get("note_kind"):
             self._produced.append(message)
         return self._ctx()
 

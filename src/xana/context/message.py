@@ -83,6 +83,10 @@ class ToolResultMessage(Message):
     tool_use_id: str
     content: str
     ok: bool
+    # harness 簿记:工具名(compact 转录用)、tool_search 揭示的工具(跨 run 保持已加载)。
+    # 不进 prompt。
+    tool_name: str = ""
+    revealed_tools: tuple[str, ...] = ()
 
     def to_anthropic(self) -> list[dict]:
         return [
@@ -182,3 +186,43 @@ class CompactSummary(Message):
 
     def to_openai(self) -> list[dict]:
         return [{"role": "user", "content": self._render()}]
+
+
+@dataclass(frozen=True)
+class ContextNote(Message):
+    """harness 追加进历史的上下文消息(记忆召回、技能列表、按需工具、提醒等)。
+
+    会话内只追加、不改写,保证请求前缀逐字节稳定;模型看到的是一条 user 角色的
+    ``<system-reminder>`` 文本。``key`` / ``paths`` / ``size`` 只供 harness 去重与
+    计量,不进 prompt。
+    """
+    kind: str
+    text: str
+    key: str = ""
+    paths: tuple[str, ...] = ()
+    size: int = 0
+
+    @staticmethod
+    def wrap(text: str) -> str:
+        return f"<system-reminder>\n{text}\n</system-reminder>"
+
+    def legacy_metadata(self) -> dict:
+        """legacy MemoryMessage 形态的 metadata(content 为 ``wrap(text)``)。"""
+        return {
+            "note_kind": self.kind, "note_text": self.text, "note_key": self.key,
+            "note_paths": list(self.paths), "note_size": self.size,
+        }
+
+    @classmethod
+    def from_legacy_metadata(cls, md: dict) -> "ContextNote":
+        return cls(
+            kind=str(md["note_kind"]), text=str(md.get("note_text", "")),
+            key=str(md.get("note_key", "")), paths=tuple(md.get("note_paths", ())),
+            size=int(md.get("note_size", 0)),
+        )
+
+    def to_anthropic(self) -> list[dict]:
+        return [{"role": "user", "content": self.wrap(self.text)}]
+
+    def to_openai(self) -> list[dict]:
+        return [{"role": "user", "content": self.wrap(self.text)}]

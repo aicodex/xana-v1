@@ -152,7 +152,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
                 if runs_dir is not None:
                     metadata["runs_dir"] = runs_dir
         if self.todo_store is not None:
-            # L3: harness 每轮把 TodoStore 渲染进 dynamic_middle 尾部。
+            # todo_store:harness 据此在长时间未更新 todo 时追加 todo_reminder note。
             metadata["todo_store"] = self.todo_store
         if self.budget_tracker is not None:
             # §4.3: 预算护栏 concrete helper,在 update_usage 写点累计/检查。

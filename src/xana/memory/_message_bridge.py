@@ -19,6 +19,7 @@ from xana.context.message import (
     AssistantMessage,
     CompactPlaceholder,
     CompactSummary,
+    ContextNote,
     Message,
     RegularPlaceholder,
     ToolResultMessage,
@@ -40,6 +41,8 @@ def memory_message_to_sdk(mm: MemoryMessage) -> Message | None:
     passed into ``to_anthropic`` / ``to_openai``).
     """
     role = mm.role
+    if role == "user" and mm.metadata.get("note_kind"):
+        return ContextNote.from_legacy_metadata(mm.metadata)
     if role == "user":
         return UserMessage(text=mm.content)
     if role == "assistant":
@@ -53,6 +56,8 @@ def memory_message_to_sdk(mm: MemoryMessage) -> Message | None:
             tool_use_id=str(mm.metadata.get("tool_use_id", "")),
             content=mm.content,
             ok=bool(mm.metadata.get("ok", True)),
+            tool_name=str(mm.metadata.get("tool_name", "")),
+            revealed_tools=tuple(mm.metadata.get("revealed_tools") or ()),
         )
     if role == "compact":
         # Legacy compact-boundary marker — make a synthetic CompactSummary
@@ -64,6 +69,12 @@ def memory_message_to_sdk(mm: MemoryMessage) -> Message | None:
         )
     # role == "system" or unknown -> filter out at SDK level
     return None
+
+
+def note_to_memory_message(note: ContextNote) -> MemoryMessage:
+    """ContextNote 的 legacy 形态:content 为模型可见的包裹文本,去重/计量字段放 metadata。"""
+    return MemoryMessage(role="user", content=ContextNote.wrap(note.text),
+                         metadata=note.legacy_metadata())
 
 
 def placeholder_to_sdk(ph: Placeholder, *, transcript_path: str = "") -> RegularPlaceholder:
@@ -141,6 +152,8 @@ def sdk_to_legacy_item(m: Message) -> MemoryMessage | Placeholder | None:
     """
     if isinstance(m, UserMessage):
         return MemoryMessage(role="user", content=m.text)
+    if isinstance(m, ContextNote):
+        return note_to_memory_message(m)
     if isinstance(m, AssistantMessage):
         meta: dict = {}
         if m.tool_calls:
@@ -154,11 +167,13 @@ def sdk_to_legacy_item(m: Message) -> MemoryMessage | Placeholder | None:
             meta["reasoning_content"] = m.reasoning
         return MemoryMessage(role="assistant", content=m.text, metadata=meta)
     if isinstance(m, ToolResultMessage):
-        return MemoryMessage(
-            role="tool",
-            content=m.content,
-            metadata={"tool_use_id": m.tool_use_id, "ok": m.ok},
-        )
+        meta: dict = {"tool_use_id": m.tool_use_id}
+        if m.tool_name:
+            meta["tool_name"] = m.tool_name
+        meta["ok"] = m.ok
+        if m.revealed_tools:
+            meta["revealed_tools"] = list(m.revealed_tools)
+        return MemoryMessage(role="tool", content=m.content, metadata=meta)
     if isinstance(m, RegularPlaceholder):
         return Placeholder(run_id=m._internal.run_id, label=m.label)
     if isinstance(m, CompactPlaceholder):

@@ -194,7 +194,14 @@ def _build_request_body(request: ModelRequest, config: AnthropicDeepSeekConfig) 
             continue
         if msg.role == "user":
             _flush_pending()
-            history.append({"role": "user", "content": msg.content})
+            # 连续 user(用户消息 + harness 追加的 ContextNote)合并为一轮的多个文本块,
+            # 不依赖端点自行合并相邻同角色轮次。
+            if history and history[-1]["role"] == "user":
+                prev = history[-1]["content"]
+                blocks = prev if isinstance(prev, list) else [{"type": "text", "text": prev}]
+                history[-1]["content"] = blocks + [{"type": "text", "text": msg.content}]
+            else:
+                history.append({"role": "user", "content": msg.content})
             continue
         if msg.role == "assistant":
             _flush_pending()

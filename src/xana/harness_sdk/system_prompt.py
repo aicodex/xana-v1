@@ -114,25 +114,18 @@ def tools_section() -> str:
     return ""
 
 
-def deferred_tools_section(deferred: tuple[tuple[str, str], ...] = ()) -> str:
-    """# 按需工具 段(模板 AGENT_LOOP_PROMPT.md:166-170)。deferred = (名字, 描述) 列表。"""
-    if not deferred:
-        return ""
-    lines = "\n".join(f"- {name}: {desc}" for name, desc in deferred)
-    return ("# 按需工具\n\n"
-            "以下工具默认隐藏。使用 tool_search 查看完整 schema 并按需加载：\n\n" + lines)
-
-
 def build_system_prompt(
     *,
     identity: str = "",
     override: str | None = None,
     env: str = "",
-    dynamic_middle: tuple[str, ...] = (),
+    extension_sections: str = "",
 ) -> str:
-    """13 段拼装(PROMPT_ASSEMBLY_ORDER.md)。override 非空 → 跳过全部静态段,
-    动态段(env/工具/技能/记忆)永远注入。系统与 extension 注入的内容直接拼在
-    一起,不区分来源。"""
+    """13 段拼装(PROMPT_ASSEMBLY_ORDER.md)。override 非空 → 跳过全部静态段。
+
+    system 会话内固定:只含静态段、身份、环境与会话内稳定的扩展片段。
+    每轮变化的上下文(记忆召回、技能列表、按需工具、todo)以 ContextNote
+    追加进历史,见 ``harness_sdk.context_notes``。"""
     if override:
         parts: list[str] = [override]
     else:
@@ -140,7 +133,7 @@ def build_system_prompt(
         if identity:
             parts.append(identity)
         parts += [SYSTEM, DOING_TASKS, ACTIONS]
-    parts += [env, tools_section(), deferred_tools_section(), *dynamic_middle]
+    parts += [env, tools_section(), extension_sections]
     if not override:
         parts += list(STATIC_TAIL)
     return "\n\n".join(p for p in parts if p)
