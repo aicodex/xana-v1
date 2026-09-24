@@ -18,7 +18,8 @@
 
 TG 用 **expandable blockquote**(`**>` 块前缀,首行 `||` 包裹)模拟飞书的 collapsible_panel:
 - thinking / tools body / compact summary 都用 expandable blockquote
-- "✦ 回答" 主体 = 普通文本(不折叠,默认可见)
+- 回答块**无标题、不折叠**:`━━━━━━━ ✦ ━━━━━━━` 分割线后接正文(markdown);cancelled 显示 "_回答已取消_"。
+  不折叠的原因:折叠会把回答的 markdown 套进 blockquote,出现嵌套折叠。
 
 ## expand_mode(TG only,飞书忽略)
 
@@ -27,7 +28,7 @@ TG 在卡底部比飞书多 **3 个按钮**:"展开 思考 / 展开 工具 / 展
 `state.expand_mode in {default, thinking, tools, answer}`:
 - `default`: 正常分块
 - `thinking/tools/answer`: 全屏单段,带翻页(`expand_page`)
-  - **tools 一页最多 4 个**
+  - **tools 固定一页 10 个**(按数量均分,避免按长度切出不均匀的页)
   - answer 按 TG 单消息长度切页
 
 ## answer markdown 不闭合守门
@@ -46,10 +47,11 @@ View 层走 telegramify-markdown 容错;必要时截到安全 boundary 或补回
 |---|---|
 | `compact.streaming` | 一行进度 + expandable "压缩中..." |
 | `compact.completed` | "▰…▰ 完成压缩" + expandable "已压缩 N 条消息" |
-| `answer.streaming` | thinking 折叠 / tools 折叠 / "✦ 回答中" 可见 |
-| `answer.detached` | 所有内容折叠 + footer "🟡 正在后台回答" |
-| `answer.terminal` | 答案展开;`terminal_from_bg=True` → 折叠 |
-| `tools_pending>0` | "展开 ✎×N" inline button |
+| `answer.streaming` | thinking 折叠 / tools 折叠 / 分割线后回答正文可见 |
+| `answer.detached` | thinking/tools 折叠,回答正文保持可见(不折叠)+ footer "🟡 正在后台回答" |
+| `answer.terminal` | 回答正文可见(含 `terminal_from_bg=True`,不折叠) |
+| `answer.cancelled` | 分割线后 "_回答已取消_" |
+| `tools_pending>0` | 文字提示 "其他 ✎×N,点下方展开工具查看"(非按钮);全量查看走底部 "展开工具" |
 
 ## 限制
 

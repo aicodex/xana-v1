@@ -460,6 +460,7 @@ compact 摘要排在 answer 前的原因:语义上 compact 是 PH 点之前的�
 
 - fg 默认展开;bg 默认折叠
 - 标题:有内容 → "✦ 回答";空 → "✦ 回答中";cancelled → "✦ 回答已取消"
+- TG 例外:无标题、不折叠,用分割线(见 §7)
 - 内容渲染:**只有回答用 markdown**(其他段落纯文本)
 - streaming 截断守门:`*` / `_` / `` ` `` / ``` 等末尾补闭或截到安全 boundary。TG 走 telegramify-markdown;飞书自身容错足够,不补。
 
@@ -511,10 +512,11 @@ compact 摘要排在 answer 前的原因:语义上 compact 是 PH 点之前的�
 | 项 | 飞书 | TG | CLI |
 |---|---|---|---|
 | 折叠 panel | `collapsible_panel` 灰底 + chevron | expandable blockquote(`**>` + `\|\|`) | Textual Collapsible 节点 |
+| 回答块 | "✦ 回答/回答中/回答已取消" 标题 panel,bg 折叠 | **无标题、任何状态都不折叠**:`━━━━━━━ ✦ ━━━━━━━` 分割线 + 正文;cancelled 显示 "_回答已取消_"(折叠会把 markdown 套进 blockquote,产生嵌套) | 同飞书 |
 | 工具 body | 截 800 字符 | **top 3 行 + 每行 60 字** | 截 4096 字符 |
 | tools_pending 提示 | 按钮 | **文字**(非按钮) | 文字 |
 | 超长 thinking / answer / tools | 直接折叠展开看全 | 底部 3 个按钮("展开 思考 / 工具 / 答案" 全量)→ 全屏单段卡,翻页 | 滚动条 |
-| 翻页粒度 | 无 | tools 一页最多 4 个;answer 按 TG 单消息长度切页 | 无 |
+| 翻页粒度 | 无 | tools 固定一页 10 个(按数量均分,不按长度切);answer 按 TG 单消息长度切页 | 无 |
 | markdown 渲染 | 只回答用 markdown | 只回答用 markdown;telegramify-markdown 容错 | 纯文本(无 markdown 解析) |
 | 命令 linkify | 无 | `linkify_commands=True` 时正文 `/cmd` 原生可点 | 无 |
 
