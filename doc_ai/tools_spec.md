@@ -49,7 +49,7 @@ status: active
 
 `ToolSpec.defer=True` 的工具不进入常规 tools_schema：
 
-1. **默认态**：harness 每轮把 deferred 工具以「名字: 描述」一行形式写进 system prompt 的「# 按需工具」段（`deferred_tools_section()`，模板 AGENT_LOOP_PROMPT.md），LLM API 的 tools_schema 里只有 `tool_search`，不见 deferred 工具的参数定义——模型物理上无法调用未揭示的工具。
+1. **默认态**：harness 把 deferred 工具以「名字: 描述」一行形式写进 `deferred_tools` ContextNote（`context_notes.deferred_tools_note()`，追加进历史，名单变化才追加；清空且曾列出过时追加"均已加载"），system prompt 不含该名单；LLM API 的 tools_schema 里只有 `tool_search`，不见 deferred 工具的参数定义——模型物理上无法调用未揭示的工具。已揭示状态记在 tool 结果的 `revealed_tools` 上，经 SDK 往返保留，跨 run 有效。
 2. **揭示**：模型调 `tool_search`，支持三种查询——`select:名字1,名字2` 精确选择；关键词评分搜索（名字命中 10/5 分，描述命中 2 分，返回前 `max_results` 个）；`+必须词` 前缀过滤。命中工具的完整 JSONSchema 以 `<functions>` 块返回。
 3. **状态恢复**：`tool_search` 把命中名字写入 `ToolResult.metadata["revealed_tools"]`；harness 把它透传进 tool 消息的 `MemoryMessage.metadata`（`default.py` 分发循环）。后续每轮用 `revealed_tools_from_messages()` 扫历史恢复揭示集合，被揭示的工具以完整 schema 进入 tools_schema；compact 时揭示状态经 `pre_compact_revealed_tools` 写进 boundary metadata，压缩后不丢。
 

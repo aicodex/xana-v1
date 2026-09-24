@@ -13,7 +13,7 @@ turn loop、prompt 组装、工具调度、auto-compact、暂停/取消、事件
 ## 详细设计
 
 - [harness_core](harness_core.md) — `DefaultHarness` turn loop、sync/async 双路径、PH ritual、fork store、事件流合约。
-- [harness_prompt_assembly](harness_prompt_assembly.md) — system prompt 7 静态段 + 13 段拼装、compact prompt、动态段（技能/记忆/extension）注入。
+- [harness_prompt_assembly](harness_prompt_assembly.md) — 会话内固定的 system prompt（7 静态段 + 拼装）、ContextNote（记忆召回/技能/按需工具/todo 提醒）、compact prompt。
 - [harness_tool_dispatch](harness_tool_dispatch.md) — 工具调用解析与 validate→permission→execute 管线、deferred 工具、取消宽限期。
 - [harness_compact](harness_compact.md) — auto-compact 同步触发、9 节摘要、Compact-as-PH、revealed tools 保留。
 - [harness_usage](harness_usage.md) — `UsageSnapshot` 累积规则（exact vs estimated、cache token 并回）。
@@ -27,7 +27,7 @@ turn loop、prompt 组装、工具调度、auto-compact、暂停/取消、事件
 ## Owns
 
 - 单 turn 内的 model↔tool 往返循环（`_MAX_TURNS = 25` 上限）
-- system prompt / tools_schema 的每轮组装（deferred 揭示后下一轮生效）
+- system prompt 会话内固定（按会话缓存）；tools_schema 每轮组装（deferred 揭示后下一轮生效）；每轮变化的上下文以 ContextNote 追加进历史
 - auto-compact 的同步触发与摘要生成
 - placeholder（PH）的展开（`ph_expand.py`）与写回编排
 - `HarnessEvent` 有序事件流（`turn_started` / `model_delta` / `tool_started` / `tool_finished` / `cancelled` / `final` / `error`）

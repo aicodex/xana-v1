@@ -14,7 +14,10 @@ status: active
 
 - [sdk.py](../src/xana/context/sdk.py) — `ContextSDK` facade，context 状态的唯一合法入口
 - [_store.py](../src/xana/context/_store.py) — 私有 `_ContextStore`：per-(sid, agent) buffer + per-sid 同步原语（import guard，只允许 sdk.py 导入）
-- [message.py](../src/xana/context/message.py) — `Message` ABC 及子类（`UserMessage` / `AssistantMessage` / `ToolResultMessage` / `RegularPlaceholder` / `CompactPlaceholder` / `CompactSummary`）
+- [message.py](../src/xana/context/message.py) — `Message` ABC 及子类（`UserMessage` / `AssistantMessage` / `ToolResultMessage` / `RegularPlaceholder` / `CompactPlaceholder` / `CompactSummary` / `ContextNote`）
+  - `AssistantMessage.reasoning`：本轮思考文本，DeepSeek / Kimi 要求原样回传，必须随历史穿过 SDK（2026-09-24 热修复：此前经 SDK 往返丢失，导致工具轮之后的请求 400）。
+  - `ToolResultMessage.tool_name` / `revealed_tools`：harness 簿记（compact 转录工具名、tool_search 揭示状态跨 run 保持），不进 prompt。
+  - `ContextNote(kind, text, key, paths, size)`：harness 追加的上下文消息，序列化为 user 角色 `<system-reminder>`；`key/paths/size` 只供去重与计量。legacy 映射单一来源 `legacy_metadata()` / `from_legacy_metadata()`。规则见 [harness_prompt_assembly](harness_prompt_assembly.md)。
 - 组装点：[boot.py](../src/xana/runtime/boot.py) — `ContextSDK()` 在 boot 中构造，并回填给 `InMemoryActiveContextStore` 做写穿透（legacy 写同时进两个 store，读以 SDK 为准）
 
 ## 关键机制

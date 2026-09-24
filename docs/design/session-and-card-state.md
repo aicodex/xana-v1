@@ -194,8 +194,9 @@ class UserMessage(Message):
 class AssistantMessage(Message):
     text: str
     tool_calls: tuple["_ToolCallInternal", ...] = ()
-    # anthropic: content blocks [{type:"text"...},{type:"tool_use"...}]
-    # openai: {role:"assistant", content, tool_calls:[...]}
+    reasoning: str = ""   # 本轮思考;DeepSeek/Kimi 须原样回传,必须随历史穿过 SDK(2026-09-24)
+    # anthropic: content blocks [{type:"text"...},{type:"tool_use"...}](thinking 需签名,不发)
+    # openai: {role:"assistant", content, reasoning_content?, tool_calls:[...]}
     def to_anthropic(self): ...   # 各家差异在此吸收
     def to_openai(self): ...
 
@@ -205,6 +206,8 @@ class ToolResultMessage(Message):
     tool_use_id: str
     content: str
     ok: bool
+    tool_name: str = ""                     # harness 簿记,不进 prompt
+    revealed_tools: tuple[str, ...] = ()    # tool_search 揭示状态,跨 run 保持,不进 prompt
     # anthropic: {role:"user", content:[{type:"tool_result", tool_use_id, content}]}
     # openai:    {role:"tool", tool_call_id, content}
     def to_anthropic(self): ...
@@ -221,6 +224,18 @@ class RegularPlaceholder(Message):
     def to_openai(self):
         return [{"role": "assistant",
                  "content": f"正在后台回答你的问题{self.label}，请勿重试此请求。"}]
+
+
+@dataclass(frozen=True)
+class ContextNote(Message):
+    """harness 追加的上下文(记忆召回/技能/按需工具/todo 提醒/模型切换)。2026-09-24 新增。
+    会话内只追加、不改写、只在变化时注入;规则见 doc_ai/harness_prompt_assembly.md。"""
+    kind: str
+    text: str
+    key: str = ""; paths: tuple[str, ...] = (); size: int = 0   # 去重/计量,不进 prompt
+    def to_anthropic(self): return [{"role": "user", "content": wrap(self.text)}]
+    def to_openai(self):    return [{"role": "user", "content": wrap(self.text)}]
+    # wrap(t) = "<system-reminder>\n" + t + "\n</system-reminder>"
 
 
 @dataclass(frozen=True)

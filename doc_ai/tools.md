@@ -60,7 +60,6 @@ status: active
 | `cron_delete` | `cron.py` | 按 ID 删除定时任务 | defer |
 | `web_search` | `web_search.py` | 联网搜索（native/brave/duckduckgo） | read_only, open_world, defer |
 | `web_fetch` | `web_fetch.py` | 抓 URL 抽正文（bs4 优先，正则回退） | read_only, open_world, defer |
-| `SlowWrite` | `slow_write.py` | ⚠️ P5 cancel 测试临时工具，验证后应删除 | destructive |
 
 辅助文件（非工具）：`_path.py`（相对 cwd 路径解析）、`_reindex.py`（写后 markdown 增量 reindex）、`_todo_store.py`（`TodoStore` 磁盘持久化）。
 
