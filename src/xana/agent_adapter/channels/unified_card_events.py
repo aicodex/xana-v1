@@ -106,7 +106,9 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
         else:
             append_answer(state.answer, text)
         return
-    if kind == "progress_update":
+    if kind in ("progress_update", "tool_progress"):
+        # progress_update:模型在工具轮写的进度说明;tool_progress:工具执行中上报的进度
+        # (如"正在阅读 18/40 个网页")。都显示在进度行,回答完成后收起。
         if state.answer is not None:
             set_progress(state.answer, str(payload.get("text", "") or ""))
         return

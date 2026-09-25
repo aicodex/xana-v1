@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from xana.component.contracts import ComponentSpec
 from xana.policy.contracts import PermissionContext, SandboxPolicySpec
@@ -85,6 +85,9 @@ class ToolContext:
     permission: PermissionContext
     run_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 执行中上报进度(一句给人看的话,如"正在阅读 18/40 个网页");harness 转成 tool_progress 事件
+    # 由渠道显示,不进入模型上下文。None = 调用方不接收进度。
+    report_progress: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True)

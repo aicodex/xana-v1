@@ -295,16 +295,18 @@ async def boot(
         system_config=system_cfg,
         system_json_path=_sys_json_path,
     )
-    # web_search:brave key 走 system.json 既有 web_search.brave_search_key 字段
-    await tools.register(WebSearchTool(
-        session_config_store=session_config_store,
-        brave_api_key=(system_cfg.web_search.brave_search_key or None)))
-    await tools.register(WebFetchTool())
+    # 联网:配置了 xana-search 服务时默认用 web_research / deep_research(并行搜索 + 阅读 + 深度搜索),
+    # 不再注册旧的 web_search / web_fetch;未配置时沿用旧工具(brave key 走 web_search.brave_search_key)
     if system_cfg.web_search.xana_search_url:
         search_client = XanaSearchClient(system_cfg.web_search.xana_search_url,
                                          system_cfg.web_search.xana_search_token)
         await tools.register(WebResearchTool(search_client))
         await tools.register(DeepResearchTool(search_client))
+    else:
+        await tools.register(WebSearchTool(
+            session_config_store=session_config_store,
+            brave_api_key=(system_cfg.web_search.brave_search_key or None)))
+        await tools.register(WebFetchTool())
     provider = runtime_config.default_model.provider
     model = runtime_config.default_model.model
     client = _build_model_client(provider, model, cp)

@@ -28,7 +28,7 @@ import os
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, AsyncGenerator, AsyncIterator
+from typing import Any, AsyncGenerator, AsyncIterator, Callable
 
 from xana.extension_api.assembler import PromptAssembler as ExtensionPromptAssembler
 from xana.extension_api.contracts import (
@@ -433,6 +433,7 @@ class DefaultHarness(Harness):
         ext: "ExtensionRegistry | None",
         thread_store: ExtensionData | None,
         turn_store: ExtensionData | None,
+        progress: Callable[[str], None] | None = None,
     ) -> tuple[ToolResult, str]:
         """Run one tool through the validate→permission→pre→execute→post
         pipeline, wrapped by extension tool-lifecycle hooks.
@@ -514,6 +515,7 @@ class DefaultHarness(Harness):
             cwd=context.cwd,
             permission=context.permission or _default_permission(session_id),
             run_id=run_id,
+            report_progress=progress,
         )
         try:
             await tool.validate(invocation)
@@ -1432,11 +1434,28 @@ class DefaultHarness(Harness):
                     },
                 )
                 _tool_t0 = time.monotonic()
-                result, rendered = await self._dispatch_tool(
+                # 工具执行中的进度(report_progress)边执行边以 tool_progress 事件发出
+                progress_q: asyncio.Queue[str] = asyncio.Queue()
+                dispatch = asyncio.create_task(self._dispatch_tool(
                     tc, context, session_id, agent_name, run_id,
                     ext_tools=ext_tools, ext=ext,
                     thread_store=thread_store, turn_store=turn_store,
-                )
+                    progress=progress_q.put_nowait,
+                ))
+                try:
+                    while True:
+                        getter = asyncio.create_task(progress_q.get())
+                        await asyncio.wait({dispatch, getter}, return_when=asyncio.FIRST_COMPLETED)
+                        if not getter.done():
+                            getter.cancel()
+                            break
+                        yield HarnessEvent(kind="tool_progress", session_id=session_id, run_id=run_id,
+                                           payload={"call_id": tc["call_id"], "tool_name": tc["tool_name"],
+                                                    "text": getter.result()})
+                    result, rendered = await dispatch
+                finally:
+                    if not dispatch.done():  # 事件流被上游关闭:工具任务一并取消,不留后台执行
+                        dispatch.cancel()
                 _tool_elapsed_ms = int(
                     (time.monotonic() - _tool_t0) * 1000)
                 tool_meta: dict[str, Any] = {
