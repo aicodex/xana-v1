@@ -66,6 +66,7 @@ from xana.harness_sdk.interfaces import Harness
 from xana.harness_sdk.context_notes import (
     CONTINUE_THINKING_ONLY,
     CONTINUE_TRUNCATED,
+    NO_PROGRESS_REMINDER,
     changed_note,
     continuation_note,
     deferred_tools_note,
@@ -97,6 +98,8 @@ _MAX_TURNS = 25  # 缺省工具轮上限;AgentSpec.max_turns(config_snapshot["ma
 # 续跑上限(照 Claude Code 2.1.281):只有思考推 1 次、截断续写 3 次、stop hook 连续拦截 8 次
 _MAX_TRUNCATION_CONTINUES = 3
 _MAX_STOP_HOOK_BLOCKS = 8
+_SILENT_CALLS_BEFORE_REMINDER = 5
+_MAX_SILENT_REMINDERS = 3
 
 
 @dataclass
@@ -110,6 +113,9 @@ class _StopState:
     goal_report: tuple[str, str] | None = None
     goal_status: str = ""
     verify_status: str = ""  # passed / failed(命令型验证)
+    # 无进度提醒(照 CC 2.1.281 silent_turn_reminder):连续无可见输出的模型调用数 / 本静默期已提醒次数
+    silent_calls: int = 0
+    silent_reminders: int = 0
 
 # P5.2 — synthetic warning 中文文案,注入到 tool_result.content,告诉模型勿自动重试。
 _SYNTHETIC_WARNING_TEXT_KILLED = (
@@ -1403,6 +1409,14 @@ class DefaultHarness(Harness):
                                    payload={"reason": note_kind, "text": note_text})
                 continue
 
+            # 进度说明:与 tool_calls 同一轮的文字(渠道可单独展示,不属于最终回答)
+            if turn_text.strip():
+                stop_state.silent_calls = 0
+                stop_state.silent_reminders = 0
+                yield HarnessEvent(kind="progress_update", session_id=session_id,
+                                   run_id=run_id, payload={"text": turn_text})
+            else:
+                stop_state.silent_calls += 1
             for call_idx, tc in enumerate(iter_tool_calls):
                 yield HarnessEvent(
                     kind="tool_started",
@@ -1465,6 +1479,16 @@ class DefaultHarness(Harness):
                         "elapsed_ms": _tool_elapsed_ms,
                     },
                 )
+            # 长时间无进度:连续 5 次模型调用没有对用户输出 → 在工具结果后追加提醒,
+            # 同一静默期最多 3 次;子 agent 不注入(照 CC)
+            if (stop_state.silent_calls >= _SILENT_CALLS_BEFORE_REMINDER
+                    and stop_state.silent_reminders < _MAX_SILENT_REMINDERS
+                    and not request.metadata.get("parent_run_id")):
+                stop_state.silent_calls = 0
+                stop_state.silent_reminders += 1
+                await self._append_note(context, session_id, agent_name, run_id,
+                                        continuation_note("no_progress", NO_PROGRESS_REMINDER),
+                                        f"{turn_index}:no_progress")
         else:
             await self._fire_turn_end(
                 ext, session_id=session_id, agent_name=agent_name, run_id=run_id,

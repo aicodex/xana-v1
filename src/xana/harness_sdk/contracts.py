@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from xana.state.interfaces import StateRepository
     from xana.tools.interfaces import ToolRegistry
 
-HarnessEventKind = Literal["turn_started", "model_delta", "tool_started", "tool_finished", "paused", "cancelled", "continuation", "final", "error"]
+HarnessEventKind = Literal["turn_started", "model_delta", "tool_started", "tool_finished", "paused", "cancelled", "continuation", "progress_update", "final", "error"]
 
 
 @dataclass
