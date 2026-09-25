@@ -116,7 +116,7 @@ class XanaSearchClient:
                 row = await self.request("GET", f"/v1/jobs/{job_id}", params=params, timeout=wait + 30)
                 since = float(row.get("updated") or since)
                 msg = row.get("message") or ""
-                if progress is not None and msg and msg != last and row["status"] in ("queued", "running"):
+                if progress is not None and msg and msg != last and row["status"] == "running":
                     progress(msg)
                     last = msg
                 if row["status"] not in ("queued", "running") or time.monotonic() >= deadline:
