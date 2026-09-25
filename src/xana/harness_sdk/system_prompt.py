@@ -176,9 +176,9 @@ ELAPSED_ONLY_NOTE = "时间在这里很重要:不要花费可以避免的时间,
 
 
 def profile_sections(profile: PromptProfile) -> str:
-    """按 PromptProfile 拼 system 尾段(默认全关,照 Claude Code:交互不额外干预)。
+    """按 PromptProfile 拼 system 尾段(照 Claude Code:交互默认不加;无人值守只加自主运行段)。
 
-    顺序:进度核查 → 广泛查看 → 时间 → 已答视为完成 → 无人值守(自主运行段 + 长期指令)。"""
+    顺序:进度核查 → 广泛查看 → 时间 → 已答视为完成 → 自主运行段(随 mode)→ 长期指令。"""
     parts: list[str] = []
     if profile.grounded_progress:
         parts.append(GROUNDED_PROGRESS)
@@ -188,7 +188,8 @@ def profile_sections(profile: PromptProfile) -> str:
         parts.append(ELAPSED_ONLY_NOTE)
     if profile.answered_as_done:
         parts.append(ANSWERED_AS_DONE)
-    if profile.standing_order:
+    if profile.mode == "unattended":
         parts.append(AUTONOMOUS_SECTION)
+    if profile.standing_order:
         parts.append(STANDING_ORDER)
     return "\n\n".join(parts)

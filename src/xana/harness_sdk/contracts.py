@@ -58,9 +58,10 @@ _PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
     # 交互:照 Claude Code 默认不额外干预(它的"开工前说一句""如实报告"已在基础 system 中)
     "interactive": dict(standing_order=False, answered_as_done=False, explore_first=False,
                         grounded_progress=False, time_signal="off", goal_mode=False),
-    # 无人值守(长程):CC 自主运行段 + Anthropic 指南的长期指令、进度核查、时间信号 + 目标模式
-    "unattended": dict(standing_order=True, answered_as_done=False, explore_first=False,
-                       grounded_progress=True, time_signal="elapsed", goal_mode=True),
+    # 无人值守(长程):照 CC 只加自主运行段(随 mode)+ 目标模式评估器;其余都按 agent 自愿开启,
+    # 给模型留探索空间,把"做完没有"交给验证机制(verify 检查 + 评估器)
+    "unattended": dict(standing_order=False, answered_as_done=False, explore_first=False,
+                       grounded_progress=False, time_signal="off", goal_mode=True),
 }
 
 
