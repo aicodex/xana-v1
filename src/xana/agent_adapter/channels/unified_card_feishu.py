@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 
 from xana.agent_adapter.channels.unified_card import (
+    progress_line,
     AnswerSection,
     Button,
     ButtonRow,
@@ -148,6 +149,10 @@ def _render_answer(
             label = f"展开 ✎×{sec.tools_pending}"
             btn = Button(text=label, action="load_tools", action_arg=card_id)
             out.append(_btn_row(ButtonRow(buttons=(btn,)), ph_run_id=None))
+    # 进度行(§5.5a):进行中显示最近一条进度说明,灰色一行
+    line = progress_line(sec)
+    if line:
+        out.append(_md(f"<font color='grey'>{line}</font>"))
     # 回答块:标题状态机保留,空 body 用空格(不放占位)。
     ans_title = "✦ 回答" if sec.answer_text else "✦ 回答中"
     if sec.state == "cancelled":

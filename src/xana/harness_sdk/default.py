@@ -999,7 +999,10 @@ class DefaultHarness(Harness):
                     ext_tools[tool.spec().component.name] = tool
 
         usage = UsageSnapshot(model=context.model, provider=provider)
-        cumulative_text: list[str] = []
+        # 回答文字 = 不带工具调用的那几轮(截断续写 / 续跑的多段回答仍拼接);
+        # 与工具调用同轮的文字是进度说明,单独收集(CC:最终消息自足,中途文字是状态说明)
+        answer_parts: list[str] = []
+        progress_texts: list[str] = []
         turn_start = time.monotonic()
         compact_attempted = False
 
@@ -1368,7 +1371,7 @@ class DefaultHarness(Harness):
 
             turn_text = "".join(iter_text)
             if turn_text:
-                cumulative_text.append(turn_text)
+                (progress_texts if iter_tool_calls else answer_parts).append(turn_text)
             asst_metadata: dict[str, Any] = {"tool_calls": list(iter_tool_calls)} if iter_tool_calls else {}
             if iter_thinking:
                 asst_metadata["reasoning_content"] = "".join(iter_thinking)
@@ -1395,7 +1398,7 @@ class DefaultHarness(Harness):
                     ext, stop_state, session_id=session_id, agent_name=agent_name, run_id=run_id,
                     thread_store=thread_store, turn_store=turn_store, turn_text=turn_text,
                     had_thinking=bool(iter_thinking), stop_reason=stop_reason,
-                    final_text="\n".join(cumulative_text),
+                    final_text="\n".join(answer_parts),
                     goal_condition=goal_condition, goal_client=client, provider=provider,
                     context=context,
                 )
@@ -1502,7 +1505,8 @@ class DefaultHarness(Harness):
             )
             return
 
-        final_text = "\n".join(cumulative_text)
+        # 没有纯文字回答就结束(如预算在工具轮后耗尽)时,退回最后一条进度说明,避免空回复
+        final_text = "\n".join(answer_parts) or "\n".join(progress_texts[-1:])
         if context.state_repository is not None:
             await context.state_repository.runs().update_usage(run_id, usage)
             # §4.1/§4.3 收尾写点:finished_at 支撑任务面板时长;budget_exceeded
@@ -1532,7 +1536,7 @@ class DefaultHarness(Harness):
             kind="final",
             session_id=session_id,
             run_id=run_id,
-            payload={"text": final_text,
+            payload={"text": final_text, "progress": list(progress_texts),
                      **({"goal_status": stop_state.goal_status} if stop_state.goal_status else {}),
                      **({"verify_status": stop_state.verify_status} if stop_state.verify_status else {})},
             usage=usage,

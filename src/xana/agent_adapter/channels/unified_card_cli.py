@@ -11,6 +11,7 @@ XanacApp (kept under a different module name to avoid clashing).
 from __future__ import annotations
 
 from xana.agent_adapter.channels.unified_card import (
+    progress_line,
     AnswerSection,
     CompactSection,
     UnifiedCardState,
@@ -58,6 +59,9 @@ def _render_answer(sec: AnswerSection) -> str:
     hidden = (len(sec.tools) - visible_n) + sec.tools_pending
     if hidden > 0:
         parts.append(f"(+{hidden} 工具调用未展开)")
+    line = progress_line(sec)  # 进度行(§5.5a)
+    if line:
+        parts.append(line)
 
     if sec.state == "cancelled":
         title = "✦ 回答已取消"
@@ -128,6 +132,7 @@ def render_widgets(state: UnifiedCardState):  # type: ignore[no-untyped-def]
 
     Imported lazily so non-Textual oneshot path doesn't pay the import cost.
     """
+    from rich.markup import escape as rich_escape
     from textual.containers import Horizontal
     from textual.widget import Widget
     from textual.widgets import Collapsible, Markdown, Static
@@ -180,6 +185,9 @@ def render_widgets(state: UnifiedCardState):  # type: ignore[no-untyped-def]
                 CardButton(spec, ph_run_id=state.ph_run_id, card_id=state.card_id),
                 classes="card-btn-row",
             ))
+        line = progress_line(sec)  # 进度行(§5.5a),暗色一行
+        if line:
+            out.append(Static(f"[dim]{rich_escape(line)}[/dim]", markup=True, classes="card-progress"))
         if sec.state == "cancelled":
             title = "✦ 回答已取消"
         else:

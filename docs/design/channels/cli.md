@@ -16,6 +16,7 @@
 | thinking | `Collapsible` |
 | tool block(≤3 visible) | `Collapsible` |
 | 工具展开按钮 | `Horizontal(CardButton(spec))` |
+| 进度行(§5.5a,进行中) | `Static("[dim]› …[/dim]")`,完成后不渲染 |
 | answer | `Static(markup)`,标题 + 截 12k 字符 |
 | menu | `Markdown` |
 | top / bottom buttons | `Horizontal(CardButton, ...)` |

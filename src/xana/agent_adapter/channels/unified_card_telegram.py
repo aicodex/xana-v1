@@ -20,6 +20,7 @@ import re
 import telegramify_markdown as _tg_md
 
 from xana.agent_adapter.channels.unified_card import (
+    progress_line,
     AnswerSection,
     ButtonRow,
     CompactSection,
@@ -170,6 +171,11 @@ def _render_default_answer(
         # inline 文字计数(不是按钮,点不动);用户走底部"展开工具"
         # expand_mode 按钮查看。
         parts.append(_esc(f"其他 ✎×{hidden_tools},点下方展开工具查看"))
+
+    # 进度行(§5.5a):进行中显示最近一条进度说明,斜体一行
+    line = progress_line(sec)
+    if line:
+        parts.append(f"_{_esc(line)}_")
 
     answer_body, answer_truncated = _trunc_rendered(
         sec.answer_text or " ", _BUDGET_DEFAULT_ANSWER, md=True)

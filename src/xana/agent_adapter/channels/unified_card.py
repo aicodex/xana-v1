@@ -71,6 +71,8 @@ class AnswerSection:
     tools: tuple[ToolBlock, ...] = ()
     tools_pending: int = 0                    # = len(_pending_tools_buf)
     answer_text: str = ""
+    # 最近一条进度说明(与工具调用同轮的文字);只在回答进行中显示,完成 / 取消后清空(§5.5a)
+    progress_text: str = ""
     page: int = 0                              # 答案翻页用(TG 单消息长度有限)
     _pending_tools_buf: tuple[ToolBlock, ...] = ()
 
@@ -271,6 +273,30 @@ def detach_answer(sec: AnswerSection) -> None:
     sec.state = "detached"
 
 
+PROGRESS_LINE_MAX = 80
+
+
+def set_progress(sec: AnswerSection, text: str) -> None:
+    """一轮以工具调用结束:这轮流进回答区的文字其实是进度说明,移到进度行。"""
+    if sec.state == "cancelled":
+        return
+    text = text.strip()
+    if text and sec.answer_text.rstrip().endswith(text):
+        sec.answer_text = sec.answer_text.rstrip()[: -len(text)].rstrip()
+    if text:
+        sec.progress_text = text
+
+
+def progress_line(sec: AnswerSection) -> str:
+    """进度行显示文本:进行中 / 后台时取最近一条的最后一行,截到一行;完成后为空。"""
+    if sec.state not in ("streaming", "detached") or not sec.progress_text:
+        return ""
+    line = " ".join(sec.progress_text.splitlines()[-1].split())
+    if len(line) > PROGRESS_LINE_MAX:
+        line = line[: PROGRESS_LINE_MAX - 1] + "…"
+    return f"› {line}"
+
+
 def finalize_answer(sec: AnswerSection, *, final_text: str) -> None:
     """Terminal transition; replace answer_text with final.
 
@@ -280,6 +306,7 @@ def finalize_answer(sec: AnswerSection, *, final_text: str) -> None:
     """
     if sec.state != "cancelled":
         sec.state = "terminal"
+    sec.progress_text = ""
     if final_text:
         sec.answer_text = final_text
 
@@ -287,6 +314,7 @@ def finalize_answer(sec: AnswerSection, *, final_text: str) -> None:
 def cancel_answer(sec: AnswerSection) -> None:
     """Cancel; subsequent append_* are no-ops."""
     sec.state = "cancelled"
+    sec.progress_text = ""
 
 
 # --- top buttons + detach / ph_replaced transitions ------------------------

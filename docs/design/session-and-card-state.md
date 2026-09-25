@@ -479,6 +479,14 @@ compact 摘要排在 answer 前的原因:语义上 compact 是 PH 点之前的�
 - 内容渲染:**只有回答用 markdown**(其他段落纯文本)
 - streaming 截断守门:`*` / `_` / `` ` `` / ``` 等末尾补闭或截到安全 boundary。TG 走 telegramify-markdown;飞书自身容错足够,不补。
 
+### 5.5a 进度行(2026-09-25 新增)
+
+- 来源:harness `progress_update` 事件——与工具调用同一轮的模型文字(进度说明,不属于最终回答)。
+- 文字仍先随 `model_delta` 流进回答区;收到 `progress_update` 后,把这段文字从回答区尾部移到 `AnswerSection.progress_text`。
+- 显示:只显示最近一条的最后一行,截到 80 字,前缀 `›`;位置在工具面板之后、回答块之前。
+- 只在 `streaming` / `detached` 显示;`terminal` / `cancelled` 收起(最终回答应自足,过程看工具面板)。
+- harness `final` 事件:`text` 只含回答轮(无工具调用的轮次)的文字;进度说明另在 `progress` 列表。
+
 ### 5.6 脚标(footer)
 
 | Run / Card 状态 | 脚标 |
@@ -527,6 +535,7 @@ compact 摘要排在 answer 前的原因:语义上 compact 是 PH 点之前的�
 | 项 | 飞书 | TG | CLI |
 |---|---|---|---|
 | 折叠 panel | `collapsible_panel` 灰底 + chevron | expandable blockquote(`**>` + `\|\|`) | Textual Collapsible 节点 |
+| 进度行(§5.5a) | 灰色一行 `<font color='grey'>› …</font>` | 斜体一行 `_› …_` | 暗色一行 `[dim]› …[/dim]` |
 | 回答块 | "✦ 回答/回答中/回答已取消" 标题 panel,bg 折叠 | **无标题、任何状态都不折叠**:`━━━━━━━ ✦ ━━━━━━━` 分割线 + 正文;cancelled 显示 "_回答已取消_"(折叠会把 markdown 套进 blockquote,产生嵌套) | 同飞书 |
 | 工具 body | 截 800 字符 | **top 3 行 + 每行 60 字** | 截 4096 字符 |
 | tools_pending 提示 | 按钮 | **文字**(非按钮) | 文字 |

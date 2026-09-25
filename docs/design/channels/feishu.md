@@ -24,6 +24,10 @@
 - header 右侧 `standard_icon: down-bold_outlined`,展开旋转 -180°
 - body `_sanitize_md`:把 `![alt](url)` 替换成 `[图片: url]`,避开飞书 200570(invalid image keys)
 
+## 进度行
+
+回答进行中(streaming / detached),工具面板之后、回答块之前显示一行灰色 markdown `<font color='grey'>› {最近一条进度说明}</font>`;完成 / 取消后不渲染。规则见主规格 §5.5a。
+
 ## button(behaviors,不裸 value)
 
 ```python

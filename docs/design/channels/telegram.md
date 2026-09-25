@@ -18,6 +18,7 @@
 
 TG 用 **expandable blockquote**(`**>` 块前缀,首行 `||` 包裹)模拟飞书的 collapsible_panel:
 - thinking / tools body / compact summary 都用 expandable blockquote
+- 进度行(§5.5a):回答进行中,在分割线之前显示斜体一行 `_› {最近一条进度说明}_`;完成 / 取消后不渲染。
 - 回答块**无标题、不折叠**:`━━━━━━━ ✦ ━━━━━━━` 分割线后接正文(markdown);cancelled 显示 "_回答已取消_"。
   不折叠的原因:折叠会把回答的 markdown 套进 blockquote,出现嵌套折叠。
 

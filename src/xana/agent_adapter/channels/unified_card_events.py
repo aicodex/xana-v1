@@ -36,6 +36,7 @@ def _parse_menu_label(text: str) -> str:
     return txt[:20] if txt else ""
 
 from xana.agent_adapter.channels.unified_card import (
+    set_progress,
     AnswerSection,
     Button,
     ButtonRow,
@@ -104,6 +105,10 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
             append_thinking(state.answer, text)
         else:
             append_answer(state.answer, text)
+        return
+    if kind == "progress_update":
+        if state.answer is not None:
+            set_progress(state.answer, str(payload.get("text", "") or ""))
         return
     if kind == "tool_started":
         if state.answer is None:
