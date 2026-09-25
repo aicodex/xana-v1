@@ -34,6 +34,11 @@ status: active
 - `max_turns: int | None` — 单次 run 的工具轮上限，经 `config_snapshot["max_turns"]` 传入 harness；`None` 用缺省 25。
 - `system_prompt: str | None` — `None` → 完整默认 13 段系统提示；非空 → 替换全部静态段（`build_system_prompt(override=...)`），环境段照常保留；记忆、技能等每轮变化的上下文以 ContextNote 追加进历史（见 [harness_prompt_assembly](harness_prompt_assembly.md)）。
 - `identity: str` — Agent 身份段，追加在 INTRO 之后、SYSTEM 之前；仅 `system_prompt=None` 时生效。
+- `prompt_profile: PromptProfile | None` — 会话级提示词开关（`harness_sdk/contracts.py`）。`None` = 交互默认。会话首次使用时由 ChatAgent 固化进 `SessionConfig.prompt_profile`，之后改 AGENT.md 不影响已有会话。两种模式默认值（照 Claude Code，少干预）：
+  - `interactive`：所有开关关闭，system 不额外加任何文本；
+  - `unattended`：只加 CC 自主运行段（随模式）+ `goal_mode=True`（目标评估器）；
+  - 可按 agent 自愿开启：`standing_order`（无人值守长期指令）、`grounded_progress`（长版进度核查）、`answered_as_done`、`explore_first`、`time_signal`（`elapsed` 在工具结果末尾追加"已用 N 秒"）。
+- `verify: tuple[VerifyCheck, ...]` — 回合结束时的检查命令（`cmd`，`timeout_s` 默认 300）。模型以纯文本结束一轮时在工作目录依次执行，非 0 / 超时即以输出为反馈续跑（见 [harness_turn_controller](harness_turn_controller.md)）。只能由 agent 作者声明。
 
 ## AGENT.md 文档 → AgentSpec 映射（计划 §5.1）
 

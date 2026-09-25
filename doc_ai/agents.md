@@ -20,7 +20,7 @@ agent spec、outer API、会话侧行为包装。
 
 ## 文件 Agent 文档（AGENT.md，计划 §5.1）
 
-用户可在 `{XANA_HOME}/agents/{name}/AGENT.md`（默认 `~/.xana/agents/`）放角色定义文档：frontmatter 必填 `kind: agent` / `name` / `goal` / `tools`（白名单），可选 `skills` / `budget` / `stop_rules` / `output_contract`；正文是工作流步骤，渲染进 AgentSpec.identity。boot 时经 `FileAgentRegistry` 加载为 `ChatAgent` 实例注册进 `gateway.agents`，builtin chat 保持默认。
+用户可在 `{XANA_HOME}/agents/{name}/AGENT.md`（默认 `~/.xana/agents/`）放角色定义文档：frontmatter 必填 `kind: agent` / `name` / `goal` / `tools`（白名单），可选 `skills` / `budget` / `stop_rules` / `output_contract` / `prompt_profile`（模式名或开关 mapping）/ `verify`（检查命令列表）；正文是工作流步骤，渲染进 AgentSpec.identity。boot 时经 `FileAgentRegistry` 加载为 `ChatAgent` 实例注册进 `gateway.agents`，builtin chat 保持默认。
 
 ## 与 SKILL.md 的边界
 

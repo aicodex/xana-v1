@@ -28,14 +28,17 @@ status: active
 1. `INTRO` — 身份与安全/URL 红线
 2. `SYSTEM` — 输出即沟通、权限模式、prompt injection 警觉等
 3. `DOING_TASKS` — 执行任务总则
-4. `ACTIONS` — 谨慎执行操作（风险操作清单）
-5. `USING_TOOLS` — 专用工具优先、todo_write、并行调用
+4. `ACTIONS` — 谨慎执行操作（风险操作清单）；末尾"如实报告结果"一句译自 CC 2.1.281
+5. `USING_TOOLS` — 专用工具优先、TodoWrite、并行调用
 6. `TONE` — 语气与风格
-7. `OUTPUT` — 输出效率
+7. `COMMUNICATING` — 与用户沟通（译自 CC 2.1.281「# Communicating with the user」：写给追进度的队友、第一次调用工具前说一句、最终消息自足）
+8. `OUTPUT` — 输出效率
 
 ### system 拼装（`build_system_prompt()`，会话内固定）
 
-段序：INTRO、(identity)、SYSTEM、DOING_TASKS、ACTIONS、env、tools、extension_sections、USING_TOOLS、TONE、OUTPUT。规则：
+段序：INTRO、(identity)、SYSTEM、DOING_TASKS、ACTIONS、env、tools、extension_sections、USING_TOOLS、TONE、COMMUNICATING、OUTPUT、profile_tail。规则：
+
+- **profile_tail**（`profile_sections(PromptProfile)`）：会话级开关文本，固定在最末，顺序为进度核查 → 广泛查看 → 时间 → 已答视为完成 → 自主运行段（`mode=unattended` 时）→ 长期指令。交互默认为空（照 CC：交互不额外干预）；原则是少干预、重验证，完成判定交给 verify 与目标评估器。
 
 - **会话内固定**：`DefaultHarness._session_system` 按 (session, agent) 缓存首轮生成的 system，之后每次请求原样复用。会话内换模型不改 system，改为追加 `model_switch` note（Codex 同款）。依据与缓存实测见 [turn-control-design](../docs/design/turn-control-design.md) §1–§2。
 - `override`（`config_snapshot["agent_system_prompt"]`）非空 → 跳过全部静态段，只保留 env / tools / extension_sections。

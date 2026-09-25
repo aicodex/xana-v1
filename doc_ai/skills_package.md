@@ -32,7 +32,7 @@ Skill 的数据合约层：一个技能是一个「manifest + 指令路径 + 资
 - `MarkdownDocParser`（`SkillManifestParser` 首个实现）：解析 frontmatter（YAML）+ 正文的 Markdown 文档。**同一解析器按 frontmatter 的 `kind` 字段区分 skill（默认）与 agent**（未知 kind 抛错），agent kind 的产出由 [agents/registry.py](../src/xana/agents/registry.py) 消费。
 - 校验规则（失败抛 `SkillManifestError`，带 path/kind/field/reason 四个类型化字段）：
   - kind=skill：必填非空 `name` / `description`；可选 `when_to_use`（字符串）、`allowed_tools`（字符串列表）。
-  - kind=agent：必填非空 `name` / `goal`（goal 映射到 `manifest.description`）、`tools`（非空字符串列表 → `allowed_tools`）；可选 `skills` / `budget`（mapping）/ `stop_rules` / `output_contract` 放入 `metadata`，由 AgentRegistry 消费。
+  - kind=agent：必填非空 `name` / `goal`（goal 映射到 `manifest.description`）、`tools`（非空字符串列表 → `allowed_tools`）；可选 `skills` / `budget`（mapping）/ `stop_rules` / `output_contract` / `prompt_profile`（字符串或 mapping）/ `verify`（列表，项为命令字符串或 `{cmd, timeout_s}`）放入 `metadata`，由 AgentRegistry 消费并校验（非法字段 → `SkillManifestError`）。
   - frontmatter 本身：必须有成对的 `---` 围栏、必须是 YAML mapping。
 - `split_frontmatter(text, *, path)`：切出 (frontmatter dict, 正文)；无 frontmatter 返回 `({}, text)`。
 - `FileSkillLoader`（`SkillLoader` 首个实现）：source 是 SKILL.md 路径或其所在目录；产出 `MarkdownSkill`。若文档 `kind=agent` 则抛 `SkillManifestError`（AGENT.md 是角色定义，走 AgentRegistry，不是 skill）。

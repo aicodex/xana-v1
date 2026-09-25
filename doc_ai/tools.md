@@ -52,6 +52,7 @@ status: active
 | `memory_write` | `memory_write.py` | L2 规则唯一写入口：create/refine/supersede + 查重门禁 | destructive |
 | `TodoWrite` | `todo_write.py` | 全量覆盖式会话 todo 列表，磁盘持久化 | destructive |
 | `tool_search` | `tool_search.py` | 揭示 deferred 工具完整 schema | read_only |
+| `report_goal` | `report_goal.py` | 目标模式下声明目标终态（done / blocked / failed + 原因）；只在 `goal_mode` 会话的 schema 中出现 | read_only |
 | `skill_load` | `skill_load.py` | 按名取 bundled skill 全文（两阶段加载的第二阶段） | read_only |
 | `EnterPlanMode` | `enter_plan_mode.py` | 写 `SessionConfig.metadata["mode"]="plan"`（enforcement 见下） | read_only |
 | `EnterWorktree` | `enter_worktree.py` | `git worktree add` 并把路径写进 session metadata | destructive |
