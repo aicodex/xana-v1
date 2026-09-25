@@ -146,6 +146,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             "async_mode": async_mode,
             "max_turns": spec.max_turns,
             "prompt_profile": profile.to_dict(),
+            "verify": [c.to_dict() for c in spec.verify],
         }
         if cfg is not None:
             config_snapshot.update({

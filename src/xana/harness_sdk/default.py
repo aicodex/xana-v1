@@ -54,6 +54,7 @@ from xana.harness_sdk.contracts import (
     HarnessRequest,
     ProgressEvent,
     PromptProfile,
+    VerifyCheck,
 )
 from xana.harness_sdk.goal import (
     GOAL_ACTIVATED,
@@ -74,6 +75,7 @@ from xana.harness_sdk.context_notes import (
     todo_reminder_note,
 )
 from xana.harness_sdk.system_prompt import build_system_prompt, env_section, profile_sections
+from xana.harness_sdk.verify import failure_text, passed_text, run_checks
 from xana.harness_sdk.usage import DefaultUsageAccumulator
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
 from xana.llm_driver.interfaces import ModelClient
@@ -107,6 +109,7 @@ class _StopState:
     # 目标模式:report_goal 声明的终态 / 最终判定(achieved / impossible / blocked / failed / unevaluated)
     goal_report: tuple[str, str] | None = None
     goal_status: str = ""
+    verify_status: str = ""  # passed / failed(命令型验证)
 
 # P5.2 — synthetic warning 中文文案,注入到 tool_result.content,告诉模型勿自动重试。
 _SYNTHETIC_WARNING_TEXT_KILLED = (
@@ -254,19 +257,40 @@ class DefaultHarness(Harness):
         if reason is not None and st.hook_blocks < _MAX_STOP_HOOK_BLOCKS:
             st.hook_blocks += 1
             return "stop_hook", stop_hook_text(reason)
+        evidence: tuple[MemoryMessage, ...] = ()
         if reason is not None:
             _logger.warning("stop hook 连续 %d 次阻止本轮结束,已覆盖并结束本轮", st.hook_blocks)
-        elif goal_condition:
-            goal = await self._goal_decision(st, goal_condition, goal_client, provider, context)
-            if goal is not None:
-                return goal
+        else:
+            checks = _verify_checks(context) if context is not None else ()
+            if checks:
+                assert context is not None
+                results = await _run_checks_abortable(checks, context)
+                if results is None:  # 用户取消:命令已随进程组结束,本轮收尾
+                    st.stop_hooks_fired = bool(hooks)
+                    return None
+                failed = next((r for r in results if not r.ok), None)
+                if failed is not None:
+                    st.verify_status = "failed"
+                    if st.hook_blocks < _MAX_STOP_HOOK_BLOCKS:
+                        st.hook_blocks += 1
+                        return "verify", failure_text(failed)
+                    _logger.warning("验证连续 %d 次未通过,已结束本轮等人查看", st.hook_blocks)
+                else:
+                    st.verify_status = "passed"
+                    # 通过结果作为证据交给目标评估器(不写入历史)
+                    evidence = (MemoryMessage(role="tool", content=passed_text(results)),)
+            if goal_condition and st.verify_status != "failed":
+                goal = await self._goal_decision(
+                    st, goal_condition, goal_client, provider, context, evidence)
+                if goal is not None:
+                    return goal
         # 本轮就此结束,on_turn_stop 已以 final 调用过,收尾时不再重复触发
         st.stop_hooks_fired = bool(hooks)
         return None
 
     async def _goal_decision(
         self, st: _StopState, condition: str, client: ModelClient | None, provider: str,
-        context: HarnessContext | None,
+        context: HarnessContext | None, evidence: tuple[MemoryMessage, ...] = (),
     ) -> tuple[str, str] | None:
         """目标模式(CC /goal):独立评估器判断条件;与 stop hook 共用连续拦截上限。"""
         if st.goal_report is not None and st.goal_report[0] in ("blocked", "failed"):
@@ -281,7 +305,7 @@ class DefaultHarness(Harness):
         try:
             verdict = await evaluate_goal(
                 client, provider=provider, model=context.model, condition=condition,
-                history=snap.messages if snap is not None else ())
+                history=(snap.messages if snap is not None else ()) + evidence)
         except Exception:
             _logger.exception("goal evaluator failed")
             st.goal_status = "unevaluated"
@@ -1485,9 +1509,28 @@ class DefaultHarness(Harness):
             session_id=session_id,
             run_id=run_id,
             payload={"text": final_text,
-                     **({"goal_status": stop_state.goal_status} if stop_state.goal_status else {})},
+                     **({"goal_status": stop_state.goal_status} if stop_state.goal_status else {}),
+                     **({"verify_status": stop_state.verify_status} if stop_state.verify_status else {})},
             usage=usage,
         )
+
+
+async def _run_checks_abortable(checks: tuple[VerifyCheck, ...], context: HarnessContext):
+    """执行检查命令,同时轮询 AbortSignal;取消时结束命令并返回 None。"""
+    task = asyncio.create_task(run_checks(checks, context.cwd))
+    while not task.done():
+        if context.abort.aborted:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            return None
+        await asyncio.wait({task}, timeout=0.2)
+    return task.result()
+
+
+def _verify_checks(context: HarnessContext) -> tuple[VerifyCheck, ...]:
+    """agent 声明的回合结束检查命令(ChatAgent 从 AgentSpec.verify 写入 config_snapshot)。"""
+    return tuple(VerifyCheck.from_raw(raw) for raw in context.config_snapshot.get("verify") or ())
 
 
 def _profile(context: HarnessContext) -> PromptProfile:

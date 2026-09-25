@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from xana.harness_sdk.contracts import PromptProfile
+from xana.harness_sdk.contracts import PromptProfile, VerifyCheck
 from xana.agents.contracts import AgentSpec
 from xana.agents.interfaces import Agent, AgentRegistry
 from xana.component.contracts import ComponentSource, ComponentSpec
@@ -38,6 +38,10 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path) -> Ag
         if key in md:
             component_metadata[key] = md[key]
     identity = f"# {manifest.name}\n\n目标:{manifest.description}\n\n{body}".strip()
+    try:
+        verify = tuple(VerifyCheck.from_raw(item) for item in md.get("verify", ()))
+    except (TypeError, ValueError) as exc:
+        raise SkillManifestError(path=path, kind="agent", field="verify", reason=str(exc)) from exc
     prompt_profile = None
     if "prompt_profile" in md:
         raw = md["prompt_profile"]
@@ -60,6 +64,7 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path) -> Ag
         allowed_skills=tuple(md.get("skills", ())),
         identity=identity,
         prompt_profile=prompt_profile,
+        verify=verify,
     )
 
 

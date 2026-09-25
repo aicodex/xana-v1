@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from xana.component.contracts import ComponentSpec
-from xana.harness_sdk.contracts import HarnessEvent, PromptProfile
+from xana.harness_sdk.contracts import HarnessEvent, PromptProfile, VerifyCheck
 from xana.policy.contracts import SandboxPolicySpec
 
 AgentEventKind = Literal["draft", "tool", "final", "control_result", "error", "cancelled"]
@@ -41,6 +41,8 @@ class AgentSpec:
     identity: str = ""
     # 会话级提示词开关;None = 交互模式默认值。会话创建时固化进 SessionConfig
     prompt_profile: PromptProfile | None = None
+    # 回合结束时的检查命令(命令型验证,对应 CC 命令型 Stop hook)
+    verify: tuple[VerifyCheck, ...] = ()
 
 
 @dataclass(frozen=True)

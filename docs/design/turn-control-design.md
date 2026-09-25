@@ -194,6 +194,14 @@ frozen dataclass,放 `agents/contracts.py`:
 **无人值守 system 段**:`mode=unattended` 时,system 末尾除 standing_order 外,加入 CC 的自主运行段:
 > 结束本轮前检查最后一段;如果是计划、分析、问题、下一步清单或还没兑现的承诺,现在就用工具去做。
 
+### 6.4 命令型验证(CC 命令型 Stop hook,2026-09-25 增补)
+
+- 原则(用户):模型越新越少干预,给探索空间;必要的是验证方式——它决定能否完成、做得好不好。
+- AGENT.md `verify:` 声明检查命令(字符串或 `{cmd, timeout_s}`,默认 300 秒),由 agent 作者给出,模型不能增改。
+- Stop 决策顺序:stop hook → **verify** → 目标评估器。模型以纯文本结束一轮时在工作目录依次执行,遇第一个未通过即停;任一非 0 / 超时 → 以 `verify` note 反馈命令、退出码与输出末尾("Stop 验证未通过,命令 …"),续跑;与 stop hook、评估器共用连续拦截上限 8。CC 用退出码 2 表示有意拦截,这里是验证语义,非 0 一律未通过。
+- 全部通过 → 通过结果作为证据交给目标评估器(不写入历史);验证未通过时不调用评估器。final 事件带 `verify_status`(passed / failed)。
+- 命令在独立进程组运行;超时或用户取消时整组结束,不留孤儿进程。
+
 ## 7. 进度更新
 
 - **归一**:与 tool_calls 同一轮出现的 assistant 文字判定为进度说明,发 `HarnessEvent(kind="progress_update")`;无 tool_calls 那轮的文字是回答。Anthropic 将来的 progress-update thinking 块映射到同一事件。

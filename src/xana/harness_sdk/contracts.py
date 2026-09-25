@@ -98,6 +98,24 @@ class PromptProfile:
 
 
 @dataclass(frozen=True)
+class VerifyCheck:
+    """回合结束时执行的检查命令(AGENT.md ``verify:``)。退出码 0 = 通过。"""
+    cmd: str
+    timeout_s: float = 300.0
+
+    @classmethod
+    def from_raw(cls, raw: Any) -> "VerifyCheck":
+        if isinstance(raw, str) and raw.strip():
+            return cls(cmd=raw.strip())
+        if isinstance(raw, dict) and isinstance(raw.get("cmd"), str) and raw["cmd"].strip():
+            return cls(cmd=raw["cmd"].strip(), timeout_s=float(raw.get("timeout_s", 300.0)))
+        raise ValueError(f"verify 项必须是命令字符串或 {{cmd, timeout_s}}: {raw!r}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class HarnessRequest:
     session_id: str
     agent_name: str
