@@ -79,6 +79,8 @@ class WebSearch(BaseModel):
     tavily_api_key: str = ""
     bing_search_key: str = ""
     searxng_url: str = ""
+    xana_search_url: str = ""    # 独立搜索服务(~/project/xana-search);为空则不注册 web_research/deep_research
+    xana_search_token: str = ""
 
 
 class McpServer(BaseModel):

@@ -95,6 +95,7 @@ from xana.tools.builtin.tool_search import ToolSearchTool
 from xana.tools.builtin.web_fetch import WebFetchTool
 from xana.tools.builtin.report_goal import ReportGoalTool
 from xana.tools.builtin.web_search import WebSearchTool
+from xana.tools.builtin.xana_search import DeepResearchTool, WebResearchTool, XanaSearchClient
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import ToolRegistry
 from xana.tools.registry import InMemoryToolRegistry
@@ -299,6 +300,11 @@ async def boot(
         session_config_store=session_config_store,
         brave_api_key=(system_cfg.web_search.brave_search_key or None)))
     await tools.register(WebFetchTool())
+    if system_cfg.web_search.xana_search_url:
+        search_client = XanaSearchClient(system_cfg.web_search.xana_search_url,
+                                         system_cfg.web_search.xana_search_token)
+        await tools.register(WebResearchTool(search_client))
+        await tools.register(DeepResearchTool(search_client))
     provider = runtime_config.default_model.provider
     model = runtime_config.default_model.model
     client = _build_model_client(provider, model, cp)

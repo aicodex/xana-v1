@@ -1,0 +1,232 @@
+"""web_research / deep_research:调用独立部署的 xana-search 服务(~/project/xana-search)。
+
+服务负责并行搜索(自建 SearXNG)、并行抓取、小模型按目标阅读与引用校验、深度搜索后台任务;
+这里只做参数校验、带 token 的 HTTP 请求和结果渲染。地址与 token 在 system.json
+web_search.xana_search_url / xana_search_token。
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+from xana.component.contracts import ComponentSource, ComponentSpec
+from xana.policy.contracts import PermissionResult
+from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.interfaces import Tool
+
+_SEARCH_TIMEOUT_S = 240.0
+_MAX_WAIT_S = 600
+
+_RESEARCH_SPEC = ToolSpec(
+    component=ComponentSpec(
+        kind="tool", name="web_research", qualified_name="builtin.web_research",
+        description=(
+            "并行联网搜索并阅读网页。一次给多条查询(1–8 条),服务并行搜索、合并去重,打开排名靠前的 read 个网页"
+            "(最多 60 个)并按 objective 提炼要点;每条要点附原文引用,数字已逐字核对。也可以用 urls 直接读取"
+            "指定网页(最多 30 个)。\n"
+            "用法:查询要简短,从不同角度切入(公司名+指标、行业+排名、中英文各一条);read 按需要的深度给,"
+            "粗查 0–10,调研 20–40。结果不够时换关键词或对感兴趣的链接用 urls 追读。全文保存在返回的目录里,"
+            "要核对原文时用 read/grep。回答中引用来源用 [标题](url)。"
+            "需要多轮检索、综合成报告的复杂问题用 deep_research。"),
+        source=ComponentSource(source_type="builtin", scope="system")),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "queries": {"type": "array", "items": {"type": "string"}, "maxItems": 8,
+                        "description": "搜索查询,1–8 条,并行执行"},
+            "objective": {"type": "string",
+                          "description": "这次要找什么(提炼要点的依据),例如「比较四家公司 2025 年营收与毛利率」"},
+            "read": {"type": "integer", "minimum": 0, "maximum": 60,
+                     "description": "打开并阅读的网页数,默认 10;0 只返回搜索结果摘要"},
+            "urls": {"type": "array", "items": {"type": "string"}, "maxItems": 30,
+                     "description": "直接读取这些网页(与 queries 二选一)"},
+            "recency_days": {"type": "integer", "minimum": 1, "description": "只要最近 N 天的结果(可选)"},
+            "domains": {"type": "array", "items": {"type": "string"}, "maxItems": 10,
+                        "description": "限定站点,如 [\"cninfo.com.cn\"](可选)"},
+        },
+    },
+    read_only=True, open_world=True, concurrency="parallel", timeout_s=_SEARCH_TIMEOUT_S,
+)
+
+_DEEP_SPEC = ToolSpec(
+    component=ComponentSpec(
+        kind="tool", name="deep_research", qualified_name="builtin.deep_research",
+        description=(
+            "深度搜索(后台任务)。给一个研究问题,服务自己拆子问题、多轮检索与补搜、阅读上百个网页,最后写出带编号"
+            "引用的报告。standard 约 10–15 分钟,deep 约 30–40 分钟。\n"
+            "用法:提交时给 question,立即返回 job_id;之后用 job_id 查询,wait_s 表示最多等待多少秒(≤600),"
+            "任务结束会提前返回。等待期间可以先做别的事。报告里的数字来自已核对的原文引用。"),
+        source=ComponentSource(source_type="builtin", scope="system")),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "研究问题(提交新任务时填)"},
+            "preset": {"type": "string", "enum": ["standard", "deep"], "description": "默认 standard"},
+            "job_id": {"type": "string", "description": "查询已提交的任务"},
+            "wait_s": {"type": "integer", "minimum": 0, "maximum": _MAX_WAIT_S,
+                       "description": "查询时最多等待的秒数,默认 0(立即返回当前进度)"},
+            "cancel": {"type": "boolean", "description": "取消 job_id 对应的任务"},
+        },
+    },
+    read_only=True, open_world=True, concurrency="parallel", timeout_s=_MAX_WAIT_S + 30,
+)
+
+
+class XanaSearchClient:
+    """xana-search 服务的 HTTP 客户端(Bearer token)。"""
+
+    def __init__(self, base_url: str, token: str, *,
+                 transport: httpx.AsyncBaseTransport | None = None) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+        self._transport = transport
+
+    async def request(self, method: str, path: str, *, json: dict | None = None,
+                      params: dict | None = None, timeout: float) -> dict[str, Any]:
+        async with httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(timeout, connect=10),
+                                     transport=self._transport) as client:
+            resp = await client.request(method, self.base_url + path, json=json, params=params,
+                                        headers={"Authorization": f"Bearer {self.token}"})
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json().get("detail")
+            except ValueError:
+                detail = resp.text[:300]
+            raise XanaSearchError(f"HTTP {resp.status_code}: {detail}", retryable=resp.status_code >= 500)
+        return resp.json()
+
+
+class XanaSearchError(RuntimeError):
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _failure(tool: str, exc: Exception) -> ToolResult:
+    retryable = isinstance(exc, httpx.HTTPError) or getattr(exc, "retryable", False)
+    msg = f"{type(exc).__name__}: {exc}" if isinstance(exc, httpx.HTTPError) else str(exc)
+    return ToolResult(ok=False, content=None, failure_kind="execution", error=msg, retryable=retryable,
+                      rendered=f"[{tool}] 搜索服务调用失败:{msg}")
+
+
+class _Base(Tool):
+    _spec: ToolSpec
+
+    def __init__(self, client: XanaSearchClient) -> None:
+        self.client = client
+
+    def spec(self) -> ToolSpec:
+        return self._spec
+
+    async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
+        return PermissionResult(decision="allow", reason="只读联网搜索")
+
+    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
+        return invocation
+
+    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext,
+                            result: ToolResult) -> ToolResult:
+        return result
+
+    async def render_result(self, result: ToolResult) -> str:
+        return result.rendered or ""
+
+    async def cancel(self, call_id: str) -> None:
+        return None
+
+
+class WebResearchTool(_Base):
+    _spec = _RESEARCH_SPEC
+
+    async def validate(self, invocation: ToolInvocation) -> None:
+        inp = invocation.input
+        if bool(inp.get("queries")) == bool(inp.get("urls")):
+            raise ValueError("queries 与 urls 必须且只能给一个")
+
+    async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
+        inp = invocation.input
+        objective = str(inp.get("objective") or "")
+        try:
+            if inp.get("urls"):
+                data = await self.client.request("POST", "/v1/fetch", timeout=_SEARCH_TIMEOUT_S,
+                                                 json={"urls": list(inp["urls"])[:30], "objective": objective})
+            else:
+                body: dict[str, Any] = {"queries": list(inp["queries"])[:8], "objective": objective,
+                                        "read": int(inp.get("read", 10))}
+                if inp.get("recency_days"):
+                    body["recency_days"] = int(inp["recency_days"])
+                if inp.get("domains"):
+                    body["domains"] = list(inp["domains"])[:10]
+                data = await self.client.request("POST", "/v1/search", json=body, timeout=_SEARCH_TIMEOUT_S)
+        except (httpx.HTTPError, XanaSearchError) as exc:
+            return _failure("web_research", exc)
+        stats = data["report"]["stats"]
+        return ToolResult(ok=True, content={"stats": stats, "dump_dir": data["report"]["dump_dir"]},
+                          rendered=data["text"],
+                          metadata={"display_text": _display(stats, bool(inp.get("urls")))})
+
+
+def _display(stats: dict, fetch: bool) -> str:
+    if fetch:
+        return f"读取 {stats['read']} 个网页 · 相关 {stats['relevant']} · {stats['elapsed_s']} 秒"
+    return (f"搜索 {stats['queries']} 个查询 · 阅读 {stats['read']} 个网页 · 相关 {stats['relevant']}"
+            f" · {stats['elapsed_s']} 秒")
+
+
+class DeepResearchTool(_Base):
+    _spec = _DEEP_SPEC
+
+    async def validate(self, invocation: ToolInvocation) -> None:
+        inp = invocation.input
+        if bool(inp.get("question")) == bool(inp.get("job_id")):
+            raise ValueError("提交新任务给 question,查询或取消给 job_id,二者只能给一个")
+
+    async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
+        inp = invocation.input
+        try:
+            if inp.get("question"):
+                sub = await self.client.request("POST", "/v1/research", timeout=30, json={
+                    "question": str(inp["question"]), "preset": str(inp.get("preset") or "standard")})
+                text = (f"深度搜索已提交,job_id={sub['job_id']},预计 {sub['expected_minutes']:g} 分钟内完成。"
+                        f"用 deep_research(job_id=\"{sub['job_id']}\", wait_s=600) 等待结果,"
+                        "等待期间可以先做别的事。")
+                return ToolResult(ok=True, content=sub, rendered=text,
+                                  metadata={"display_text": f"深度搜索已提交 · {sub['job_id']}"})
+            job_id = str(inp["job_id"])
+            if inp.get("cancel"):
+                res = await self.client.request("DELETE", f"/v1/research/{job_id}", timeout=30)
+                return ToolResult(ok=True, content=res, rendered=f"任务 {job_id} 已取消" if res.get("cancelled")
+                                  else f"任务 {job_id} 已不在运行")
+            wait = min(int(inp.get("wait_s") or 0), _MAX_WAIT_S)
+            row = await self.client.request("GET", f"/v1/research/{job_id}", params={"wait": wait},
+                                            timeout=wait + 30)
+        except (httpx.HTTPError, XanaSearchError) as exc:
+            return _failure("deep_research", exc)
+        return ToolResult(ok=True, content={k: row.get(k) for k in ("id", "status", "phase", "counters")},
+                          rendered=_render_job(row), metadata={"display_text": _job_display(row)})
+
+
+def _job_display(row: dict) -> str:
+    c = row.get("counters") or {}
+    return (f"深度搜索 {row['status']} · {row.get('message', '')} · 查询 {c.get('queries', 0)} · "
+            f"网页 {c.get('pages', 0)} · 证据 {c.get('evidence', 0)}")
+
+
+def _render_job(row: dict) -> str:
+    status = row["status"]
+    c = row.get("counters") or {}
+    if status == "completed":
+        r = row["result"]
+        st = r.get("stats") or {}
+        head = (f"深度搜索完成:{st.get('queries', 0)} 个查询,阅读 {st.get('pages', 0)} 个网页,"
+                f"证据 {st.get('evidence', 0)} 条,用时 {st.get('elapsed_s', 0):.0f} 秒。"
+                f"全文与证据保存在 {r.get('dump_dir')}/(result.json 含全部证据和原文引用)。\n\n")
+        gaps = "\n\n(检索说明:" + ";".join(r["gaps"]) + ")" if r.get("gaps") else ""
+        return head + r["report"] + gaps
+    if status in ("failed", "interrupted", "cancelled"):
+        return f"深度搜索任务 {row['id']} 状态 {status}:{row.get('error') or row.get('message')}"
+    recent = ";".join(e["message"] for e in (row.get("events") or [])[-5:])
+    return (f"深度搜索进行中(job_id={row['id']}):{row.get('message')}。已完成查询 {c.get('queries', 0)} 个,"
+            f"阅读网页 {c.get('pages', 0)} 个,证据 {c.get('evidence', 0)} 条。最近进展:{recent}。"
+            f"继续用 deep_research(job_id=\"{row['id']}\", wait_s=600) 等待。")
