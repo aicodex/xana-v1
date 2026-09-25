@@ -107,16 +107,14 @@ class XanaSearchClient:
         """长轮询任务直到结束或超时;每有新进度就回调 progress(给渠道显示)。
         cancel_on_abort:调用方被取消时是否一并取消服务端任务(搜索是;深度搜索只停止等待,任务继续)。"""
         deadline = time.monotonic() + timeout_s
-        since: float | None = None
+        since = 0.0  # 首次轮询也按"有更新即返回",否则要等满一段才看到第一条进度
         last = ""
         try:
             while True:
                 wait = max(1.0, min(30.0, deadline - time.monotonic()))
-                params: dict[str, Any] = {"wait": wait}
-                if since is not None:
-                    params["since"] = since
+                params: dict[str, Any] = {"wait": wait, "since": since}
                 row = await self.request("GET", f"/v1/jobs/{job_id}", params=params, timeout=wait + 30)
-                since = row.get("updated")
+                since = float(row.get("updated") or since)
                 msg = row.get("message") or ""
                 if progress is not None and msg and msg != last and row["status"] in ("queued", "running"):
                     progress(msg)
