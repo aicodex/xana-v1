@@ -4,7 +4,8 @@
 按显示模式的策略表生成"块"(标题 + 正文 + 是否折叠 + 是否失败),各渠道 renderer 只负责把块画出来。
 
 - detailed:每次调用一个面板(现有的工具面板,renderer 走原路径)
-- grouped: 每个过程组一个面板,标题 = 模型的进度说明或"搜索网页 3 次,打开 12 个网页"
+- grouped: 每个过程组一个面板,标题(一行,截断)= 模型的进度说明或"搜索网页 3 次,打开 12 个网页";
+  展开后先是完整说明和计数,再逐行列出调用;运行中的调用在面板下方单独一行显示
 - summary: 运行中只有一行动态状态;完成后回答上方一行回顾,可展开看分组
 失败的调用在 grouped / summary 下单独一行,不折叠。
 """
@@ -43,6 +44,7 @@ _RUNNING_VERB = {
 }
 MAX_TITLE_ITEMS = 4
 LINE_MAX = 80
+TITLE_MAX = 22   # 折叠面板标题保持一行(移动端飞书约 22 个汉字);完整说明与计数放进展开后的正文
 
 
 @dataclass
@@ -189,20 +191,18 @@ def build_view(sec: AnswerSection, mode: str, *, alive: bool) -> ProcessView:
             early = groups[: len(groups) - policy.max_groups]
             shown = groups[len(groups) - policy.max_groups:]
             early_members = [t for g in early for t in g.members]
-            blocks.append(Block(title=f"更早 {len(early)} 步:" + counts_title(
-                early_members, sum(g.thinking for g in early)),
-                body="\n".join(member_line(t) for t in early_members) or " "))
-        for i, g in enumerate(shown):
-            title = _clip(g.caption) if g.caption else counts_title(g.members, g.thinking)
-            last = i == len(shown) - 1
-            run = _running(g.members) if (alive and last and policy.live_detail) else None
-            if run is not None:
-                title = f"{title} · {_clip(running_text(run), 40)}"
-            elif g.caption and g.members:
-                title = f"{title}({counts_title(g.members, g.thinking)})"
-            body = "\n".join(member_line(t) for t in g.members) or " "
+            early_counts = counts_title(early_members, sum(g.thinking for g in early))
+            blocks.append(Block(title=_clip(f"更早 {len(early)} 步:{early_counts}", TITLE_MAX),
+                                body="\n".join([early_counts, ""] + [member_line(t) for t in early_members])))
+        for g in shown:
+            counts = counts_title(g.members, g.thinking)
+            title = _clip(g.caption or counts, TITLE_MAX)
+            head = ([g.caption] if g.caption else []) + [counts]
+            body = "\n".join(head + [""] + [member_line(t) for t in g.members])
             blocks.append(Block(title=title, body=body, failed=any(t.status == "fail" for t in g.members)))
-        return ProcessView(blocks=tuple(blocks), failed=failed)
+        run = _running(members) if (alive and policy.live_detail) else None
+        line = _clip(running_text(run)) if run is not None else ""
+        return ProcessView(blocks=tuple(blocks), line=line, failed=failed)
     # summary
     total = counts_title(members, sum(g.thinking for g in groups))
     if alive:
@@ -214,4 +214,5 @@ def build_view(sec: AnswerSection, mode: str, *, alive: bool) -> ProcessView:
         (f"【{_clip(g.caption, 40)}】\n" if g.caption else "")
         + "\n".join(member_line(t) for t in g.members) for g in groups if g.members) or " "
     recap = total + (f"({len(failed)} 次失败)" if failed else "")
-    return ProcessView(blocks=(Block(title=recap, body=body),), line=recap, failed=failed)
+    return ProcessView(blocks=(Block(title=_clip(recap, TITLE_MAX), body=recap + "\n\n" + body),),
+                       line=recap, failed=failed)
