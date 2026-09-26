@@ -13,6 +13,8 @@ token 存 $XANA_HOME/credentials/kimi.json(默认 ~/.xana/credentials/kimi.json)
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import fcntl
 import json
 import os
 import time
@@ -216,13 +218,16 @@ class KimiTokenStore:
         self._refresher = refresher or refresh_tokens
         self._clock = clock
         self._cached: KimiTokens | None = None
+        self._refresh_lock = asyncio.Lock()   # 同进程内的并发刷新串行化
 
     @property
     def path(self) -> Path:
         return self._path
 
-    def load(self) -> KimiTokens | None:
-        if self._cached is not None:
+    def load(self, *, from_disk: bool = False) -> KimiTokens | None:
+        """读凭据。内存缓存只在未到期时使用;到期或 from_disk 时重新读盘——其他进程(另一个 xana 进程、
+        `xana login`)可能已经刷新并轮换了 refresh_token,用缓存里的旧值去刷会得到 invalid_grant。"""
+        if not from_disk and self._cached is not None and self._fresh(self._cached):
             return self._cached
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
@@ -258,7 +263,7 @@ class KimiTokenStore:
 
     def save_payload(self, region: str, payload: dict[str, Any]) -> KimiTokens:
         """OAuth token 响应 → 持久化。refresh_token 缺失时保留旧值。"""
-        old = self.load()
+        old = self.load(from_disk=True)
         refresh = str(payload.get("refresh_token") or (old.refresh_token if old else ""))
         tokens = KimiTokens(
             access_token=str(payload["access_token"]),
@@ -277,13 +282,48 @@ class KimiTokenStore:
             pass
 
     async def access_token(self, *, force_refresh: bool = False) -> str:
-        """取可用 access_token;到期(或 force)先刷新。未登录 → KimiAuthError。"""
+        """取可用 access_token;到期(或 force)先刷新。未登录 → KimiAuthError。
+
+        kimi 每次刷新都会轮换 refresh_token:两个调用同时拿旧 refresh_token 去刷,后到的得到 invalid_grant 且
+        之后一直失败。所以刷新前先拿进程内锁 + 凭据文件锁(跨进程),拿到后重新读盘:别人已经刷新过就直接用。"""
         tokens = self.load()
         if tokens is None:
             raise KimiAuthError("未登录 kimi;请先运行 `xana login`")
-        if not force_refresh and self._clock() < tokens.expires_at - _EXPIRY_MARGIN_S:
+        if not force_refresh and self._fresh(tokens):
             return tokens.access_token
-        if not tokens.refresh_token:
-            raise KimiAuthError("kimi token 已过期且没有 refresh_token;请重新运行 `xana login`")
-        payload = await self._refresher(tokens.region, tokens.refresh_token)
-        return self.save_payload(tokens.region, payload).access_token
+        stale = tokens.access_token
+        async with self._refresh_lock:
+            async with self._file_lock():
+                tokens = self.load(from_disk=True)
+                if tokens is None:
+                    raise KimiAuthError("未登录 kimi;请先运行 `xana login`")
+                if self._fresh(tokens) and (not force_refresh or tokens.access_token != stale):
+                    return tokens.access_token   # 等锁期间已被刷新
+                if not tokens.refresh_token:
+                    raise KimiAuthError("kimi token 已过期且没有 refresh_token;请重新运行 `xana login`")
+                payload = await self._refresher(tokens.region, tokens.refresh_token)
+                return self.save_payload(tokens.region, payload).access_token
+
+    def _fresh(self, tokens: KimiTokens) -> bool:
+        return self._clock() < tokens.expires_at - _EXPIRY_MARGIN_S
+
+    @contextlib.asynccontextmanager
+    async def _file_lock(self, timeout_s: float = 30.0):
+        """凭据文件旁的 .lock(fcntl.flock,跨进程互斥);非阻塞轮询,不卡事件循环。"""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(self._path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            deadline = time.monotonic() + timeout_s
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() > deadline:
+                        raise KimiAuthError("等待 kimi 凭据刷新锁超时")
+                    await asyncio.sleep(0.05)
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
