@@ -22,7 +22,7 @@ status: active
 
 ## 事件 → 调度的形状
 
-`client.stream()` 的 `tool_call` 事件在流内只缓冲（tool_name / input / call_id），**中途不分发**——否则模型看不到工具结果（与 CC query loop 同款）。流出 done 后：无 tool_calls → turn 结束；有则逐个 `_dispatch_tool`，结果写成 role="tool" 的 `MemoryMessage`（metadata 含 tool_use_id / tool_name / ok，以及可选的 `revealed_tools`、`display_text`），loop 回下一轮。
+`client.stream()` 的 `tool_call` 事件在流内只缓冲（tool_name / input / call_id），**中途不分发**——否则模型看不到工具结果（与 CC query loop 同款）。流出 done 后：无 tool_calls → turn 结束；有则逐个 `_dispatch_tool`（`tool_started` payload 带工具的 `display` 与会话 `view_mode`；工具经 `ToolContext.report_progress` 上报的进度在执行期间以 `tool_progress` 事件发出，dispatch 作为 task 运行，事件流被上游关闭时一并取消），结果写成 role="tool" 的 `MemoryMessage`（metadata 含 tool_use_id / tool_name / ok，以及可选的 `revealed_tools`、`display_text`），loop 回下一轮。
 
 ## 单工具管线（`_dispatch_tool`）
 

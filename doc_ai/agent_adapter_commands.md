@@ -30,14 +30,14 @@ status: active
 
 ## DefaultCommandRouter
 
-14 个公开命令（`list_commands()` 返回，供 `/help` 渲染）：`/help`（`/h` 同）、`/clear`、`/compact`、`/model`、`/effort`、`/streaming`、`/thinking`、`/async`、`/attach`、`/cancel`、`/project`、`/search_provider`、`/resume`、`/tasks`；另有 1 个隐藏命令 `/compact_cancel <run_id>`（卡片取消按钮触发，不进 `/help`）。
+15 个公开命令（`list_commands()` 返回，供 `/help` 渲染）：`/help`（`/h` 同）、`/clear`、`/compact`、`/model`、`/effort`、`/streaming`、`/thinking`、`/async`、`/attach`、`/cancel`、`/project`、`/search_provider`、`/view`、`/resume`、`/tasks`；另有 1 个隐藏命令 `/compact_cancel <run_id>`（卡片取消按钮触发，不进 `/help`）。
 
 要点：
 
 - `/help`：输出命令清单；payload 带 send 型按钮（点击即发命令），TG 侧设 `linkify_commands` 隐去按钮。
 - `/clear`：不删旧 session 数据，而是 rotate session——调 adapter 的 `rotate_session(thread_id)`（`BindingStore.rotate` 生成新 sid），同一条外部 thread 的下一条入站解析到新 sid，旧上下文/后台 run 保留在旧 sid 下。
 - `/compact`：compact-as-PH 流程。先经 gateway detach 所有 in-flight run；有 in-flight 就复用其 PH 卡 run_id，否则自建 `compactcmd-...` 卡。经 `ContextSDK.append_compact_placeholder` 占位（拿 SDK compact 锁，防与并发写回竞争）→ `generate_summary` 流式压缩（进度经 `progress_sink` 发 `compact_progress`，带取消按钮）→ `replace_placeholder` 写回 `CompactSummary` → `compact_finalized` note_progress 落卡。结果恒 `silent=True`（卡片已由 note_progress 定态）。取消/失败走 `cancel_compact_placeholder`，不留下running PH。
-- `/model` `/effort` `/streaming` `/thinking` `/async` `/search_provider` `/project`：无参列当前值+可点按钮，有参经 `_persist_with` 写 `SessionConfigStore`。`/async off` 时有 running Placeholder 则拒绝。
+- `/model` `/effort` `/streaming` `/thinking` `/async` `/search_provider` `/view` `/project`：无参列当前值+可点按钮，有参经 `_persist_with` 写 `SessionConfigStore`（`dataclasses.replace`，只改给定字段，`prompt_profile` / `metadata` 原样保留）。`/view detailed|grouped|summary|default` 写 `SessionConfig.view_mode`（default = 清空，回到渠道默认）。`/async off` 时有 running Placeholder 则拒绝。
 - `/attach`：列出 session 内 running Placeholder 作为 `payload.attach_choices`，`requires_detach=True`；用户点按钮后由 adapter 调 `gateway.attach(sid, run_id)` 切前台。
 - `/cancel`：有参取消指定 run（`gateway.cancel`）；无参列可取消菜单。
 - `/resume`：无参列 `run_store.list_unfinished()` 中本 session 的可恢复 run；有参走 `gateway.resume`。
