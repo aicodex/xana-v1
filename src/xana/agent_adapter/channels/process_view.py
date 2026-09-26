@@ -76,7 +76,8 @@ def all_tools(sec: AnswerSection) -> list[ToolBlock]:
 
 
 def build_groups(sec: AnswerSection) -> list[ProcessGroup]:
-    """按记录的步骤归并:进度说明开启新组并作为组标题;思考并入当前组;工具调用进当前组。"""
+    """按记录的步骤归并:进度说明开启新组并作为组标题;思考并入当前组;工具调用进当前组。
+    只有思考、没有工具调用的组不单独成组,思考并入下一组(照 DSH:思考跟随相邻的过程组)。"""
     by_id = {t.call_id: t for t in all_tools(sec) if t.call_id}
     groups: list[ProcessGroup] = []
     for kind, value in sec.steps:
@@ -89,7 +90,18 @@ def build_groups(sec: AnswerSection) -> list[ProcessGroup]:
             groups[-1].thinking += 1
         elif kind == "tool" and value in by_id:
             groups[-1].members.append(by_id[value])
-    return [g for g in groups if g.members or g.thinking]
+    merged: list[ProcessGroup] = []
+    carry = 0
+    for g in groups:
+        if not g.members:
+            carry += g.thinking
+            continue
+        g.thinking += carry
+        carry = 0
+        merged.append(g)
+    if carry and merged:
+        merged[-1].thinking += carry
+    return merged
 
 
 def _count_items(members: list[ToolBlock], thinking: int) -> list[str]:
