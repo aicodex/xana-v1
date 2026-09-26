@@ -1,4 +1,4 @@
-"""web_research / deep_research:调用独立部署的 xana-search 服务(~/project/xana-search)。
+"""web_search / web_open_url / deep_research:调用独立部署的 xana-search 服务(~/project/xana-search)。
 
 服务负责并行搜索(自建 SearXNG)、并行抓取、小模型按目标阅读与引用校验、深度搜索后台任务;
 这里只做参数校验、带 token 的 HTTP 请求和结果渲染。地址与 token 在 system.json
@@ -18,47 +18,57 @@ from xana.policy.contracts import PermissionResult
 from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
-_SEARCH_TIMEOUT_S = 240.0
+_OPEN_TIMEOUT_S = 180.0
 _MAX_WAIT_S = 600
 
-_RESEARCH_SPEC = ToolSpec(
+_SEARCH_SPEC = ToolSpec(
     component=ComponentSpec(
-        kind="tool", name="web_research", qualified_name="builtin.web_research",
+        kind="tool", name="web_search", qualified_name="builtin.web_search",
         description=(
-            "并行联网搜索并阅读网页。一次给多条查询(1–8 条),服务并行搜索、合并去重,打开排名靠前的网页并按 "
-            "objective 提炼要点;每条要点附原文引用,数字已逐字核对。也可以用 urls 直接读取指定网页(最多 30 个)。\n"
-            "effort 决定读多少页:low 约 5 页(查一个事实),medium 约 15 页(默认,比较几个对象),high 约 40 页"
-            "(需要交叉验证的调研);read 可直接指定页数(0–60)。\n"
-            "用法:查询要简短,从不同角度切入(主体+指标、行业+排名、中英文各一条);结果不够时换关键词再搜,"
-            "或对感兴趣的链接用 urls 追读。全文保存在返回的目录里,要核对原文时用 read/grep。回答中引用来源用 "
-            "[标题](url)。需要多轮检索、综合成报告的复杂问题用 deep_research。"),
+            "联网搜索。一次给 1–4 条查询,并行执行、合并去重,返回每条结果的标题、链接、日期和搜索引擎摘要"
+            "(不是网页全文),几秒内返回。\n"
+            "摘要里看起来相关、需要细节或核实的结果,用 web_open_url 打开读全文;只打开真正需要的几个。"
+            "查询要具体、简短,从不同角度切入;结果里没有需要的内容就换关键词再搜。回答中引用来源用 [标题](url)。"),
         source=ComponentSource(source_type="builtin", scope="system")),
     input_schema={
         "type": "object",
         "properties": {
-            "queries": {"type": "array", "items": {"type": "string"}, "maxItems": 8,
-                        "description": "搜索查询,1–8 条,并行执行"},
-            "objective": {"type": "string",
-                          "description": "这次要找什么(提炼要点的依据),例如「比较四家公司 2025 年营收与毛利率」"},
-            "effort": {"type": "string", "enum": ["low", "medium", "high"],
-                       "description": "努力程度,默认 medium(约 15 页);low 约 5 页;high 约 40 页"},
-            "read": {"type": "integer", "minimum": 0, "maximum": 60,
-                     "description": "直接指定阅读的网页数(覆盖 effort);0 只返回搜索结果摘要"},
-            "urls": {"type": "array", "items": {"type": "string"}, "maxItems": 30,
-                     "description": "直接读取这些网页(与 queries 二选一)"},
+            "queries": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4,
+                        "description": "搜索查询,1–4 条,并行执行"},
             "recency_days": {"type": "integer", "minimum": 1, "description": "只要最近 N 天的结果(可选)"},
             "domains": {"type": "array", "items": {"type": "string"}, "maxItems": 10,
                         "description": "限定站点,如 [\"cninfo.com.cn\"](可选)"},
         },
+        "required": ["queries"],
     },
-    read_only=True, open_world=True, concurrency="parallel", timeout_s=_SEARCH_TIMEOUT_S,
+    read_only=True, open_world=True, concurrency="parallel", timeout_s=60,
+)
+
+_OPEN_SPEC = ToolSpec(
+    component=ComponentSpec(
+        kind="tool", name="web_open_url", qualified_name="builtin.web_open_url",
+        description=(
+            "打开网页读全文(一次 1–10 个 URL,并行抓取;需要 JS 渲染的页面会用浏览器渲染,PDF 会抽文本)。"
+            "给了 objective 时,按它提炼要点,每条附原文引用,数字已逐字核对;不给则返回正文开头。"
+            "全文保存在返回的目录里,要核对原文时用 read/grep。返回的内容像登录页或落地页,说明被登录墙挡住了。"),
+        source=ComponentSource(source_type="builtin", scope="system")),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "urls": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 10,
+                     "description": "要打开的完整 http/https 链接,1–10 个"},
+            "objective": {"type": "string", "description": "要从这些页面里找什么(可选,提炼要点的依据)"},
+        },
+        "required": ["urls"],
+    },
+    read_only=True, open_world=True, concurrency="parallel", timeout_s=_OPEN_TIMEOUT_S,
 )
 
 _DEEP_SPEC = ToolSpec(
     component=ComponentSpec(
         kind="tool", name="deep_research", qualified_name="builtin.deep_research",
         description=(
-            "深度搜索(后台任务)。给一个研究问题,服务自己拆子问题、多轮检索与补搜、阅读上百个网页,最后写出带编号"
+            "深度搜索(后台任务,另一个研究流程在服务端独立运行)。给一个研究问题,服务自己拆子问题、多轮检索与补搜、阅读上百个网页,最后写出带编号"
             "引用的报告。effort:low 约 3 个子问题 1 轮(几分钟);medium 4 个子问题 2 轮(默认,约 5–15 分钟);"
             "high 6 个子问题 3 轮(约 15–40 分钟,适合产业链梳理、多方交叉验证)。\n"
             "用法:提交时给 question,立即返回 job_id;之后用 job_id 查询,wait_s 表示最多等待多少秒(≤600),"
@@ -129,10 +139,6 @@ class XanaSearchClient:
             raise
 
 
-async def _noop(_: str) -> None:
-    return None
-
-
 class XanaSearchError(RuntimeError):
     def __init__(self, message: str, *, retryable: bool = False) -> None:
         super().__init__(message)
@@ -172,50 +178,56 @@ class _Base(Tool):
         return None
 
 
-class WebResearchTool(_Base):
-    _spec = _RESEARCH_SPEC
+class XanaWebSearchTool(_Base):
+    _spec = _SEARCH_SPEC
 
     async def validate(self, invocation: ToolInvocation) -> None:
-        inp = invocation.input
-        if bool(inp.get("queries")) == bool(inp.get("urls")):
-            raise ValueError("queries 与 urls 必须且只能给一个")
+        if not [q for q in invocation.input.get("queries") or [] if str(q).strip()]:
+            raise ValueError("queries 至少一条")
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         inp = invocation.input
-        objective = str(inp.get("objective") or "")
+        body: dict[str, Any] = {"queries": [str(q) for q in inp["queries"]][:4], "read": 0}
+        if inp.get("recency_days"):
+            body["recency_days"] = int(inp["recency_days"])
+        if inp.get("domains"):
+            body["domains"] = list(inp["domains"])[:10]
         try:
-            if inp.get("urls"):
-                data = await self.client.request("POST", "/v1/fetch", timeout=_SEARCH_TIMEOUT_S,
-                                                 json={"urls": list(inp["urls"])[:30], "objective": objective})
-            else:
-                body: dict[str, Any] = {"queries": list(inp["queries"])[:8], "objective": objective,
-                                        "effort": str(inp.get("effort") or "medium"), "background": True}
-                if inp.get("read") is not None:
-                    body["read"] = int(inp["read"])
-                if inp.get("recency_days"):
-                    body["recency_days"] = int(inp["recency_days"])
-                if inp.get("domains"):
-                    body["domains"] = list(inp["domains"])[:10]
-                job = await self.client.request("POST", "/v1/search", json=body, timeout=30)
-                row = await self.client.follow(job["job_id"], timeout_s=_SEARCH_TIMEOUT_S,
-                                               progress=context.report_progress, cancel_on_abort=True)
-                if row["status"] != "completed":
-                    raise XanaSearchError(f"搜索任务 {row['status']}: {row.get('error') or row.get('message')}",
-                                          retryable=row["status"] == "interrupted")
-                data = row["result"]
+            data = await self.client.request("POST", "/v1/search", json=body, timeout=60)
         except (httpx.HTTPError, XanaSearchError) as exc:
-            return _failure("web_research", exc)
+            return _failure("web_search", exc)
         stats = data["report"]["stats"]
+        return ToolResult(ok=True, content={"stats": stats}, rendered=data["text"],
+                          metadata={"display_text": f"{stats['queries']} 个查询 · {stats['hits']} 条结果"})
+
+
+class WebOpenUrlTool(_Base):
+    _spec = _OPEN_SPEC
+
+    async def validate(self, invocation: ToolInvocation) -> None:
+        urls = invocation.input.get("urls") or []
+        if not urls or any(not str(u).startswith(("http://", "https://")) for u in urls):
+            raise ValueError("urls 需要 1–10 个完整的 http/https 链接")
+
+    async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
+        inp = invocation.input
+        try:
+            job = await self.client.request("POST", "/v1/fetch", timeout=30, json={
+                "urls": [str(u) for u in inp["urls"]][:10], "objective": str(inp.get("objective") or ""),
+                "background": True})
+            row = await self.client.follow(job["job_id"], timeout_s=_OPEN_TIMEOUT_S,
+                                           progress=context.report_progress, cancel_on_abort=True)
+            if row["status"] != "completed":
+                raise XanaSearchError(f"读取任务 {row['status']}: {row.get('error') or row.get('message')}",
+                                      retryable=row["status"] == "interrupted")
+        except (httpx.HTTPError, XanaSearchError) as exc:
+            return _failure("web_open_url", exc)
+        data = row["result"]
+        stats = data["report"]["stats"]
+        rel = f" · 相关 {stats['relevant']}" if stats.get("summarized") else ""
         return ToolResult(ok=True, content={"stats": stats, "dump_dir": data["report"]["dump_dir"]},
                           rendered=data["text"],
-                          metadata={"display_text": _display(stats, bool(inp.get("urls")))})
-
-
-def _display(stats: dict, fetch: bool) -> str:
-    if fetch:
-        return f"读取 {stats['read']} 个网页 · 相关 {stats['relevant']} · {stats['elapsed_s']} 秒"
-    return (f"搜索 {stats['queries']} 个查询 · 阅读 {stats['read']} 个网页 · 相关 {stats['relevant']}"
-            f" · {stats['elapsed_s']} 秒")
+                          metadata={"display_text": f"{stats['fetched']}/{stats['read']} 个网页{rel}"})
 
 
 class DeepResearchTool(_Base):

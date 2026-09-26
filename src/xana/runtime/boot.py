@@ -95,7 +95,8 @@ from xana.tools.builtin.tool_search import ToolSearchTool
 from xana.tools.builtin.web_fetch import WebFetchTool
 from xana.tools.builtin.report_goal import ReportGoalTool
 from xana.tools.builtin.web_search import WebSearchTool
-from xana.tools.builtin.xana_search import DeepResearchTool, WebResearchTool, XanaSearchClient
+from xana.tools.builtin.xana_search import (DeepResearchTool, WebOpenUrlTool, XanaSearchClient,
+                                            XanaWebSearchTool)
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import ToolRegistry
 from xana.tools.registry import InMemoryToolRegistry
@@ -295,12 +296,14 @@ async def boot(
         system_config=system_cfg,
         system_json_path=_sys_json_path,
     )
-    # 联网:配置了 xana-search 服务时默认用 web_research / deep_research(并行搜索 + 阅读 + 深度搜索),
-    # 不再注册旧的 web_search / web_fetch;未配置时沿用旧工具(brave key 走 web_search.brave_search_key)
+    # 联网:配置了 xana-search 服务时用 web_search(只返回搜索摘要)/ web_open_url(读全文 + 按目标提炼)
+    # / deep_research(服务端后台研究);未配置时沿用旧的 web_search / web_fetch(brave key 走
+    # web_search.brave_search_key)
     if system_cfg.web_search.xana_search_url:
         search_client = XanaSearchClient(system_cfg.web_search.xana_search_url,
                                          system_cfg.web_search.xana_search_token)
-        await tools.register(WebResearchTool(search_client))
+        await tools.register(XanaWebSearchTool(search_client))
+        await tools.register(WebOpenUrlTool(search_client))
         await tools.register(DeepResearchTool(search_client))
     else:
         await tools.register(WebSearchTool(
