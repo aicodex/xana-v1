@@ -32,4 +32,4 @@ kimi-code 同款设备码流程，全程无浏览器回调依赖：
 
 ## token 续期
 
-token 到期刷新由 `KimiTokenStore`（llm_driver 侧）在使用时自动完成（`grant_type=refresh_token`，过期前 60s  margin）；刷新失败抛 `KimiAuthError`，消息引导重新 `xana login`。
+token 到期刷新由 `KimiTokenStore`（llm_driver 侧）在使用时自动完成（`grant_type=refresh_token`，过期前 60s margin；access_token 约 15 分钟有效）。kimi 每次刷新都轮换 refresh_token，所以：内存缓存只在未到期时使用，到期后重新读盘（其他进程或 `xana login` 可能已刷新）；刷新在进程内 asyncio 锁 + 凭据文件旁 `.lock`（flock，跨进程）内进行，拿到锁后重读磁盘，别人已刷新就直接复用，不重复刷新。刷新失败抛 `KimiAuthError`，消息引导重新 `xana login`。

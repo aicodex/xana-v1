@@ -25,7 +25,7 @@ status: active
 - `component: ComponentSpec` — agent 身份载体（kind/name/qualified_name/source），`name` 是 gateway 路由和 harness `agent_name` 的实际值。
 - `prompt_id: str` — prompt 模板标识（如 builtin chat 用 `"chat-default"`）；v1 未做模板查表，实际 prompt 由 harness 13 段拼装。
 - `when_to_use: str` — 描述该 agent 适用场景，供未来 registry/委派选择使用。
-- `allowed_tools` / `disallowed_tools` / `allowed_skills` / `hooks: tuple[str, ...]` — 工具/技能/钩子名白名单或黑名单，v1 仅声明，未在 mapper 强制执行。
+- `allowed_tools` / `disallowed_tools` / `allowed_skills` / `hooks: tuple[str, ...]` — 工具/技能/钩子名白名单或黑名单。`allowed_tools` / `disallowed_tools` 已生效：`ChatAgent` 放进 `config_snapshot`，harness 在 tools schema 与执行两处过滤（空白名单 = 不限制，builtin chat 即如此）；`allowed_skills` / `hooks` 仍仅声明。
 - `model: str | None` / `effort: str | int | None` — 默认模型与推理强度；运行时以 `SessionConfigStore` 的会话配置优先（见 [agents_request_mapping](agents_request_mapping.md)）。
 - `permission_policy: str | None` / `sandbox_policy: SandboxPolicySpec | None` — 指向 [policy](policy.md) 模块的合约，v1 未执行。
 - `memory_scope: MemoryScope | None` — `user / project / agent / session` 之一。
@@ -58,7 +58,7 @@ status: active
 
 identity 渲染为 `"# {name}\n\n目标:{goal}\n\n{正文}"`，插在 INTRO 之后、SYSTEM 之前；`system_prompt=None` 保留默认 13 段系统提示（不用 override）。生成的其他字段：`qualified_name="user.{name}"`、`prompt_id="agent.{name}"`、`ComponentSource(source_type="user", scope="user", path=AGENT.md 路径)`。
 
-⚠️ `allowed_tools` / `allowed_skills` 目前**全库无消费者**：v1 的 mapper 不做白名单强制执行（见 [agents_request_mapping](agents_request_mapping.md)），声明位如实标注。
+`tools`（→ `allowed_tools`）由 harness 强制执行（schema 只含名单内工具，名单外调用返回 policy_forbidden）；`allowed_skills` 仍无消费者。
 
 ## 不变量
 

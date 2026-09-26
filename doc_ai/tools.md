@@ -61,7 +61,8 @@ status: active
 | `cron_delete` | `cron.py` | 按 ID 删除定时任务 | defer |
 | `web_search` | `xana_search.py` | 配置了 xana-search 服务（`system.json` `web_search.xana_search_url/token`）时注册：1–4 条查询并行，只返回标题/链接/日期/搜索引擎摘要 | read_only, open_world, parallel |
 | `web_open_url` | `xana_search.py` | 同上：打开 1–10 个网页读全文，给 objective 时由小模型提炼要点（原文引用逐字核对）；执行中经 `report_progress` 上报阅读进度 | read_only, open_world, parallel |
-| `deep_research` | `xana_search.py` | 同上：服务端后台深度研究任务，提交返回 job_id，`wait_s` 长轮询（期间上报进度） | read_only, open_world, parallel |
+| `background_research` | `xana_search.py` | 同上：服务端后台研究任务（本地 27B 规划 + 4B 阅读，不占主模型），提交返回 job_id，`wait_s` 长轮询（期间上报进度） | read_only, open_world, parallel |
+| `deep_research` | `lead_research.py` | 配置了 xana-search 时注册：主模型当研究负责人拆子课题（effort low/medium/high = 3/4/6）→ 经 `AgentRunner` 并行跑内置 `researcher` 子 agent → 汇总成带出处的报告；实时进度，子研究员原始发现写到工作区 `research/<日期>/`（设计见 [lead-research-design](../docs/design/lead-research-design.md)） | read_only, open_world, parallel |
 | `web_search`（旧） | `web_search.py` | 未配置 xana-search 时的回退：联网搜索（native/brave/duckduckgo） | read_only, open_world, defer |
 | `web_fetch`（旧） | `web_fetch.py` | 未配置 xana-search 时的回退：抓 URL 抽正文（bs4 优先，正则回退） | read_only, open_world, defer |
 

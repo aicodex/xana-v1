@@ -38,7 +38,7 @@ status: active
 - [state](state.md) — session、run、checkpoint、resume、usage 状态合约。
 - extension_api — extension 合约（`src/xana/extension_api/`），尚无模块文档。
   - 8 种 Contributor ABC（`interfaces.py`）：`ContextContributor`（system prompt 片段）、`TurnInputContributor`（per-turn 上下文注入）、`ToolContributor`（声明工具）、`ToolLifecycleContributor`（on_tool_start/finish）、`TurnLifecycleContributor`（on_turn_start/stop/abort）、`ThreadLifecycleContributor`（on_thread_start/stop）、`ConfigContributor`（on_config_changed）、`ApprovalReviewContributor`（权限覆盖复核，approval 实际走这里）。
-  - Runtime Service ABC（`capabilities.py`，构造注入给 extension）：`SchedulerService`（有实现 `runtime.scheduler.FileSchedulerService`）、`AgentSpawner`（首个实现 `agent_adapter.gateway.GatewayAgentSpawner`，spawn 链 + fork 前缀拷贝）、`SandboxManager`（仅接口合约，无实现）。
+  - Runtime Service ABC（`capabilities.py`，构造注入给 extension）：`SchedulerService`（有实现 `runtime.scheduler.FileSchedulerService`）、`AgentSpawner`（首个实现 `agent_adapter.gateway.GatewayAgentSpawner`，spawn 链 + fork 前缀拷贝）、`AgentRunner`（同步跑子 agent 取回最终文本，实现 `agent_adapter.agent_runner.GatewayAgentRunner`，deep_research 用）、`SandboxManager`（仅接口合约，无实现）。
   - 组装：`ExtensionRegistryBuilder().add(ext).build()` → frozen `ExtensionRegistry`，由 `boot(extension_registry=...)` 注入 `DefaultHarness`；`None` 时行为与未引入 Extension API 前一致。
 - [evolution_module](evolution_module.md) — 自进化迭代实现：`src/xana/evolution/`（账本 / 变更单 / episode 状态机 / 元 agent 服务）。
 - session_config — per-session 运行时旋钮（model/effort/streaming 等）持久化边界（`src/xana/session_config/`），尚无模块文档。

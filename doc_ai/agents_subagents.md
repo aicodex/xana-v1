@@ -38,6 +38,8 @@ status: active
 
 extension_api `AgentSpawner` 的首个实现 `GatewayAgentSpawner` 与 dispatcher 同文件：spawn 走 gateway `_submit` 同款链路（InboundMessage 带 `spawn_run_id` / `spawn_background` / `target_agent` metadata，fire-and-forget 后台排干），写/补 `SessionRecord.parent_*`；`fork=True` 时经 `ContextSDK.snapshot_for_fork` 把父上下文快照拷贝为子 session 初始前缀——父缓冲只读共享（子不写入父）、子 run 只 append 私有后缀、结果不做上下文物理合并（回流走后续阶段的账本/变更单，防分支污染）。fork 的父 session 从子 SessionRecord.parent_* 解析，无 lineage 记录时退回自身 session（退化自拷贝）。详见 [agent_adapter_gateway](agent_adapter_gateway.md)。
 
+**同步运行子 agent：`AgentRunner`**（`extension_api/capabilities.py`，实现 `agent_adapter/agent_runner.py` 的 `GatewayAgentRunner`）。`AgentSpawner` 是发射后不管、只返回 run_id、且经 `_submit` 会触碰渠道；需要等结果的场景（deep_research 的并行子研究员）用 `AgentRunner.run(agent_name, prompt, session_id, parent_run_id, on_tool) -> AgentRunOutcome(run_id, status, text, tool_counts, error)`：直接调已注册 agent 的 `send()` 收集 `final`，不发卡片、不切换前台；`on_tool` 按工具名回调供调用方汇总进度；等待任务被取消时触发子 run 的 AbortSignal。子 run 的 metadata 带 `parent_run_id`（RunRecord 记父子关系、子 run 不注入无进度提醒）。防递归靠子 agent 的工具白名单（researcher 不含 deep_research）。
+
 尚未落地：`DelegationPolicy` 的 `allowed_agents` 白名单、权限/工具继承（inherit/override/intersect）、`isolation` 等字段仍仅声明，无执行点。
 
 ## harness 侧已落地的 fork 机制

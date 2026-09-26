@@ -39,7 +39,8 @@ status: active
 | `defer` | bool | 隐藏工具标记（见下） |
 | `display` | `ToolDisplay` \| None | 默认显示配置（见下）；None = 渲染层兜底 |
 
-注意：`concurrency` / `interrupt_behavior` / `permission_policy` / `sandbox_policy` / `timeout_s` 目前主要是声明与合约位，harness 的分发循环（`DefaultHarness._dispatch_tool`）尚未消费它们；实际超时/取消行为由各工具自己在 `execute`/`cancel` 内实现（如 Bash 的 timeout 与 SIGTERM/SIGKILL）。
+`concurrency` 已被 harness 消费：同一轮里连续的 `"parallel"` 调用成批并发执行（上限 10），其余独占执行，结果按模型发出顺序写回（`harness_sdk/tool_batches.py`，见 [harness_tool_dispatch](harness_tool_dispatch.md)）。当前声明 parallel 的：read / glob / grep / memory_search / web_search / web_open_url / web_fetch / deep_research / background_research。
+注意：`interrupt_behavior` / `permission_policy` / `sandbox_policy` / `timeout_s` 目前主要是声明与合约位，harness 的分发循环（`DefaultHarness._dispatch_tool`）尚未消费它们；实际超时/取消行为由各工具自己在 `execute`/`cancel` 内实现（如 Bash 的 timeout 与 SIGTERM/SIGKILL）。
 
 ## display：工具的默认显示配置
 

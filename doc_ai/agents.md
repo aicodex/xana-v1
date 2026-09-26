@@ -22,6 +22,8 @@ agent spec、outer API、会话侧行为包装。
 
 用户可在 `{XANA_HOME}/agents/{name}/AGENT.md`（默认 `~/.xana/agents/`）放角色定义文档：frontmatter 必填 `kind: agent` / `name` / `goal` / `tools`（白名单），可选 `skills` / `budget` / `stop_rules` / `output_contract` / `prompt_profile`（模式名或开关 mapping）/ `verify`（检查命令列表）；正文是工作流步骤，渲染进 AgentSpec.identity。boot 时经 `FileAgentRegistry` 加载为 `ChatAgent` 实例注册进 `gateway.agents`，builtin chat 保持默认。
 
+另有内置 `researcher`（`agents/researcher.py`）：deep_research 派出的子研究员，工具白名单 web_search / web_open_url / read、max_turns 20、不向用户提问；配置了 xana-search 时由 boot 注册（不接进度汇报，不触碰渠道），不进文件 agent 注册表。
+
 ## 与 SKILL.md 的边界
 
 AGENT.md 与 SKILL.md 共用同一个解析器（`MarkdownDocParser` 按 frontmatter `kind` 区分），但物理目录分开（`~/.xana/agents/` vs `~/.xana/skills/`），语义完全不同：**skill 是做法库**——prompt 指令包，经 `skill_load` 两阶段按需取全文，不 spawn 任何实体；**agent 是角色定义**——可被 spawn 的 AgentSpec 来源（identity + 工具/技能白名单）。一个 agent 的 frontmatter `skills` 字段引用的是 skill 名（映射到 `allowed_skills`，目前无消费者）。详见 [skills](skills.md) 与 [skills_package](skills_package.md)。
