@@ -188,17 +188,37 @@ async def boot(
     # reads are served from the SDK (canonical). P3-D.
     from xana.context.sdk import ContextSDK
     context_sdk = ContextSDK()
-    # Bug B fix: construct the harness early so we can wire its
-    # _session_prompt_tokens cache to the active-context store's on_clear
-    # callback (popping stale entries when /clear runs). See
-    # docs/design/session-and-card-state.md §1.5.
+    skills = InMemorySkillRegistry()
+
+    # bundled skills:独立 registry,零每轮注入;全文经 skill_load 按需取,
+    # 列表段由 SkillsListingContributor 注入(仅当调用方未传 extension_registry)。
+    # §5.1 文件 SKILL.md 与 bundled 注册进同一个 registry、走同一个
+    # skill_load 两阶段路径(不新建平行机制);坏文档记 warning 不阻塞 boot。
+    from xana.skills.markdown_loader import FileSkillLoader, scan_skill_docs
+    _doc_parser = MarkdownDocParser()
+    bundled_skills = InMemorySkillRegistry()
+    for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill()):
+        await bundled_skills.register(bundled)
+    _file_skills, _skill_doc_errors = await scan_skill_docs(
+        _xana_home() / "skills", loader=FileSkillLoader(parser=_doc_parser),
+    )
+    for _err in _skill_doc_errors:
+        _logger.warning("SKILL.md 加载失败: %s", _err)
+    for _file_skill in _file_skills:
+        await bundled_skills.register(_file_skill)
+    if extension_registry is None:
+        extension_registry = (ExtensionRegistryBuilder()
+                              .add(SkillsListingContributor(skills=bundled_skills))
+                              .build())
+
+    # 扩展注册表须在构造 harness 之前组装完毕(harness 构造时即持有它)。
+    # harness 提前构造:/clear 时经 on_clear 丢弃它记下的 prompt 占用
+    # (docs/design/session-and-card-state.md §1.5)。
     _harness = DefaultHarness(extension_registry=extension_registry)
-    def _on_clear_drop_token_cache(sid: str, agent: str) -> None:
-        _harness._session_prompt_tokens.pop((sid, agent), None)
 
     active_ctx_inner = InMemoryActiveContextStore(
         context_sdk=context_sdk,
-        on_clear=_on_clear_drop_token_cache,
+        on_clear=_harness.forget_prompt_tokens,
     )
     main_writer: MainWriter | None = None
     run_jsonl_writer: RunJsonlWriter | None = None
@@ -258,30 +278,7 @@ async def boot(
     await tools.register(TodoWriteTool(todo_store))
     await tools.register(EnterPlanModeTool(session_config_store=session_config_store))
     await tools.register(EnterWorktreeTool(session_config_store=session_config_store, worktree_root=worktree_root))
-
-    skills = InMemorySkillRegistry()
-
-    # bundled skills:独立 registry,零每轮注入;全文经 skill_load 按需取,
-    # 列表段由 SkillsListingContributor 注入(仅当调用方未传 extension_registry)。
-    # §5.1 文件 SKILL.md 与 bundled 注册进同一个 registry、走同一个
-    # skill_load 两阶段路径(不新建平行机制);坏文档记 warning 不阻塞 boot。
-    from xana.skills.markdown_loader import FileSkillLoader, scan_skill_docs
-    _doc_parser = MarkdownDocParser()
-    bundled_skills = InMemorySkillRegistry()
-    for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill()):
-        await bundled_skills.register(bundled)
-    _file_skills, _skill_doc_errors = await scan_skill_docs(
-        _xana_home() / "skills", loader=FileSkillLoader(parser=_doc_parser),
-    )
-    for _err in _skill_doc_errors:
-        _logger.warning("SKILL.md 加载失败: %s", _err)
-    for _file_skill in _file_skills:
-        await bundled_skills.register(_file_skill)
     await tools.register(SkillLoadTool(skills=bundled_skills))
-    if extension_registry is None:
-        extension_registry = (ExtensionRegistryBuilder()
-                              .add(SkillsListingContributor(skills=bundled_skills))
-                              .build())
 
     cp = config_provider or DefaultConfigProvider()
     runtime_config = await cp.load(project_root)
@@ -468,7 +465,7 @@ async def boot(
             gateway.agents[_spec.component.name] = _doc_agent
 
     # deep_research(docs/design/lead-research-design.md):主模型当研究负责人,并行派出内置子研究员
-    # (researcher:只有 web_search / web_open_url / read)。子研究员不接进度汇报(不触碰渠道)。
+    # (researcher:只有 web_search / web_open_url / Read)。子研究员不接进度汇报(不触碰渠道)。
     if system_cfg.web_search.xana_search_url:
         from xana.agent_adapter.agent_runner import GatewayAgentRunner
         from xana.agents.researcher import RESEARCHER_AGENT, build_researcher_agent_spec
@@ -478,6 +475,17 @@ async def boot(
             runner=GatewayAgentRunner(agents=gateway.agents, session_store=state.sessions()),
             model_registry=model_registry, provider=provider, model=model,
             findings_root=project_root / "research", researcher_agent=RESEARCHER_AGENT))
+
+    # agent 工具白名单里写了不存在的工具名:该名字不会生效(按名精确匹配),记 warning 提示修正。
+    _tool_names = {sp.component.name for sp in await tools.list_specs()}
+    _checked_specs = list(await agent_registry.list_specs())
+    if system_cfg.web_search.xana_search_url:
+        _checked_specs.append(build_researcher_agent_spec())
+    for _spec in _checked_specs:
+        _unknown = sorted(set(_spec.allowed_tools) - _tool_names)
+        if _unknown:
+            _logger.warning("agent %s 的工具白名单含未注册的工具 %s(已注册:%s)",
+                            _spec.component.name, _unknown, sorted(_tool_names))
 
     # §6.3: 元 agent 服务。迭代对象 = 首个文档 agent(没有则 builtin.chat);
     # cron 幂等安装,首个 episode 时创建。

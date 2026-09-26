@@ -22,7 +22,7 @@ B 明显更好,形态同 Anthropic 多智能体研究系统(lead + subagents)。
 ## 1. 工作流
 
 1. **规划**(主模型一次调用,无工具):把研究问题拆成 N 个互不重叠的子课题,每个写清要查什么、要什么证据、交付什么。N 由 effort 决定:low 3、medium 4、high 6。
-2. **并行子 agent**:每个子课题一个 `researcher` agent 的独立 run(完整 harness,工具只有 web_search / web_open_url / read,研究员身份,max_turns 20,无用户交互),交回带出处的发现。
+2. **并行子 agent**:每个子课题一个 `researcher` agent 的独立 run(完整 harness,工具只有 web_search / web_open_url / Read,研究员身份,max_turns 20,无用户交互),交回带出处的发现。
 3. **汇总**(主模型一次调用,无工具):只用发现里有出处的事实写报告,保留 `[标题](url)`,矛盾并列说明,列出未能确认的内容。
 4. 进度:`report_progress` 上报"规划子课题"→"子研究员 k/N 完成 · 搜索 x 次 · 打开 y 个网页"→"汇总报告"。
 5. 返回:报告正文 + 统计;子 agent 的原始发现写进工作区文件,路径附在结果里,供回查。

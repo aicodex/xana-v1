@@ -1,7 +1,7 @@
 """deep_research:主模型当研究负责人,拆子课题 → 并行派出子研究员(researcher agent)→ 汇总成带出处的报告。
 
 设计见 docs/design/lead-research-design.md(形态同 Anthropic 多智能体研究系统)。子研究员是完整的
-harness run,工具只有 web_search / web_open_url / read;规划与汇总是两次不带工具的模型调用。
+harness run,工具只有 web_search / web_open_url / Read;规划与汇总是两次不带工具的模型调用。
 被取消时(用户中断)等待中的子 run 一并中止。
 """
 from __future__ import annotations

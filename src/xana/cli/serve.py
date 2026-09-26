@@ -215,10 +215,10 @@ def _make_daemon_on_action(gateway):
         run_id = payload.get("run_id") if isinstance(payload, dict) else None
         if kind == "cancel":
             await gateway.cancel(sid, run_id)
-        elif kind == "attach" and hasattr(gateway, "attach") and run_id:
+        elif kind == "attach" and run_id:
             await gateway.attach(sid, run_id)
-        elif kind == "detach" and hasattr(gateway, "detach") and run_id:
-            await gateway.detach(sid, run_id)
+        elif kind == "detach":
+            await gateway.detach_foreground(sid)
         # button: client-managed, no-op
     return on_action
 

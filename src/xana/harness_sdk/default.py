@@ -151,6 +151,10 @@ class DefaultHarness(Harness):
         # 变化的上下文一律以 ContextNote 追加进历史,不再改 system。
         self._session_systems: dict[tuple[str, str], tuple[str, str]] = {}
 
+    def forget_prompt_tokens(self, session_id: str, agent_name: str) -> None:
+        """/clear 后丢弃该会话记下的上一轮 prompt 占用,避免按旧值误判压缩。"""
+        self._session_prompt_tokens.pop((session_id, agent_name), None)
+
     def _session_system(
         self,
         context: HarnessContext,
@@ -1223,15 +1227,18 @@ class DefaultHarness(Harness):
             # agent 的工具白名单 / 黑名单(AgentSpec.allowed_tools / disallowed_tools;空白名单 = 不限制)
             schemas = [sc for sc in schemas if _tool_allowed(sc["name"], context.config_snapshot)]
             deferred_names = [d for d in deferred_names if _tool_allowed(d[0], context.config_snapshot)]
-            # native web_search 互斥(同构 yuxu _maybe_inject_web_search):
-            # search_provider 为 native(或未设)且 provider 为 deepseek 系 →
-            # 函数版 web_search 整体让位给模型端 server tool,从 schema 与
-            # deferred 名单一并剔除,并经 metadata 通知 provider 注入。
+            # 原生联网搜索互斥(同构 yuxu _maybe_inject_web_search):search_provider 为 native(或未设)且
+            # provider 为 deepseek 系时,声明 yields_to_native 的搜索工具让位给模型端 server tool,
+            # 从 schema 与 deferred 名单剔除,并经 metadata 通知 provider 注入。只在该工具仍在本 agent
+            # 可用范围内时触发:白名单外的 agent 不会因此获得联网能力。
             request_metadata: dict[str, Any] = {}
-            if (context.config_snapshot.get("search_provider") in (None, "", "native")
-                    and provider.startswith("deepseek")):
-                schemas = [s for s in schemas if s.get("name") != "web_search"]
-                deferred_names = [d for d in deferred_names if d[0] != "web_search"]
+            yielding = {sp.component.name for sp in specs if sp.yields_to_native}
+            if (yielding and context.config_snapshot.get("search_provider") in (None, "", "native")
+                    and provider.startswith("deepseek")
+                    and (any(sc["name"] in yielding for sc in schemas)
+                         or any(d[0] in yielding for d in deferred_names))):
+                schemas = [sc for sc in schemas if sc["name"] not in yielding]
+                deferred_names = [d for d in deferred_names if d[0] not in yielding]
                 request_metadata["web_search_native"] = True
             # 前缀缓存路由键:同会话请求落到同一缓存(kimi prompt_cache_key)。
             request_metadata["prompt_cache_key"] = session_id

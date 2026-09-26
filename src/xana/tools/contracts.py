@@ -94,6 +94,9 @@ class ToolSpec:
     user_facing_name: str | None = None
     defer: bool = False  # True = 隐藏工具:模型只见名字,经 tool_search 揭示后才发完整 schema
     display: ToolDisplay | None = None  # 默认显示配置;None = 渲染层兜底(类别 other,动词用工具名)
+    # True = provider 有等价的原生服务端能力(如 deepseek 原生联网搜索)时让位:harness 从 schema 剔除本工具,
+    # 改由 provider 注入原生能力。仅当本工具在该 agent 的可用范围内时才触发。
+    yields_to_native: bool = False
 
 
 @dataclass(frozen=True)

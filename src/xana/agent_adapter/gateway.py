@@ -47,7 +47,6 @@ class DefaultAgentGateway(AgentGateway):
         self.adapters: dict[str, Adapter] = {}
         self.command_router: CommandRouter | None = None
         self.bindings: dict[str, SessionBinding] = {}
-        self._cancel_flags: dict[str, bool] = {}
         # P5 fix — live abort signal per run_id. cancel() flips this in-place
         # so an already-running turn's tool poll loop sees it. Cleaned up in
         # _submit finally.
@@ -339,7 +338,6 @@ class DefaultAgentGateway(AgentGateway):
         raise NotImplementedError("subscribe is not used by the CLI flow in v1")
 
     async def cancel(self, session_id: str, run_id: str | None = None) -> None:
-        self._cancel_flags[session_id] = True
         # P5 fix — flip the live AbortSignal so an in-flight tool's poll loop
         # in DefaultHarness._run_tool_with_abort sees abort.aborted == True.
         # Without this, cancel only took effect on the NEXT turn (via
@@ -435,12 +433,6 @@ class DefaultAgentGateway(AgentGateway):
                 if ir.task is not None and not ir.task.done():
                     return True
         return False
-
-    def is_cancel_requested(self, session_id: str) -> bool:
-        return self._cancel_flags.get(session_id, False)
-
-    def clear_cancel(self, session_id: str) -> None:
-        self._cancel_flags.pop(session_id, None)
 
     @staticmethod
     def _attach_event_kind(rendered: RenderedMessage, event: AgentEvent) -> RenderedMessage:

@@ -43,6 +43,7 @@ _SPEC = ToolSpec(
     defer=True,
     concurrency="parallel",
     display=ToolDisplay(category="web_search", verb="搜索网页", summary_args=("query",)),
+    yields_to_native=True,
 )
 
 
