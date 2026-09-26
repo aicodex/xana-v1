@@ -14,7 +14,7 @@ import signal
 
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 
@@ -62,6 +62,7 @@ _SPEC = ToolSpec(
     destructive=True,
     open_world=True,
     max_result_chars=_MAX_OUTPUT_CHARS,
+    display=ToolDisplay(category="execute", verb="运行", unit="条命令", summary_args=("description", "command")),
 )
 
 

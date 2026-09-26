@@ -16,7 +16,7 @@ from typing import Any
 
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 
@@ -41,6 +41,7 @@ _SPEC = ToolSpec(
     read_only=True,
     open_world=True,
     defer=True,
+    display=ToolDisplay(category="web_search", verb="搜索网页", summary_args=("query",)),
 )
 
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
 from xana.tools.builtin._path import resolve_path
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 
@@ -35,6 +35,7 @@ _SPEC = ToolSpec(
         "required": ["file_path"],
     },
     read_only=True,
+    display=ToolDisplay(category="read", verb="读取", unit="个文件", summary_args=("file_path",)),
 )
 
 

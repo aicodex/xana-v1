@@ -17,7 +17,7 @@ from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.extension_api.capabilities import SchedulerService
 from xana.policy.contracts import PermissionResult
 from xana.runtime.scheduler import FileSchedulerService
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 
@@ -46,6 +46,7 @@ _CREATE_SPEC = ToolSpec(
         "required": ["cron", "prompt"],
     },
     defer=True,
+    display=ToolDisplay(category="other", verb="创建定时任务", summary_args=("cron", "prompt")),
 )
 
 _LIST_SPEC = ToolSpec(
@@ -56,6 +57,7 @@ _LIST_SPEC = ToolSpec(
     input_schema={"type": "object", "properties": {}, "required": []},
     read_only=True,
     defer=True,
+    display=ToolDisplay(category="other", verb="查看定时任务", result="none"),
 )
 
 _DELETE_SPEC = ToolSpec(
@@ -71,6 +73,7 @@ _DELETE_SPEC = ToolSpec(
         "required": ["id"],
     },
     defer=True,
+    display=ToolDisplay(category="other", verb="删除定时任务", summary_args=("id",)),
 )
 
 

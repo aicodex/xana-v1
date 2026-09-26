@@ -26,7 +26,7 @@ from xana.memory.contracts import MemoryNode, SearchQuery
 from xana.memory.interfaces import MemorySearchEngine
 from xana.memory.markdown import MarkdownMemoryTree, search_terms
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 _ACTIONS = ("create", "refine", "supersede")
@@ -57,6 +57,7 @@ _SPEC = ToolSpec(
         "required": ["action", "path"],
     },
     destructive=True,
+    display=ToolDisplay(category="memory", verb="写记忆", summary_args=("title", "path")),
 )
 
 

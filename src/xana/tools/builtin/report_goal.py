@@ -8,7 +8,7 @@ from __future__ import annotations
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.harness_sdk.goal import GOAL_STATUSES, REPORT_GOAL_TOOL
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 _SPEC = ToolSpec(
@@ -29,6 +29,7 @@ _SPEC = ToolSpec(
         "required": ["status", "reason"],
     },
     read_only=True,
+    display=ToolDisplay(category="plan", verb="报告目标状态", summary_args=("status", "reason")),
 )
 
 

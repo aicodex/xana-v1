@@ -5,7 +5,7 @@ from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.memory.contracts import SearchQuery
 from xana.memory.interfaces import MemorySearchEngine
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 
@@ -26,6 +26,7 @@ _SPEC = ToolSpec(
         "required": ["query"],
     },
     read_only=True,
+    display=ToolDisplay(category="memory", verb="查记忆", summary_args=("query",)),
 )
 
 

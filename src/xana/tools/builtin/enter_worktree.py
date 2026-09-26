@@ -17,7 +17,7 @@ from pathlib import Path
 
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 
@@ -41,6 +41,7 @@ _SPEC = ToolSpec(
         },
     },
     destructive=True,
+    display=ToolDisplay(category="other", verb="切换工作树", summary_args=("name", "path")),
 )
 
 

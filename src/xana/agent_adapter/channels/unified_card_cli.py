@@ -10,6 +10,7 @@ XanacApp (kept under a different module name to avoid clashing).
 """
 from __future__ import annotations
 
+from xana.agent_adapter.channels.process_view import build_view, policy_for
 from xana.agent_adapter.channels.unified_card import (
     progress_line,
     AnswerSection,
@@ -43,23 +44,32 @@ def _render_compact(sec: CompactSection) -> str:
     return head
 
 
-def _render_answer(sec: AnswerSection) -> str:
+def _render_answer(sec: AnswerSection, view_mode: str = "detailed") -> str:
     parts: list[str] = []
     if sec.thinking_text.strip():
         body = _trunc(sec.thinking_text, _BUDGET_THINKING).rstrip()
         parts.append(f"❋ 思考过程\n{body}")
 
-    visible_n = min(_VISIBLE_TOOLS, len(sec.tools))
+    policy = policy_for(view_mode)
+    if policy.unit != "call":
+        alive = sec.state in ("streaming", "detached")
+        view = build_view(sec, view_mode, alive=alive)
+        for b in view.blocks:
+            parts.append(f"▸ {b.title}")
+        if view.line and alive:
+            parts.append(f"› {view.line}")
+        parts.extend(view.failed)
+    visible_n = min(_VISIBLE_TOOLS, len(sec.tools)) if policy.unit == "call" else 0
     for t in sec.tools[:visible_n]:
         body = _trunc(t.body_md or "", _BUDGET_TOOL_BODY).rstrip()
         if body:
             parts.append(f"{t.header}\n{body}")
         else:
             parts.append(t.header)
-    hidden = (len(sec.tools) - visible_n) + sec.tools_pending
+    hidden = ((len(sec.tools) - visible_n) + sec.tools_pending) if policy.unit == "call" else 0
     if hidden > 0:
         parts.append(f"(+{hidden} 工具调用未展开)")
-    line = progress_line(sec)  # 进度行(§5.5a)
+    line = progress_line(sec) if policy.progress_line else ""  # 进度行(§5.5a)
     if line:
         parts.append(line)
 
@@ -81,7 +91,7 @@ def render(state: UnifiedCardState) -> str:
     if state.compact is not None:
         parts.append(_render_compact(state.compact))
     if state.answer is not None:
-        parts.append(_render_answer(state.answer))
+        parts.append(_render_answer(state.answer, state.view_mode))
     if state.menu is not None and state.menu.body_md:
         parts.append(state.menu.body_md.rstrip())
     footer_text = state.footer.render()
@@ -174,18 +184,28 @@ def render_widgets(state: UnifiedCardState):  # type: ignore[no-untyped-def]
                 title="❋ 思考过程" if sec.thinking_text else "❋ 思考中",
                 collapsed=True,
             ))
-        visible_n = min(_VISIBLE_TOOLS, len(sec.tools))
+        policy = policy_for(state.view_mode)
+        if policy.unit != "call":
+            alive = sec.state in ("streaming", "detached")
+            view = build_view(sec, state.view_mode, alive=alive)
+            for b in view.blocks:
+                out.append(Collapsible(Static(rich_escape(b.body)), title=b.title, collapsed=True))
+            if view.line and alive:
+                out.append(Static(f"[dim]› {rich_escape(view.line)}[/dim]", markup=True, classes="card-progress"))
+            for fl in view.failed:
+                out.append(Static(f"[red]{rich_escape(fl)}[/red]", markup=True))
+        visible_n = min(_VISIBLE_TOOLS, len(sec.tools)) if policy.unit == "call" else 0
         for t in sec.tools[:visible_n]:
             body = _w_trunc(t.body_md or " ", _BUDGET_TOOL_BODY).rstrip() or "(空)"
             out.append(Collapsible(Static(body), title=t.header, collapsed=True))
-        hidden = (len(sec.tools) - visible_n) + sec.tools_pending
+        hidden = ((len(sec.tools) - visible_n) + sec.tools_pending) if policy.unit == "call" else 0
         if hidden > 0:
             spec = CardButtonSpec(text=f"展开 ✎×{hidden}", action="load_tools")
             out.append(Horizontal(
                 CardButton(spec, ph_run_id=state.ph_run_id, card_id=state.card_id),
                 classes="card-btn-row",
             ))
-        line = progress_line(sec)  # 进度行(§5.5a),暗色一行
+        line = progress_line(sec) if policy.progress_line else ""  # 进度行(§5.5a),暗色一行
         if line:
             out.append(Static(f"[dim]{rich_escape(line)}[/dim]", markup=True, classes="card-progress"))
         if sec.state == "cancelled":

@@ -19,6 +19,7 @@ from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels.card import Card
 from xana.agent_adapter.channels.feishu_card import build_card
 from xana.agent_adapter.channels.feishu_events import parse_message_event
+from xana.agent_adapter.channels.process_view import DEFAULT_IM_VIEW_MODE as DEFAULT_VIEW_MODE
 from xana.agent_adapter.channels.unified_card import (
     UnifiedCardState,
     build_attach_menu,
@@ -408,7 +409,8 @@ class FeishuAdapter(Adapter):
     ) -> Card:
         card = buf.cards.get(card_id)
         if card is None:
-            state = UnifiedCardState(card_id=card_id, ph_run_id=ph_run_id)
+            # 工具过程默认按组折叠(IM 卡片放不下逐条调用);会话 /view 可覆盖
+            state = UnifiedCardState(card_id=card_id, ph_run_id=ph_run_id, view_mode=DEFAULT_VIEW_MODE)
             card = self._make_card(buf, state)
             buf.cards[card_id] = card
         return card

@@ -153,6 +153,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
                 "streaming": cfg.streaming,
                 "thinking": cfg.thinking,
                 "search_provider": cfg.search_provider,
+                "view_mode": cfg.view_mode,
             })
         metadata: dict[str, Any] = {}
         if self.main_writer is not None:

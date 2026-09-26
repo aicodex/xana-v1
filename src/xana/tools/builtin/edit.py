@@ -15,7 +15,7 @@ from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
 from xana.tools.builtin._path import resolve_path
 from xana.tools.builtin._reindex import maybe_reindex_markdown
-from xana.tools.contracts import ToolContext, ToolDiff, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolDisplay, ToolContext, ToolDiff, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 if TYPE_CHECKING:
@@ -41,6 +41,7 @@ _SPEC = ToolSpec(
         "required": ["file_path", "old_string", "new_string"],
     },
     destructive=True,
+    display=ToolDisplay(category="edit", verb="修改", unit="个文件", summary_args=("file_path",)),
 )
 
 

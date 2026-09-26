@@ -411,7 +411,7 @@ SDK 内部收敛:
 1. 压缩进度条(一行文字 + ▰…▱)
 2. 压缩下拉                       ┐
 3. 思考过程下拉                    │  panel 段
-4. 工具下拉(默认 3 个)+ 展开按钮 │
+4. 工具过程(按显示模式:逐条 / 分组 / 一行)│
 5. 回答块(主答案)                ┘
 6. 脚标(footer)
 7. 顶部按钮(取消回答 / 后台回答 / 取消)
@@ -454,22 +454,20 @@ compact 摘要排在 answer 前的原因:语义上 compact 是 PH 点之前的�
 - 标题:有内容 → "❋ 思考过程";空 → "❋ 思考中"
 - body = 模型 reasoning 流
 
-### 5.4 工具下拉
+### 5.4 工具过程(显示模式,2026-09-26 起)
 
-- 默认 3 个 visible(`TOOLS_VISIBLE_LIMIT = 3`)
-- 每个 tool 是一个折叠面板
-- header 文本:
-  - **bash**: 显示 LLM 输出的短标题(prompt 让模型给 `description` 字段)
-  - **其余工具**: 显示参数,优先级固定 `description > path / file_path / file / cmd / command / url / query / pattern > 第一个非空 kv`
-  - 完整头格式:`✎ {name} · {summary} · {elapsed} · {status}`(status ∈ ok/fail/cancel)
-- body 渲染:
-  - 飞书:截 800 字符(单卡 30KB 上限,避 200800)
-  - TG:**top 3 行 + 每行最多 60 字**
-- 超出 3 个:
-  - 飞书:"展开 ✎×N" **按钮**(N = `tools_pending = len(_pending_tools_buf)`)
-  - TG:"展开 ✎×N" **文字提示**(非按钮)
-  - 触发后:`load_pending_tools`,buf → tools,pending=0
-  - 之后新 tool 又进 buf → 按钮/提示重新出现
+工具过程按**显示模式**渲染,设计见 [tool-display-modes.md](./tool-display-modes.md);分组与标题由 `channels/process_view.py` 的纯函数生成,各渠道只负责画块。
+
+- 模式:`detailed`(详细)/ `grouped`(分组)/ `summary`(摘要)。默认值:飞书、TG = `grouped`,CLI = `detailed`;会话可用 `/view` 覆盖(存 `SessionConfig.view_mode`,随 `tool_started.payload.view_mode` 到达卡片)。
+- 每个工具在 `ToolSpec.display`(`ToolDisplay`)声明类别、完成态动词、计数单位(可按数组参数计数)、摘要参数;harness 在 `tool_started.payload.display` 带上。未声明的工具兜底:类别 other、动词 = 工具名、摘要按下述旧优先级。
+- 过程组:模型在工具轮写的进度说明(`progress_update`)开启新组并作为组标题;思考并入当前组(连续思考记 1 次);工具调用进当前组。
+- **detailed**:每次调用一个折叠面板(即原规则):
+  - header:`✎ {name} · {summary} · {elapsed} · {status}`(status ∈ ok/fail/cancel);summary 取 `display.summary_args`,未声明时按 `description > path / file_path / file / cmd / command / url / query / pattern > 第一个非空 kv`
+  - body:飞书截 800 字符;TG top 3 行 + 每行 60 字
+  - 默认 3 个 visible(`TOOLS_VISIBLE_LIMIT = 3`),超出:飞书"展开 ✎×N"**按钮**、TG 文字提示;触发 `load_pending_tools`,buf → tools,pending=0
+- **grouped**:每组一个折叠面板。标题 = 进度说明(附计数)或计数标题,如"搜索网页 3 次,打开 12 个网页,思考 2 次";运行中的最后一组标题追加当前调用(如"· 正在打开网页 · 正在阅读 5/12 个网页");body = 成员逐行"图标 动词 · 摘要 · 耗时"。最多显示 6 组,更早的合并成"更早 N 步:…"一行。不显示进度行(进度说明已是组标题)。
+- **summary**:运行中只有一行状态(`› 正在打开网页 · … · N 步`);完成后回答上方一个折叠面板,标题 = 整轮回顾("搜索网页 5 次,打开 23 个网页"),展开看分组。
+- **失败不折叠**:grouped / summary 下失败的调用额外单独一行(飞书红字、TG/CLI 纯文本,带错误第一行)。
 
 ### 5.5 回答块
 
@@ -537,8 +535,11 @@ compact 摘要排在 answer 前的原因:语义上 compact 是 PH 点之前的�
 | 折叠 panel | `collapsible_panel` 灰底 + chevron | expandable blockquote(`**>` + `\|\|`) | Textual Collapsible 节点 |
 | 进度行(§5.5a) | 灰色一行 `<font color='grey'>› …</font>` | 斜体一行 `_› …_` | 暗色一行 `[dim]› …[/dim]` |
 | 回答块 | "✦ 回答/回答中/回答已取消" 标题 panel,bg 折叠 | **无标题、任何状态都不折叠**:`━━━━━━━ ✦ ━━━━━━━` 分割线 + 正文;cancelled 显示 "_回答已取消_"(折叠会把 markdown 套进 blockquote,产生嵌套) | 同飞书 |
-| 工具 body | 截 800 字符 | **top 3 行 + 每行 60 字** | 截 4096 字符 |
-| tools_pending 提示 | 按钮 | **文字**(非按钮) | 文字 |
+| 默认显示模式(§5.4) | grouped | grouped | detailed |
+| 工具 body(detailed) | 截 800 字符 | **top 3 行 + 每行 60 字** | 截 4096 字符 |
+| 过程组 body(grouped/summary) | 成员行,不截 | 截 300 字符 | 成员行(Textual Collapsible) |
+| 失败调用行 | 红字一行 | 纯文本一行 | 红字一行 |
+| tools_pending 提示(detailed) | 按钮 | **文字**(非按钮) | 文字 |
 | 超长 thinking / answer / tools | 直接折叠展开看全 | 底部 3 个按钮("展开 思考 / 工具 / 答案" 全量)→ 全屏单段卡,翻页 | 滚动条 |
 | 翻页粒度 | 无 | tools 固定一页 10 个(按数量均分,不按长度切);answer 按 TG 单消息长度切页 | 无 |
 | markdown 渲染 | 只回答用 markdown | 只回答用 markdown;telegramify-markdown 容错 | 纯文本(无 markdown 解析) |
@@ -619,7 +620,8 @@ CLI 详细见 [channels/cli.md](./channels/cli.md)。
 | I5 | /compact 段挂在"最早未完成 PH 所属的 Card"上,不新建卡(除非空闲态) | §1.5 / §8.3 |
 | I6 | /attach 总是新建卡 | §1.8 / §8.4 |
 | I7 | bg(frozen)Card 从 detach 到 ph_replaced 之间零更新;ph_replaced 一次性 patch 终态 | §6 |
-| I8 | tools_pending 只数未展开 tools(buf 长度);load_pending_tools 后归零 | §5.4 |
+| I8 | tools_pending 只数未展开 tools(buf 长度);load_pending_tools 后归零(数据层始终成立;只在 detailed 模式显示) | §5.4 |
+| I8a | grouped / summary 模式下失败的工具调用永不被折叠隐藏 | §5.4 |
 | I9 | footer 三件套(model + ctx + 回答用时)绑定;缺一不渲染 | §5.6 |
 | I10 | bg_frozen 脚标永不出现三件套(互斥) | §5.6 |
 | I11 | 任何 channel View 对同一 UnifiedCardState 输出语义一致 | §4.3 |

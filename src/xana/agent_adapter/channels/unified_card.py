@@ -47,6 +47,14 @@ class ToolBlock:
     call_id: str = ""            # 对应 harness tool_started/finished 的 call_id
     started_at: float = 0.0      # monotonic 起点,用于算 elapsed
     summary: str = ""            # 短摘要(图标无关,生成 header 时拼)
+    # 显示模式用(来自工具声明的 ToolDisplay;缺省时兜底为 other + 工具名)
+    category: str = "other"
+    verb: str = ""
+    unit: str = "次"
+    count: int = 1
+    status: str = "running"      # running / ok / fail / cancel
+    elapsed_s: float | None = None
+    live: str = ""               # 执行中的进度(tool_progress),如"正在阅读 5/12 个网页"
 
 
 @dataclass
@@ -75,6 +83,9 @@ class AnswerSection:
     progress_text: str = ""
     page: int = 0                              # 答案翻页用(TG 单消息长度有限)
     _pending_tools_buf: tuple[ToolBlock, ...] = ()
+    # 过程步骤(按到达顺序):("caption", 进度说明) / ("think", "") / ("tool", call_id);显示模式据此分组
+    steps: tuple[tuple[str, str], ...] = ()
+    _in_thinking: bool = False
 
 
 @dataclass
@@ -255,6 +266,19 @@ def append_tool(sec: AnswerSection, tool: ToolBlock) -> None:
     else:
         sec.tools_pending += 1
         sec._pending_tools_buf = sec._pending_tools_buf + (tool,)
+
+
+def append_step(sec: AnswerSection, kind: str, value: str = "") -> None:
+    """记录一个过程步骤;连续的思考增量只记一次。"""
+    if sec.state == "cancelled":
+        return
+    if kind == "think":
+        if sec._in_thinking:
+            return
+        sec._in_thinking = True
+    else:
+        sec._in_thinking = False
+    sec.steps = sec.steps + ((kind, value),)
 
 
 def load_pending_tools(sec: AnswerSection) -> None:
@@ -458,4 +482,5 @@ class UnifiedCardState:
     terminal_from_bg: bool = False   # 后台回写终态(用于 renderer 默认折叠回答)
     linkify_commands: bool = False   # True = 正文 /cmd 原生可点(TG),renderer 可隐 bottom_buttons
     expand_mode: ExpandMode = "default"   # 全屏 thinking/tools/answer
+    view_mode: str = "detailed"           # 工具过程显示模式:detailed / grouped / summary(process_view.py)
     expand_page: int = 0                  # expand 模式翻页

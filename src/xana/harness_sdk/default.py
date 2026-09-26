@@ -421,6 +421,15 @@ class DefaultHarness(Harness):
             await asyncio.sleep(poll)
         return task.result()
 
+    @staticmethod
+    async def _tool_display(tc: dict[str, Any], context: HarnessContext,
+                            ext_tools: dict[str, Tool]) -> dict[str, Any] | None:
+        tool = ext_tools.get(tc["tool_name"])
+        if tool is None and context.tool_registry is not None:
+            tool = await context.tool_registry.get(tc["tool_name"])
+        display = tool.spec().display if tool is not None else None
+        return display.to_payload(dict(tc["input"])) if display is not None else None
+
     async def _dispatch_tool(
         self,
         tc: dict[str, Any],
@@ -1431,6 +1440,9 @@ class DefaultHarness(Harness):
                         "tool_name": tc["tool_name"],
                         "call_id": tc["call_id"],
                         "input": dict(tc["input"]),
+                        # 渠道按显示模式分组计数用(docs/design/tool-display-modes.md)
+                        "display": await self._tool_display(tc, context, ext_tools),
+                        "view_mode": context.config_snapshot.get("view_mode"),
                     },
                 )
                 _tool_t0 = time.monotonic()

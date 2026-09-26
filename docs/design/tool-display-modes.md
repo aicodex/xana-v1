@@ -1,6 +1,6 @@
 ---
 title: 工具过程显示模式设计
-status: draft(待确认)
+status: 已实施(2026-09-26;飞书/TG 默认 grouped)
 date: 2026-09-26
 ---
 
@@ -135,8 +135,8 @@ class ProcessGroup:
 |---|---|
 | 工具契约 | `ToolSpec.display` 新增可选字段(不破坏现有工具);内置工具补齐声明 |
 | harness 事件 | `tool_started` payload 增加 `display`(类别、动词、单位、计数) |
-| 卡片模型 | `AnswerSection` 增加 `groups`;`tools` / `tools_pending` / `load_pending_tools` 只在 detailed 模式使用 |
-| 卡片规格 | `session-and-card-state.md` §4.2 顺序第 4 项、§5.4 工具下拉、§7 差异表、I8 不变量需要更新(**改规格,需确认**) |
+| 卡片模型 | `AnswerSection.steps` 按到达顺序记录过程步骤(进度说明 / 思考 / 工具调用),过程组在渲染时由 `process_view.build_groups` 计算(不存第二份状态);`ToolBlock` 增加类别、动词、单位、计数、状态、耗时、实时进度;`tools` / `tools_pending` / `load_pending_tools` 只在 detailed 模式显示 |
+| 卡片规格 | `session-and-card-state.md` §4.2 顺序第 4 项、§5.4、§7 差异表、I8/I8a 已更新 |
 | SessionConfig | 新增 `view_mode`(可选;渠道默认值在 adapter) |
 | 回归网 | merge_gate 里涉及工具面板的用例只在 detailed 模式下保持原断言;grouped/summary 新增用例 |
 
@@ -148,9 +148,11 @@ class ProcessGroup:
 4. 会话切换命令与 `SessionConfig.view_mode`。
 5. 实测：用大摩研报问题（多轮 web_search + web_open_url）检查三种模式下的卡片。
 
-## 8. 待确认
+## 8. 决定(2026-09-26 确认)
 
-1. 飞书 / TG 默认用 grouped，还是 summary？
-2. 进度说明（`progress_update`）作为组边界和组标题：同意吗？
-3. 模式切换命令名 `/view`，存 `SessionConfig.view_mode`。
-4. §6 所列卡片规格的修改。
+1. 飞书 / TG 默认 grouped,CLI 默认 detailed。
+2. 进度说明作为组边界和组标题。
+3. `/view detailed|grouped|summary|default`,存 `SessionConfig.view_mode`;随 `tool_started.payload.view_mode` 到达卡片(gateway/adapter 不读会话配置)。
+4. 卡片规格 §4.2 / §5.4 / §7 / I8 已同步。
+
+实现位置:`tools/contracts.py`(`ToolDisplay`)、各内置工具 `_SPEC.display`、`harness_sdk/default.py`(`_tool_display`)、`agent_adapter/channels/process_view.py`(分组与策略表)、`unified_card_events.py`(记录步骤)、三个 renderer、`commands.py`(`/view`)。测试:`tests/test_process_view.py`。

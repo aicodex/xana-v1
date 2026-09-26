@@ -46,6 +46,33 @@ ToolFailureKind = Literal[
 ]
 
 
+ToolCategory = Literal["read", "search_code", "edit", "execute", "web_search", "web_open",
+                       "research", "memory", "plan", "delegate", "ask", "other"]
+
+
+@dataclass(frozen=True)
+class ToolDisplay:
+    """工具的默认显示配置(docs/design/tool-display-modes.md §2)。渠道按显示模式据此分组、计数、生成标题;
+    进行中的文案由 category 决定(渲染层文案表),工具只给完成态动词与计数单位。"""
+    category: ToolCategory
+    verb: str                              # 完成态动词,如 "搜索网页"、"打开"、"运行"
+    unit: str = "次"                        # 计数单位,如 "次"、"个网页"、"条命令"
+    count_arg: str | None = None           # 按某个数组参数的长度计数;None = 每次调用计 1
+    summary_args: tuple[str, ...] = ()     # 单行摘要取哪些参数(按优先级)
+    result: Literal["none", "preview", "full"] = "preview"
+
+    def count(self, args: dict[str, Any]) -> int:
+        if self.count_arg:
+            value = args.get(self.count_arg)
+            if isinstance(value, (list, tuple)):
+                return max(1, len(value))
+        return 1
+
+    def to_payload(self, args: dict[str, Any]) -> dict[str, Any]:
+        return {"category": self.category, "verb": self.verb, "unit": self.unit,
+                "count": self.count(args), "summary_args": list(self.summary_args), "result": self.result}
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     component: ComponentSpec
@@ -66,6 +93,7 @@ class ToolSpec:
     max_result_chars: int = 50_000
     user_facing_name: str | None = None
     defer: bool = False  # True = 隐藏工具:模型只见名字,经 tool_search 揭示后才发完整 schema
+    display: ToolDisplay | None = None  # 默认显示配置;None = 渲染层兜底(类别 other,动词用工具名)
 
 
 @dataclass(frozen=True)

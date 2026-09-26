@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 
+from xana.agent_adapter.channels.process_view import build_view, policy_for
 from xana.agent_adapter.channels.unified_card import (
     progress_line,
     AnswerSection,
@@ -124,16 +125,33 @@ def _render_compact(sec: CompactSection) -> list[dict]:
     return out
 
 
+def _render_process(sec: AnswerSection, mode: str) -> list[dict]:
+    """grouped / summary:按过程组或整轮渲染;失败的调用单独一行红字,不折叠。"""
+    alive = sec.state in ("streaming", "detached")
+    view = build_view(sec, mode, alive=alive)
+    out: list[dict] = []
+    for b in view.blocks:
+        out.append(_panel(b.title, b.body, folded=True))
+    if view.line and alive:
+        out.append(_md(f"<font color='grey'>› {view.line}</font>"))
+    for line in view.failed:
+        out.append(_md(f"<font color='red'>{line}</font>"))
+    return out
+
+
 def _render_answer(
-    sec: AnswerSection, *, card_id: str, from_bg: bool = False
+    sec: AnswerSection, *, card_id: str, from_bg: bool = False, view_mode: str = "detailed",
 ) -> list[dict]:
     out: list[dict] = []
     # thinking — 默认折叠,空内容不放占位(只动 body,不动标题状态)
     think_title = "❋ 思考过程" if sec.thinking_text else "❋ 思考中"
     out.append(_panel(think_title, sec.thinking_text or " ", folded=True))
+    policy = policy_for(view_mode)
+    if policy.unit != "call":
+        out.extend(_render_process(sec, view_mode))
     # tools — 全渲染。单 tool body 截 800 字符:飞书卡总大小有上限(230025),
     # 多 tool 全 body 会超限 → patch_card 400 → UI 卡住。
-    for t in sec.tools:
+    for t in (sec.tools if policy.unit == "call" else ()):
         body = t.body_md or " "
         if len(body) > 800:
             body = body[:800].rstrip() + "\n…(已截断)"
@@ -142,7 +160,7 @@ def _render_answer(
     #   detached: 不可点的静态文字(detach 期间不接受交互)
     #   streaming / terminal: 可点按钮 → reveal 当前 buf
     #   cancelled / 空 buf: 不出
-    if sec.tools_pending > 0:
+    if sec.tools_pending > 0 and policy.unit == "call":
         if sec.state == "detached":
             out.append(_md("_后台 ✎ 中_"))
         elif sec.state in ("streaming", "terminal"):
@@ -150,7 +168,7 @@ def _render_answer(
             btn = Button(text=label, action="load_tools", action_arg=card_id)
             out.append(_btn_row(ButtonRow(buttons=(btn,)), ph_run_id=None))
     # 进度行(§5.5a):进行中显示最近一条进度说明,灰色一行
-    line = progress_line(sec)
+    line = progress_line(sec) if policy.progress_line else ""
     if line:
         out.append(_md(f"<font color='grey'>{line}</font>"))
     # 回答块:标题状态机保留,空 body 用空格(不放占位)。
@@ -180,7 +198,7 @@ def render(state: UnifiedCardState) -> dict:
     if state.answer is not None:
         elements.extend(_render_answer(
             state.answer, card_id=state.card_id,
-            from_bg=state.terminal_from_bg,
+            from_bg=state.terminal_from_bg, view_mode=state.view_mode,
         ))
     if state.menu is not None:
         elements.append(_md(state.menu.body_md))

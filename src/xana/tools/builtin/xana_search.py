@@ -15,7 +15,7 @@ import httpx
 
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 _OPEN_TIMEOUT_S = 180.0
@@ -42,6 +42,7 @@ _SEARCH_SPEC = ToolSpec(
         "required": ["queries"],
     },
     read_only=True, open_world=True, concurrency="parallel", timeout_s=60,
+    display=ToolDisplay(category="web_search", verb="搜索网页", summary_args=("queries",)),
 )
 
 _OPEN_SPEC = ToolSpec(
@@ -62,6 +63,7 @@ _OPEN_SPEC = ToolSpec(
         "required": ["urls"],
     },
     read_only=True, open_world=True, concurrency="parallel", timeout_s=_OPEN_TIMEOUT_S,
+    display=ToolDisplay(category="web_open", verb="打开", unit="个网页", count_arg="urls", summary_args=("urls", "objective")),
 )
 
 _DEEP_SPEC = ToolSpec(
@@ -86,6 +88,7 @@ _DEEP_SPEC = ToolSpec(
         },
     },
     read_only=True, open_world=True, concurrency="parallel", timeout_s=_MAX_WAIT_S + 30,
+    display=ToolDisplay(category="research", verb="深度研究", summary_args=("question", "job_id")),
 )
 
 

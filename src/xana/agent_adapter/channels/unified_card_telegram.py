@@ -19,6 +19,7 @@ import re
 
 import telegramify_markdown as _tg_md
 
+from xana.agent_adapter.channels.process_view import build_view, policy_for
 from xana.agent_adapter.channels.unified_card import (
     progress_line,
     AnswerSection,
@@ -146,8 +147,26 @@ def _expand_btn(label: str, card_id: str, section: str) -> dict:
     }
 
 
+_BUDGET_GROUP_BODY = 300
+
+
+def _render_process(sec: AnswerSection, mode: str) -> list[str]:
+    """grouped / summary:过程组折叠块;失败的调用单独一行(✗ 前缀已在行内),不折叠。"""
+    alive = sec.state in ("streaming", "detached")
+    view = build_view(sec, mode, alive=alive)
+    parts: list[str] = []
+    for b in view.blocks:
+        body, _ = _trunc_rendered(b.body or " ", _BUDGET_GROUP_BODY, md=False)
+        parts.append(_fold(b.title, body, md=False))
+    if view.line and alive:
+        parts.append(f"_{_esc('› ' + view.line)}_")
+    for line in view.failed:
+        parts.append(_esc(line))
+    return parts
+
+
 def _render_default_answer(
-    sec: AnswerSection, *, extra_kb: list[list[dict]], card_id: str,
+    sec: AnswerSection, *, extra_kb: list[list[dict]], card_id: str, view_mode: str = "detailed",
 ) -> str:
     parts: list[str] = []
 
@@ -156,7 +175,10 @@ def _render_default_answer(
         sec.thinking_text or " ", _BUDGET_DEFAULT_THINKING, md=False)
     parts.append(_fold(think_title, think_body, md=False))
 
-    visible_n = min(_BUDGET_DEFAULT_VISIBLE_TOOLS, len(sec.tools))
+    policy = policy_for(view_mode)
+    if policy.unit != "call":
+        parts.extend(_render_process(sec, view_mode))
+    visible_n = min(_BUDGET_DEFAULT_VISIBLE_TOOLS, len(sec.tools)) if policy.unit == "call" else 0
     tools_truncated = False
     for t in sec.tools[:visible_n]:
         body, truncated = _trunc_rendered(
@@ -165,7 +187,7 @@ def _render_default_answer(
             tools_truncated = True
         # 工具 body 不走 markdown(文件内容含 `*`/`>`/`#` 会被误解析)
         parts.append(_fold(t.header, body, md=False))
-    hidden_tools = (len(sec.tools) - visible_n) + sec.tools_pending
+    hidden_tools = ((len(sec.tools) - visible_n) + sec.tools_pending) if policy.unit == "call" else 0
     if hidden_tools > 0:
         tools_truncated = True
         # inline 文字计数(不是按钮,点不动);用户走底部"展开工具"
@@ -173,7 +195,7 @@ def _render_default_answer(
         parts.append(_esc(f"其他 ✎×{hidden_tools},点下方展开工具查看"))
 
     # 进度行(§5.5a):进行中显示最近一条进度说明,斜体一行
-    line = progress_line(sec)
+    line = progress_line(sec) if policy.progress_line else ""
     if line:
         parts.append(f"_{_esc(line)}_")
 
@@ -347,7 +369,7 @@ def render(state: UnifiedCardState) -> tuple[str, list[list[dict]]]:
             parts.append(_render_compact(state.compact))
         if state.answer is not None:
             parts.append(_render_default_answer(
-                state.answer, extra_kb=extra_kb, card_id=state.card_id))
+                state.answer, extra_kb=extra_kb, card_id=state.card_id, view_mode=state.view_mode))
         if state.menu is not None:
             parts.append(_md(state.menu.body_md))
 

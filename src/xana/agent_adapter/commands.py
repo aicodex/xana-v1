@@ -14,6 +14,7 @@ Adapters must:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
 
 from xana.agent_adapter.contracts import CommandResult, CommandSpec, InboundMessage
@@ -24,6 +25,9 @@ if TYPE_CHECKING:
 
 
 _HandlerFn = Callable[["DefaultCommandRouter", InboundMessage, str], Awaitable[CommandResult]]
+
+
+_VIEW_MODES = ("detailed", "grouped", "summary")
 
 
 def _option_buttons(command: str, options: tuple[str, ...], per_row: int = 3) -> list[list[dict]]:
@@ -78,6 +82,7 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/cancel",   description="取消当前 turn"),
             CommandSpec(name="/project",  description="项目管理"),
             CommandSpec(name="/search_provider", description="搜索引擎切换"),
+            CommandSpec(name="/view",    description="工具过程显示模式:详细 / 分组 / 摘要(无参列出可选)"),
             CommandSpec(name="/resume",  description="列出可恢复的后台 run,或 /resume <run_id> 续跑"),
             CommandSpec(name="/tasks",   description="任务面板:列出在途/后台/已完成的 run(可 /tasks <session_id> 过滤)"),
         )
@@ -92,6 +97,7 @@ class DefaultCommandRouter(CommandRouter):
             "/thinking":        DefaultCommandRouter._cmd_thinking,
             "/async":           DefaultCommandRouter._cmd_async,
             "/search_provider": DefaultCommandRouter._cmd_search_provider,
+            "/view":            DefaultCommandRouter._cmd_view,
             "/cancel":          DefaultCommandRouter._cmd_cancel,
             "/attach":          DefaultCommandRouter._cmd_attach,
             "/project":         DefaultCommandRouter._cmd_project,
@@ -399,21 +405,11 @@ class DefaultCommandRouter(CommandRouter):
         return CommandResult(ok=True, message="", payload={"silent": True})
 
     async def _persist_with(self, session_id: str, **changes) -> "SessionConfig":
-        from xana.session_config.contracts import SessionConfig
+        """只改 changes 里的字段,其余(含 prompt_profile / metadata)原样保留。"""
         if self.session_config_store is None:
             raise RuntimeError("session_config_store 未配置")
         current = await self.session_config_store.get(session_id)
-        new = SessionConfig(
-            session_id=current.session_id,
-            model=changes.get("model", current.model),
-            effort=changes.get("effort", current.effort),
-            streaming=changes.get("streaming", current.streaming),
-            thinking=changes.get("thinking", current.thinking),
-            search_provider=changes.get("search_provider", current.search_provider),
-            project_root=changes.get("project_root", current.project_root),
-            async_mode=changes.get("async_mode", current.async_mode),
-            metadata=current.metadata,
-        )
+        new = dataclasses.replace(current, **changes)
         await self.session_config_store.save(new)
         return new
 
@@ -500,6 +496,20 @@ class DefaultCommandRouter(CommandRouter):
                         ok=False, message="有后台 run 在跑,请等完成或 /cancel")
         new = await self._persist_with(inbound.session_id, async_mode=new_val)
         return CommandResult(ok=True, message=f"async={new.async_mode}")
+
+    async def _cmd_view(self, inbound: InboundMessage, args: str) -> CommandResult:
+        """/view [detailed|grouped|summary|default]:本会话的工具过程显示模式;default = 渠道默认。"""
+        target = args.strip().lower()
+        if not target:
+            cfg = await self._current_config(inbound.session_id)
+            cur = (cfg.view_mode if cfg and cfg.view_mode else None) or "渠道默认"
+            return CommandResult(
+                ok=True, message=f"当前显示模式: {cur}(detailed 详细 / grouped 分组 / summary 摘要)",
+                payload={"buttons": _option_buttons("/view", _VIEW_MODES + ("default",), per_row=4)})
+        if target not in _VIEW_MODES + ("default",):
+            return CommandResult(ok=False, message=f"未知显示模式 {target}")
+        new = await self._persist_with(inbound.session_id, view_mode=None if target == "default" else target)
+        return CommandResult(ok=True, message=f"显示模式切换为 {new.view_mode or '渠道默认'},下一条消息生效")
 
     async def _cmd_search_provider(self, inbound: InboundMessage, args: str) -> CommandResult:
         target = args.strip()

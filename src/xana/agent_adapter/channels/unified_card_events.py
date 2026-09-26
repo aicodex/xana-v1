@@ -8,6 +8,7 @@ in their event loop and then hand `state` to the platform renderer.
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import Any
 
 
@@ -46,6 +47,7 @@ from xana.agent_adapter.channels.unified_card import (
     advance_compact_input,
     advance_compact_streaming,
     append_answer,
+    append_step,
     append_thinking,
     append_tool,
     apply_detach,
@@ -59,6 +61,7 @@ from xana.agent_adapter.channels.unified_card import (
     finalize_compact,
     ToolBlock,
 )
+from xana.agent_adapter.channels.process_view import VIEW_MODES
 from xana.agents.contracts import AgentEvent
 from xana.harness_sdk.contracts import HarnessEvent, ProgressEvent
 
@@ -103,14 +106,25 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
         text = str(payload.get("text", "") or "")
         if payload.get("channel") == "thinking":
             append_thinking(state.answer, text)
+            append_step(state.answer, "think")
         else:
             append_answer(state.answer, text)
+            state.answer._in_thinking = False
         return
-    if kind in ("progress_update", "tool_progress"):
-        # progress_update:模型在工具轮写的进度说明;tool_progress:工具执行中上报的进度
-        # (如"正在阅读 18/40 个网页")。都显示在进度行,回答完成后收起。
+    if kind == "progress_update":
+        # 模型在工具轮写的进度说明:显示在进度行;显示模式下开启一个新过程组并作为组标题
         if state.answer is not None:
-            set_progress(state.answer, str(payload.get("text", "") or ""))
+            text = str(payload.get("text", "") or "")
+            set_progress(state.answer, text)
+            if text.strip():
+                append_step(state.answer, "caption", " ".join(text.split()))
+        return
+    if kind == "tool_progress":
+        # 工具执行中上报的进度(如"正在阅读 18/40 个网页"):进度行 + 该调用的实时详情
+        if state.answer is not None:
+            text = str(payload.get("text", "") or "")
+            set_progress(state.answer, text)
+            _set_tool_live(state.answer, str(payload.get("call_id", "") or ""), text)
         return
     if kind == "tool_started":
         if state.answer is None:
@@ -118,14 +132,24 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
         name = str(payload.get("tool_name", "") or "")
         call_id = str(payload.get("call_id", "") or "")
         args = payload.get("input") or {}
-        summary = _tool_summary(args)
+        display = payload.get("display") or {}
+        mode = payload.get("view_mode")
+        if mode in VIEW_MODES:   # 会话里 /view 设过就覆盖渠道默认
+            state.view_mode = mode
+        summary = _tool_summary(args, tuple(display.get("summary_args") or ()))
         header = _make_tool_header(name, summary, None)
         append_tool(
             state.answer,
             ToolBlock(name=name, header=header, body_md="",
                       ok=True, call_id=call_id,
-                      started_at=time.monotonic(), summary=summary),
+                      started_at=time.monotonic(), summary=summary,
+                      category=str(display.get("category") or "other"),
+                      verb=str(display.get("verb") or name),
+                      unit=str(display.get("unit") or "次"),
+                      count=int(display.get("count") or 1)),
         )
+        if call_id:
+            append_step(state.answer, "tool", call_id)
         return
     if kind == "tool_finished":
         if state.answer is None:
@@ -175,11 +199,8 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
                     elapsed_s = 0.0
                 new_header = _make_tool_header(
                     old.name, old.summary, elapsed_s, status)
-                items[target] = ToolBlock(
-                    name=old.name, header=new_header,
-                    body_md=body, ok=ok, call_id=old.call_id,
-                    started_at=old.started_at, summary=old.summary,
-                )
+                items[target] = replace(old, header=new_header, body_md=body, ok=ok,
+                                        status=status, elapsed_s=elapsed_s, live="")
                 setattr(state.answer, collection_name, tuple(items))
                 return
         return
@@ -453,6 +474,16 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
 # --- helpers --------------------------------------------------------------
 
 
+def _set_tool_live(sec: AnswerSection, call_id: str, text: str) -> None:
+    for coll in ("tools", "_pending_tools_buf"):
+        items = list(getattr(sec, coll))
+        for i, t in enumerate(items):
+            if t.call_id == call_id and t.status == "running":
+                items[i] = replace(t, live=text)
+                setattr(sec, coll, tuple(items))
+                return
+
+
 def _mark_running_tools_cancelled(sec: AnswerSection) -> None:
     """把所有还没拿到 body 的 tool 改成 🚫(用 run cancel 兜底)。"""
     now = time.monotonic()
@@ -465,11 +496,8 @@ def _mark_running_tools_cancelled(sec: AnswerSection) -> None:
             elapsed = now - t.started_at if t.started_at else 0.0
             new_header = _make_tool_header(
                 t.name, t.summary, elapsed, "cancel")
-            items[i] = ToolBlock(
-                name=t.name, header=new_header,
-                body_md=t.body_md, ok=False, call_id=t.call_id,
-                started_at=t.started_at, summary=t.summary,
-            )
+            items[i] = replace(t, header=new_header, ok=False, status="cancel",
+                               elapsed_s=elapsed, live="")
             changed = True
         if changed:
             setattr(sec, coll, tuple(items))
@@ -495,10 +523,19 @@ def _trim_path_like(s: str, cap: int) -> str:
     return s[:cap - 1] + "…"
 
 
-def _tool_summary(args: dict[str, Any]) -> str:
+def _tool_summary(args: dict[str, Any], summary_args: tuple[str, ...] = ()) -> str:
     """工具标题摘要(< 56 字)。
-    优先级:description(prompt 让模型给的一句话) > 关键路径/命令字段 > 第一个 kv。
+    工具声明了 summary_args(ToolDisplay)时按它的顺序取第一个非空参数(列表用 " / " 连接);
+    否则:description(prompt 让模型给的一句话) > 关键路径/命令字段 > 第一个 kv。
     路径长时从前半截断保末段。"""
+    for key in summary_args:
+        value = args.get(key)
+        if isinstance(value, (list, tuple)):
+            value = " / ".join(str(v) for v in value if v)
+        if value:
+            text = " ".join(str(value).split())
+            return text if len(text) <= _SUMMARY_MAX else _trim_path_like(text, _SUMMARY_MAX) \
+                if "/" in text and " " not in text else text[:_SUMMARY_MAX - 1] + "…"
     # 1) description(bash/edit 等 prompt 里要求模型给的一行简述)
     desc = str(args.get("description") or "").strip()
     if desc:

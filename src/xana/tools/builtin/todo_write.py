@@ -9,7 +9,7 @@ from __future__ import annotations
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
 from xana.tools.builtin._todo_store import TodoItem, TodoStore
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 
@@ -42,6 +42,7 @@ _SPEC = ToolSpec(
         "required": ["todos"],
     },
     destructive=True,
+    display=ToolDisplay(category="plan", verb="更新清单", result="none"),
 )
 
 
