@@ -22,6 +22,7 @@ from xana.tools.interfaces import Tool
 
 
 _CREATE_SPEC = ToolSpec(
+    toolset="schedule",
     component=ComponentSpec(
         kind="tool", name="cron_create", qualified_name="builtin.cron_create",
         description=(
@@ -50,6 +51,7 @@ _CREATE_SPEC = ToolSpec(
 )
 
 _LIST_SPEC = ToolSpec(
+    toolset="schedule",
     component=ComponentSpec(
         kind="tool", name="cron_list", qualified_name="builtin.cron_list",
         description="列出 cron_create 调度的全部定时任务(含持久化的)。",
@@ -61,6 +63,7 @@ _LIST_SPEC = ToolSpec(
 )
 
 _DELETE_SPEC = ToolSpec(
+    toolset="schedule",
     component=ComponentSpec(
         kind="tool", name="cron_delete", qualified_name="builtin.cron_delete",
         description="按 ID 取消 cron_create 调度的定时任务。",

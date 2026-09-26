@@ -22,7 +22,9 @@ class AgentSpec:
     component: ComponentSpec
     prompt_id: str
     when_to_use: str = ""
-    allowed_tools: tuple[str, ...] = ()
+    # 工具选择表达式(docs/design/agent-composition-design.md §3.3):default / 组名 / 工具名 / "*";
+    # () = 零工具。disallowed_tools 在其后再减,同样接受组名。
+    tools: tuple[str, ...] = ("default",)
     disallowed_tools: tuple[str, ...] = ()
     allowed_skills: tuple[str, ...] = ()
     hooks: tuple[str, ...] = ()
@@ -35,10 +37,9 @@ class AgentSpec:
     background: bool = False
     parent_agent: str | None = None
     max_turns: int | None = None
-    # None → 完整默认 13 段系统提示;非空 → 替换全部静态段,动态段照常注入
+    # None → xana 默认系统提示词;字符串 → 系统提示词模板(§3.4):${base_prompt} 嵌入默认提示词,
+    # ${env} 环境段,${extensions} 扩展片段;不含占位符 = 完全替换
     system_prompt: str | None = None
-    # Agent 身份,追加在 INTRO 之后(仅 system_prompt=None 时生效)
-    identity: str = ""
     # 会话级提示词开关;None = 交互模式默认值。会话创建时固化进 SessionConfig
     prompt_profile: PromptProfile | None = None
     # 回合结束时的检查命令(命令型验证,对应 CC 命令型 Stop hook)

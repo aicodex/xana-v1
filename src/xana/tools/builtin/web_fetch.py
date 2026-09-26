@@ -30,6 +30,7 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 _SPEC = ToolSpec(
+    toolset="web",
     component=ComponentSpec(
         kind="tool", name="web_fetch", qualified_name="builtin.web_fetch",
         description=(

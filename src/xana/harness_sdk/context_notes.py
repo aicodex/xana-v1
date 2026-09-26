@@ -30,6 +30,7 @@ TODO_TURNS_BETWEEN_REMINDERS = 10
 
 TODO_TOOL_NAME = "TodoWrite"
 READ_TOOL_NAME = "Read"
+TOOL_SEARCH_TOOL_NAME = "tool_search"
 
 
 def _key(text: str) -> str:
@@ -61,19 +62,21 @@ def _tool_calls(m: MemoryMessage) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _truncate(path: str, body: str) -> str:
+def _truncate(path: str, body: str, *, can_read: bool) -> str:
     lines = body.splitlines()
     cut = "\n".join(lines[:RECALL_MAX_FILE_LINES])
     encoded = cut.encode("utf-8")
     if len(encoded) > RECALL_MAX_FILE_BYTES:
         cut = encoded[:RECALL_MAX_FILE_BYTES].decode("utf-8", errors="ignore")
     if cut != body:
-        cut += f"\n\n(该记忆已截断,完整内容请用 Read 查看 {path})"
+        cut += (f"\n\n(该记忆已截断,完整内容请用 Read 查看 {path})" if can_read
+                else f"\n\n(该记忆已截断:{path})")
     return cut
 
 
 def memory_recall_note(
     blocks: Sequence[InjectedBlock], history: Sequence[MemoryMessage], user_input: str,
+    *, can_read: bool = True,
 ) -> MemoryMessage | None:
     """本条用户消息的记忆召回。同一记忆文件一个会话只注入一次;会话累计到上限即停。"""
     if len(set(search_terms(user_input))) < RECALL_MIN_TERMS:
@@ -95,7 +98,7 @@ def memory_recall_note(
         if (not block.content.strip() or path in surfaced or path in paths
                 or any(rp.endswith(path) for rp in read_paths if rp)):
             continue
-        sections.append(f"## {path}\n{_truncate(path, block.content)}")
+        sections.append(f"## {path}\n{_truncate(path, block.content, can_read=can_read)}")
         paths.append(path)
         if len(paths) >= RECALL_MAX_FILES:
             break

@@ -1,7 +1,7 @@
 """内置子研究员 agent:deep_research 派出的并行子 agent(docs/design/lead-research-design.md)。
 
-只能用 web_search / web_open_url / Read;不向用户提问;交回带出处的发现。白名单里没有
-deep_research,子研究员不会再派子 agent(防递归)。
+工具只有 web 组(web_search / web_open_url)与 Read;不向用户提问;交回带出处的发现。
+工具里没有 deep_research,子研究员不会再派子 agent(防递归)。
 """
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from xana.agents.contracts import AgentSpec
 from xana.component.contracts import ComponentSource, ComponentSpec
 
 RESEARCHER_AGENT = "researcher"
-RESEARCHER_TOOLS = ("web_search", "web_open_url", "Read")
+RESEARCHER_TOOLS = ("web", "Read")
 RESEARCHER_MAX_TURNS = 20
 
 RESEARCHER_IDENTITY = (
@@ -29,7 +29,7 @@ def build_researcher_agent_spec() -> AgentSpec:
             source=ComponentSource(source_type="builtin", scope="system"),
         ),
         prompt_id="researcher",
-        identity=RESEARCHER_IDENTITY,
-        allowed_tools=RESEARCHER_TOOLS,
+        system_prompt="${base_prompt}\n\n" + RESEARCHER_IDENTITY,
+        tools=RESEARCHER_TOOLS,
         max_turns=RESEARCHER_MAX_TURNS,
     )

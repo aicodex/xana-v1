@@ -19,6 +19,7 @@ from xana.tools.interfaces import Tool
 
 
 _SPEC = ToolSpec(
+    toolset="session",
     component=ComponentSpec(
         kind="tool",
         name="EnterPlanMode",

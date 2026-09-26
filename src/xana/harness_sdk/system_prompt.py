@@ -92,7 +92,6 @@ OUTPUT = """\
 
 如果一句话能说清，不要用三句。偏好短而直接的句子胜过冗长的解释。这不适用于代码或工具调用。"""
 
-# 头部静态段不抽元组:identity 必须插在 INTRO 与 SYSTEM 之间,见 build_system_prompt
 # 译自 Claude Code 2.1.281「# Communicating with the user」(去掉仅适用于写代码的一句)
 COMMUNICATING = """\
 # 与用户沟通
@@ -128,29 +127,33 @@ def tools_section() -> str:
 
 def build_system_prompt(
     *,
-    identity: str = "",
-    override: str | None = None,
+    template: str | None = None,
     env: str = "",
     extension_sections: str = "",
     profile_tail: str = "",
 ) -> str:
-    """13 段拼装(PROMPT_ASSEMBLY_ORDER.md)。override 非空 → 跳过全部静态段。
+    """system 拼装(PROMPT_ASSEMBLY_ORDER.md)。
+
+    template=None → xana 默认提示词;否则 template 即系统提示词(docs/design/agent-composition-design.md §3.4):
+    ``${base_prompt}`` 嵌入默认提示词,``${env}`` 环境段,``${extensions}`` 扩展片段,未知占位符原样保留;
+    不含占位符 = 完全替换。PromptProfile 尾段(agent 显式配置的会话开关)总在最末。
 
     system 会话内固定:只含静态段、身份、环境与会话内稳定的扩展片段。
     每轮变化的上下文(记忆召回、技能列表、按需工具、todo)以 ContextNote
     追加进历史,见 ``harness_sdk.context_notes``。"""
-    if override:
-        parts: list[str] = [override]
+    base = "\n\n".join(p for p in (
+        INTRO, SYSTEM, DOING_TASKS, ACTIONS, env, tools_section(), extension_sections, *STATIC_TAIL) if p)
+    if template is None:
+        body = base
     else:
-        parts = [INTRO]
-        if identity:
-            parts.append(identity)
-        parts += [SYSTEM, DOING_TASKS, ACTIONS]
-    parts += [env, tools_section(), extension_sections]
-    if not override:
-        parts += list(STATIC_TAIL)
-    parts.append(profile_tail)  # PromptProfile 开关文本固定在最末
-    return "\n\n".join(p for p in parts if p)
+        body = (template.replace(BASE_PROMPT_VAR, base).replace(ENV_VAR, env)
+                .replace(EXTENSIONS_VAR, extension_sections))
+    return "\n\n".join(p for p in (body, profile_tail) if p)
+
+
+BASE_PROMPT_VAR = "${base_prompt}"
+ENV_VAR = "${env}"
+EXTENSIONS_VAR = "${extensions}"
 
 
 # ---------------------------------------------------------------------------

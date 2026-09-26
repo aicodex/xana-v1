@@ -16,6 +16,7 @@ from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolR
 from xana.tools.interfaces import Tool
 
 _SPEC = ToolSpec(
+    toolset="meta",
     component=ComponentSpec(
         kind="tool",
         name="skill_load",

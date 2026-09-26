@@ -43,6 +43,7 @@ def _resolve_timeout_s(input_: dict) -> float:
 
 
 _SPEC = ToolSpec(
+    toolset="exec",
     component=ComponentSpec(
         kind="tool",
         name="Bash",

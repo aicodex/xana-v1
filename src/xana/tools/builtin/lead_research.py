@@ -36,6 +36,7 @@ _SYNTH_SYSTEM = (
 )
 
 _SPEC = ToolSpec(
+    toolset="research",
     component=ComponentSpec(
         kind="tool", name="deep_research", qualified_name="builtin.deep_research",
         description=(

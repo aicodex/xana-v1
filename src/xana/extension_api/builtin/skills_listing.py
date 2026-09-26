@@ -11,6 +11,9 @@ from xana.skills.contracts import SkillActivation, SkillSpec
 from xana.skills.interfaces import SkillRegistry
 
 
+SKILL_LOAD_TOOL = "skill_load"
+
+
 class SkillsListingContributor(TurnInputContributor):
     """「# 可用技能」段(模板 AGENT_LOOP_PROMPT.md:136-140)。"""
 
@@ -23,6 +26,8 @@ class SkillsListingContributor(TurnInputContributor):
         thread_store: ExtensionData,
         turn_store: ExtensionData,
     ) -> list[ContextFragment]:
+        if ctx.available_tools is not None and SKILL_LOAD_TOOL not in ctx.available_tools:
+            return []  # 没有 skill_load 的 agent 用不了技能,不列
         specs = await self._list_specs(ctx)
         if not specs:
             return []

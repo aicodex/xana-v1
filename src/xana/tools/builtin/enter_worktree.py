@@ -24,6 +24,7 @@ from xana.tools.interfaces import Tool
 _NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 _SPEC = ToolSpec(
+    toolset="session",
     component=ComponentSpec(
         kind="tool",
         name="EnterWorktree",

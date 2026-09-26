@@ -88,9 +88,9 @@ class MarkdownDocParser(SkillManifestParser):
     """SkillManifestParser 首个实现:frontmatter yaml + 正文,双 kind。
 
     - kind=skill(默认):必填 name/description;可选 when_to_use/allowed_tools。
-    - kind=agent:必填 name/goal/tools;goal 映射到 manifest.description,
-      tools 映射到 allowed_tools;skills/budget/stop_rules/output_contract/prompt_profile/verify
-      放入 metadata,由 AgentRegistry 消费。
+    - kind=agent:必填 name/goal;goal 映射到 manifest.description;可选 tools(不写 = 默认组合,
+      [] = 零工具)/ disallowed_tools / skills/budget/stop_rules/output_contract/prompt_profile/verify
+      放入 metadata,由 AgentRegistry 消费(docs/design/agent-composition-design.md §3.3)。
     """
 
     async def parse(self, path: Path) -> SkillManifest:
@@ -105,13 +105,11 @@ class MarkdownDocParser(SkillManifestParser):
         name = _require_str(fm, path=path, kind=kind, field="name")
         if kind == "agent":
             goal = _require_str(fm, path=path, kind=kind, field="goal")
-            tools = _optional_str_list(fm, path=path, kind=kind, field="tools")
-            if not tools:
-                raise SkillManifestError(
-                    path=path, kind=kind, field="tools",
-                    reason="agent 文档必须提供非空 tools 白名单列表",
-                )
             metadata: dict[str, Any] = {"kind": "agent"}
+            for list_field in ("tools", "disallowed_tools"):
+                if fm.get(list_field) is not None:  # tools 不写 = 默认组合;[] = 零工具
+                    metadata[list_field] = list(
+                        _optional_str_list(fm, path=path, kind=kind, field=list_field))
             skills = _optional_str_list(fm, path=path, kind=kind, field="skills")
             if skills:
                 metadata["skills"] = list(skills)
@@ -154,7 +152,6 @@ class MarkdownDocParser(SkillManifestParser):
             return SkillManifest(
                 name=name,
                 description=goal,
-                allowed_tools=tools,
                 metadata=metadata,
             )
         description = _require_str(fm, path=path, kind=kind, field="description")

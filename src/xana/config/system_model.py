@@ -83,6 +83,12 @@ class WebSearch(BaseModel):
     xana_search_token: str = ""
 
 
+class ToolsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # 系统级禁用:组名或工具名;被禁用的工具不注册进工具目录,对所有 agent 都不存在
+    disabled: list[str] = []
+
+
 class McpServer(BaseModel):
     model_config = ConfigDict(extra="allow")
     name: str
@@ -159,6 +165,7 @@ class SystemConfig(BaseModel):
     limits: dict[str, ProviderLimit] = {}
     channels: Channels = Channels()
     web_search: WebSearch = WebSearch()
+    tools: ToolsConfig = ToolsConfig()
     mcp: Mcp = Mcp()
     policy: PolicyConfig = PolicyConfig()
     daemon: DaemonConfig = DaemonConfig()

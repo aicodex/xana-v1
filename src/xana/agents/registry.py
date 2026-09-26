@@ -1,9 +1,9 @@
 """FileAgentRegistry —— AgentRegistry 首个实现(计划 §5.1)。
 
 从 {root}/*/AGENT.md 加载角色定义文档,生成 AgentSpec:
-- 正文(工作流步骤)+ goal 渲染进 spec.identity(插在 INTRO 与 SYSTEM 之间,
-  保留默认 13 段系统提示 —— 不用 system_prompt override)
-- tools 白名单 → allowed_tools;skills 列表 → allowed_skills
+- 正文即系统提示词模板 → spec.system_prompt(含 ${base_prompt} 则在默认提示词上扩展,不含则完全替换)
+- tools 工具选择表达式(不写 = 默认组合,[] = 零工具)/ disallowed_tools;skills 列表 → allowed_skills
+  (docs/design/agent-composition-design.md)
 - budget/stop_rules/output_contract 放入 component.metadata(阶段四消费)
 
 Agent 实例经注入的 agent_factory 构造(boot 用共享 harness/stores 的
@@ -37,7 +37,6 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path) -> Ag
     for key in ("budget", "stop_rules", "output_contract"):
         if key in md:
             component_metadata[key] = md[key]
-    identity = f"# {manifest.name}\n\n目标:{manifest.description}\n\n{body}".strip()
     try:
         verify = tuple(VerifyCheck.from_raw(item) for item in md.get("verify", ()))
     except (TypeError, ValueError) as exc:
@@ -60,9 +59,10 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path) -> Ag
             metadata=component_metadata,
         ),
         prompt_id=f"agent.{manifest.name}",
-        allowed_tools=manifest.allowed_tools,
+        tools=tuple(md["tools"]) if "tools" in md else AgentSpec.tools,
+        disallowed_tools=tuple(md.get("disallowed_tools", ())),
         allowed_skills=tuple(md.get("skills", ())),
-        identity=identity,
+        system_prompt=body.strip() or None,
         prompt_profile=prompt_profile,
         verify=verify,
     )

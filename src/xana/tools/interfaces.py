@@ -6,7 +6,7 @@ from typing import AsyncIterator
 
 from xana.harness_sdk.contracts import HarnessContext
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import PermissionDecision, ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import PermissionDecision, ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset
 
 
 class ToolValidator(ABC):
@@ -82,3 +82,9 @@ class ToolRegistry(ABC):
 
     @abstractmethod
     async def list_specs(self) -> tuple[ToolSpec, ...]: ...
+
+    @abstractmethod
+    async def register_toolset(self, toolset: Toolset) -> None: ...
+
+    @abstractmethod
+    async def list_toolsets(self) -> tuple[Toolset, ...]: ...

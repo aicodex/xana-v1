@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 
 _SPEC = ToolSpec(
+    toolset="fs",
     component=ComponentSpec(
         kind="tool",
         name="Edit",

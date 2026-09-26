@@ -98,8 +98,9 @@ from xana.tools.builtin.web_search import WebSearchTool
 from xana.tools.builtin.xana_search import (BackgroundResearchTool, WebOpenUrlTool, XanaSearchClient,
                                             XanaWebSearchTool)
 from xana.tools.builtin.write import WriteTool
-from xana.tools.interfaces import ToolRegistry
+from xana.tools.interfaces import Tool, ToolRegistry
 from xana.tools.registry import InMemoryToolRegistry
+from xana.tools.toolsets import BUILTIN_TOOLSETS, unknown_names
 
 
 _INJECTOR_TOP_K = 3
@@ -248,41 +249,53 @@ async def boot(
         write_consumer.run(), name="xana-write-queue-consumer",
     )
 
+    cp = config_provider or DefaultConfigProvider()
+    runtime_config = await cp.load(project_root)
+    system_cfg = cp.load_system_config()
+
+    # 工具目录(docs/design/agent-composition-design.md §3.1–3.2):内置工具组先登记;
+    # system.json tools.disabled 里的组 / 工具不注册,对所有 agent 都不存在。
     tools = InMemoryToolRegistry()
-    await tools.register(MemorySearchTool(engine))
-    await tools.register(MemoryWriteTool(tree=tree, engine=engine))
-    await tools.register(ReadTool())
+    for _toolset in BUILTIN_TOOLSETS:
+        await tools.register_toolset(_toolset)
+    _disabled_tools = set(system_cfg.tools.disabled)
+
+    async def _register(tool: Tool) -> None:
+        sp = tool.spec()
+        if sp.component.name in _disabled_tools or (sp.toolset and sp.toolset in _disabled_tools):
+            return
+        await tools.register(tool)
+    await _register(MemorySearchTool(engine))
+    await _register(MemoryWriteTool(tree=tree, engine=engine))
+    await _register(ReadTool())
     # L2 门禁:裸写 L2/ 规则目录与 ~/.xana/agents Agent 文档目录被拒
     # (protected_dir 多目录,§6.3);root 内 .md 写后走 post_tool_use 增量
     # reindex(memory_tree)。
     l2_root = project_root / "L2"
     agents_root = _xana_home() / "agents"
-    await tools.register(EditTool(memory_tree=tree, protected_dir=(l2_root, agents_root)))
-    await tools.register(WriteTool(memory_tree=tree, protected_dir=(l2_root, agents_root)))
-    await tools.register(GlobTool())
-    await tools.register(GrepTool())
-    await tools.register(BashTool())
-    await tools.register(ToolSearchTool(tool_registry=tools))
-    await tools.register(ReportGoalTool())  # 仅目标模式会话可见(harness 按 PromptProfile 过滤)
+    await _register(EditTool(memory_tree=tree, protected_dir=(l2_root, agents_root)))
+    await _register(WriteTool(memory_tree=tree, protected_dir=(l2_root, agents_root)))
+    await _register(GlobTool())
+    await _register(GrepTool())
+    await _register(BashTool())
+    await _register(ToolSearchTool(tool_registry=tools))
+    await _register(ReportGoalTool())  # 仅目标模式会话可见(harness 按 PromptProfile 过滤)
     scheduler = FileSchedulerService(
         path=_xana_home() / "scheduled_tasks.json", session_id="default")
-    await tools.register(CronCreateTool(scheduler))
-    await tools.register(CronListTool(scheduler))
-    await tools.register(CronDeleteTool(scheduler))
+    await _register(CronCreateTool(scheduler))
+    await _register(CronListTool(scheduler))
+    await _register(CronDeleteTool(scheduler))
 
     todo_root = Path.home() / ".xana" / "sessions"
     worktree_root = Path.home() / ".xana" / "worktrees"
     session_config_root = Path.home() / ".xana" / "sessions"
     session_config_store: SessionConfigStore = FileSessionConfigStore(root=session_config_root)
     todo_store = TodoStore(root=todo_root)
-    await tools.register(TodoWriteTool(todo_store))
-    await tools.register(EnterPlanModeTool(session_config_store=session_config_store))
-    await tools.register(EnterWorktreeTool(session_config_store=session_config_store, worktree_root=worktree_root))
-    await tools.register(SkillLoadTool(skills=bundled_skills))
+    await _register(TodoWriteTool(todo_store))
+    await _register(EnterPlanModeTool(session_config_store=session_config_store))
+    await _register(EnterWorktreeTool(session_config_store=session_config_store, worktree_root=worktree_root))
+    await _register(SkillLoadTool(skills=bundled_skills))
 
-    cp = config_provider or DefaultConfigProvider()
-    runtime_config = await cp.load(project_root)
-    system_cfg = cp.load_system_config()
     model_thresholds = {e.name: derive_compact_thresholds(e) for e in system_cfg.models}
     # SessionResolver — single source of truth for (adapter_id, thread_id) -> sid.
     # Seeded from system_cfg.sessions (read-once at boot per I16); mirror-writes
@@ -300,14 +313,14 @@ async def boot(
     if system_cfg.web_search.xana_search_url:
         search_client = XanaSearchClient(system_cfg.web_search.xana_search_url,
                                          system_cfg.web_search.xana_search_token)
-        await tools.register(XanaWebSearchTool(search_client))
-        await tools.register(WebOpenUrlTool(search_client))
-        await tools.register(BackgroundResearchTool(search_client))
+        await _register(XanaWebSearchTool(search_client))
+        await _register(WebOpenUrlTool(search_client))
+        await _register(BackgroundResearchTool(search_client))
     else:
-        await tools.register(WebSearchTool(
+        await _register(WebSearchTool(
             session_config_store=session_config_store,
             brave_api_key=(system_cfg.web_search.brave_search_key or None)))
-        await tools.register(WebFetchTool())
+        await _register(WebFetchTool())
     provider = runtime_config.default_model.provider
     model = runtime_config.default_model.model
     client = _build_model_client(provider, model, cp)
@@ -420,8 +433,8 @@ async def boot(
     gateway.agents["chat"] = chat_agent
 
     # §5.1 Agent 文档:~/.xana/agents/*/AGENT.md → AgentSpec → ChatAgent
-    # (共享 harness/stores,spec 来自文档:identity=工作流正文,tools/skills
-    # 白名单映射进现有字段)。builtin.chat 保持默认不变;坏文档记 warning。
+    # (共享 harness/stores,spec 来自文档:正文=系统提示词模板,tools 为工具选择表达式,
+    # skills 映射进现有字段)。builtin.chat 保持默认不变;坏文档记 warning。
     from xana.agents.contracts import AgentSpec
     from xana.agents.registry import FileAgentRegistry
 
@@ -465,27 +478,36 @@ async def boot(
             gateway.agents[_spec.component.name] = _doc_agent
 
     # deep_research(docs/design/lead-research-design.md):主模型当研究负责人,并行派出内置子研究员
-    # (researcher:只有 web_search / web_open_url / Read)。子研究员不接进度汇报(不触碰渠道)。
+    # (researcher:只有 web 组与 Read)。子研究员不接进度汇报(不触碰渠道)。
     if system_cfg.web_search.xana_search_url:
         from xana.agent_adapter.agent_runner import GatewayAgentRunner
         from xana.agents.researcher import RESEARCHER_AGENT, build_researcher_agent_spec
         from xana.tools.builtin.lead_research import LeadResearchTool
         gateway.agents[RESEARCHER_AGENT] = _doc_agent_factory(build_researcher_agent_spec(), progress=False)
-        await tools.register(LeadResearchTool(
+        await _register(LeadResearchTool(
             runner=GatewayAgentRunner(agents=gateway.agents, session_store=state.sessions()),
             model_registry=model_registry, provider=provider, model=model,
             findings_root=project_root / "research", researcher_agent=RESEARCHER_AGENT))
 
-    # agent 工具白名单里写了不存在的工具名:该名字不会生效(按名精确匹配),记 warning 提示修正。
-    _tool_names = {sp.component.name for sp in await tools.list_specs()}
-    _checked_specs = list(await agent_registry.list_specs())
+    # 写错的名字不会生效(按名精确匹配,常见为大小写笔误),记 warning 提示修正;
+    # 被系统级禁用的工具同样报出,提示该 agent 实际拿不到它。
+    _all_specs = await tools.list_specs()
+    _all_toolsets = await tools.list_toolsets()
+    for _sp in _all_specs:
+        if _sp.toolset and _sp.toolset not in {t.name for t in _all_toolsets}:
+            _logger.warning("工具 %s 所属的组 %s 未登记,只能按工具名选中", _sp.component.name, _sp.toolset)
+    _unknown_disabled = sorted(_disabled_tools - {t.name for t in BUILTIN_TOOLSETS}
+                               - {sp.component.name for sp in _all_specs})
+    if _unknown_disabled:
+        _logger.info("tools.disabled 中未匹配到已注册组 / 工具的条目(可能本就未注册):%s", _unknown_disabled)
+    _checked_specs = [build_chat_agent_spec(), *await agent_registry.list_specs()]
     if system_cfg.web_search.xana_search_url:
         _checked_specs.append(build_researcher_agent_spec())
     for _spec in _checked_specs:
-        _unknown = sorted(set(_spec.allowed_tools) - _tool_names)
+        _unknown = unknown_names((*_spec.tools, *_spec.disallowed_tools), _all_specs, _all_toolsets)
         if _unknown:
-            _logger.warning("agent %s 的工具白名单含未注册的工具 %s(已注册:%s)",
-                            _spec.component.name, _unknown, sorted(_tool_names))
+            _logger.warning("agent %s 的 tools / disallowed_tools 含未知的组或工具 %s",
+                            _spec.component.name, _unknown)
 
     # §6.3: 元 agent 服务。迭代对象 = 首个文档 agent(没有则 builtin.chat);
     # cron 幂等安装,首个 episode 时创建。

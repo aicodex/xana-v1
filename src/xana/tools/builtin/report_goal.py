@@ -12,6 +12,7 @@ from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolR
 from xana.tools.interfaces import Tool
 
 _SPEC = ToolSpec(
+    toolset="session",
     component=ComponentSpec(
         kind="tool",
         name=REPORT_GOAL_TOOL,

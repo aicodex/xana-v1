@@ -65,6 +65,9 @@ from xana.harness_sdk.goal import (
 )
 from xana.harness_sdk.interfaces import Harness
 from xana.harness_sdk.context_notes import (
+    READ_TOOL_NAME,
+    TODO_TOOL_NAME,
+    TOOL_SEARCH_TOOL_NAME,
     CONTINUE_THINKING_ONLY,
     CONTINUE_TRUNCATED,
     NO_PROGRESS_REMINDER,
@@ -86,8 +89,9 @@ from xana.memory.interfaces import ActiveContextStore, HistoryMirror
 from xana.policy.contracts import PermissionContext, PermissionResult
 from xana.skills.contracts import SkillActivation
 from xana.state.contracts import RunRecord, UsageSnapshot
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult
+from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset
 from xana.tools.interfaces import Tool
+from xana.tools.toolsets import resolve_tools
 
 
 _logger = logging.getLogger(__name__)
@@ -129,12 +133,19 @@ _SYNTHETIC_WARNING_TEXT_READONLY = (
 _TOOL_ABORT_GRACE_SECONDS = 2.0
 
 
-def _tool_allowed(name: str, snapshot: dict[str, Any]) -> bool:
-    """AgentSpec 的工具范围:白名单非空时只允许名单内的工具;黑名单里的一律不允许。"""
-    allowed = snapshot.get("allowed_tools") or ()
-    if allowed and name not in allowed:
-        return False
-    return name not in (snapshot.get("disallowed_tools") or ())
+def _available_tools(
+    context: HarnessContext, specs: tuple[ToolSpec, ...], toolsets: tuple[Toolset, ...],
+) -> frozenset[str] | None:
+    """本 run 可用的工具名(agent 工具选择表达式解析结果,docs/design/agent-composition-design.md §3.3)。
+    config_snapshot 没有 tools 键(直接使用 harness、不经 agent 层)→ None,不过滤。"""
+    if "tools" not in context.config_snapshot:
+        return None
+    return resolve_tools(context.config_snapshot["tools"] or (),
+                         context.config_snapshot.get("disallowed_tools") or (), specs, toolsets)
+
+
+def _can_use(available: frozenset[str] | None, name: str) -> bool:
+    return available is None or name in available
 
 
 class DefaultHarness(Harness):
@@ -167,8 +178,7 @@ class DefaultHarness(Harness):
         cached = self._session_systems.get((session_id, agent_name))
         if cached is None:
             text = build_system_prompt(
-                identity=str(context.config_snapshot.get("agent_identity", "") or ""),
-                override=context.config_snapshot.get("agent_system_prompt") or None,
+                template=context.config_snapshot.get("agent_system_prompt") or None,
                 env=env_section(cwd=context.cwd or None, model=context.model),
                 extension_sections=extension_system_text,
                 profile_tail=profile_sections(_profile(context)),
@@ -467,6 +477,7 @@ class DefaultHarness(Harness):
         run_id: str,
         *,
         ext_tools: dict[str, Tool],
+        available: frozenset[str] | None,
         ext: "ExtensionRegistry | None",
         thread_store: ExtensionData | None,
         turn_store: ExtensionData | None,
@@ -513,7 +524,7 @@ class DefaultHarness(Harness):
 
         await _fire_tool_start()
 
-        if not _tool_allowed(tool_name, context.config_snapshot):
+        if not _can_use(available, tool_name):
             result = ToolResult(ok=False, content=None, failure_kind="policy_forbidden",
                                 error=f"工具 {tool_name} 不在本 agent 的可用范围内",
                                 rendered=f"[工具 {tool_name} 不在本 agent 的可用范围内]")
@@ -937,16 +948,33 @@ class DefaultHarness(Harness):
         # (PH ritual, spec §1.5). _run_query_loop runs against a forked
         # store that is already seeded with the user_msg.
 
+        specs: tuple[ToolSpec, ...] = ()
+        toolsets: tuple[Toolset, ...] = ()
+        if context.tool_registry is not None:
+            specs = tuple(await context.tool_registry.list_specs())
+            toolsets = tuple(await context.tool_registry.list_toolsets())
+        ext_tools: dict[str, Tool] = {}
+        if ext is not None:
+            for contributor in ext.tools:
+                for tool in contributor.tools():
+                    ext_tools[tool.spec().component.name] = tool
+        # 本 agent 可用的工具;schema 过滤、执行前校验与下面各项注入都以它为准(§3.5)。
+        available = _available_tools(
+            context, specs + tuple(t.spec() for t in ext_tools.values()), toolsets)
+        memory_tools = {sp.component.name for sp in specs if sp.toolset == "memory"}
+
         # §5 ContextNote:每条用户消息一次的上下文(记忆召回、技能/扩展片段)以 note
         # 追加在本条用户消息之后,只在有新内容时注入;system 不再承载它们。
         _snap = await context.active_context_store.get(session_id, agent_name)
         _hist: tuple[MemoryMessage, ...] = _snap.messages if _snap is not None else ()
         pending_notes: list[MemoryMessage] = []
-        if context.memory_injector_registry is not None:
+        if context.memory_injector_registry is not None and (
+                available is None or available & memory_tools):  # 记忆召回随 memory 组
             blocks = await context.memory_injector_registry.collect(
                 session_id, agent_name, request.user_input, context.cwd
             )
-            recall = memory_recall_note(blocks, _hist, request.user_input)
+            recall = memory_recall_note(blocks, _hist, request.user_input,
+                                        can_read=_can_use(available, READ_TOOL_NAME))
             if recall is not None:
                 pending_notes.append(recall)
         turn_input_parts: list[str] = []
@@ -965,7 +993,7 @@ class DefaultHarness(Harness):
         if ext is not None and ext.turn_input:
             tic = TurnInputContext(
                 session_id=session_id, agent_name=agent_name, run_id=run_id,
-                user_input=request.user_input, cwd=context.cwd or None,
+                user_input=request.user_input, cwd=context.cwd or None, available_tools=available,
             )
             for c in ext.turn_input:
                 for frag in await c.contribute_turn_input(tic, thread_store, turn_store):
@@ -1033,15 +1061,6 @@ class DefaultHarness(Harness):
             yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
                                payload={"error": message})
             return
-
-        specs: tuple = ()
-        if context.tool_registry is not None:
-            specs = tuple(await context.tool_registry.list_specs())
-        ext_tools: dict[str, Tool] = {}
-        if ext is not None:
-            for contributor in ext.tools:
-                for tool in contributor.tools():
-                    ext_tools[tool.spec().component.name] = tool
 
         usage = UsageSnapshot(model=context.model, provider=provider)
         # 回答文字 = 不带工具调用的那几轮(截断续写 / 续跑的多段回答仍拼接);
@@ -1212,6 +1231,8 @@ class DefaultHarness(Harness):
 
             # ---- per-turn tools_schema + system prompt(deferred 揭示后下轮生效)----
             revealed = _revealed_tools(history_msgs)
+            if not _can_use(available, TOOL_SEARCH_TOOL_NAME):
+                revealed = {sp.component.name for sp in specs}  # 没有 tool_search 就不隐藏任何工具
             schemas, deferred_names = _split_tool_schemas(specs, revealed)
             if not profile.goal_mode:  # report_goal 只在目标模式会话中出现
                 schemas = [sc for sc in schemas if sc["name"] != REPORT_GOAL_TOOL]
@@ -1224,9 +1245,9 @@ class DefaultHarness(Harness):
                     + [_to_anthropic_tool_schema(t.spec()) for t in ext_tools.values()]
                 )
                 deferred_names = [d for d in deferred_names if d[0] not in ext_tool_names]
-            # agent 的工具白名单 / 黑名单(AgentSpec.allowed_tools / disallowed_tools;空白名单 = 不限制)
-            schemas = [sc for sc in schemas if _tool_allowed(sc["name"], context.config_snapshot)]
-            deferred_names = [d for d in deferred_names if _tool_allowed(d[0], context.config_snapshot)]
+            # agent 的工具范围(AgentSpec.tools / disallowed_tools 解析结果)
+            schemas = [sc for sc in schemas if _can_use(available, sc["name"])]
+            deferred_names = [d for d in deferred_names if _can_use(available, d[0])]
             # 原生联网搜索互斥(同构 yuxu _maybe_inject_web_search):search_provider 为 native(或未设)且
             # provider 为 deepseek 系时,声明 yields_to_native 的搜索工具让位给模型端 server tool,
             # 从 schema 与 deferred 名单剔除,并经 metadata 通知 provider 注入。只在该工具仍在本 agent
@@ -1253,7 +1274,7 @@ class DefaultHarness(Harness):
             deferred_note = deferred_tools_note(tuple(deferred_names), history_msgs)
             if deferred_note is not None:
                 loop_notes.append(deferred_note)
-            if todo_store is not None:
+            if todo_store is not None and _can_use(available, TODO_TOOL_NAME):
                 try:
                     todo_note = todo_reminder_note(history_msgs, todo_store.load(session_id))
                 except Exception:
@@ -1494,7 +1515,7 @@ class DefaultHarness(Harness):
                 def _dispatch(tc: dict[str, Any], progress: Callable[[str], None]):
                     return self._dispatch_tool(
                         tc, context, session_id, agent_name, run_id,
-                        ext_tools=ext_tools, ext=ext,
+                        ext_tools=ext_tools, available=available, ext=ext,
                         thread_store=thread_store, turn_store=turn_store,
                         progress=progress,
                     )
@@ -1701,7 +1722,7 @@ def _split_tool_schemas(
     schemas: list[dict] = []
     deferred: list[tuple[str, str]] = []
     for s in specs:
-        if getattr(s, "defer", False) and s.component.name not in revealed:
+        if s.defer and s.component.name not in revealed:
             deferred.append((s.component.name, s.component.description or ""))
         else:
             schemas.append(_to_anthropic_tool_schema(s))

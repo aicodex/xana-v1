@@ -10,6 +10,7 @@ from xana.tools.interfaces import Tool
 
 
 _SPEC = ToolSpec(
+    toolset="memory",
     component=ComponentSpec(
         kind="tool",
         name="memory_search",

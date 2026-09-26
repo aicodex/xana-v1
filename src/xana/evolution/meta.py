@@ -143,8 +143,8 @@ class MetaEvolutionService:
         if gateway is not None:
             agent = getattr(gateway, "agents", {}).get(self._agent_name)
             if agent is not None:
-                identity = agent.spec().identity
-                return f"({self._agent_name})\n{identity}"
+                prompt = agent.spec().system_prompt or "(xana 默认系统提示词)"
+                return f"({self._agent_name})\n{prompt}"
         return f"({self._agent_name},无文档)"
 
     def _render_last_eval(self) -> str:

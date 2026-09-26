@@ -22,6 +22,7 @@ _OPEN_TIMEOUT_S = 180.0
 _MAX_WAIT_S = 600
 
 _SEARCH_SPEC = ToolSpec(
+    toolset="web",
     component=ComponentSpec(
         kind="tool", name="web_search", qualified_name="builtin.web_search",
         description=(
@@ -47,6 +48,7 @@ _SEARCH_SPEC = ToolSpec(
 )
 
 _OPEN_SPEC = ToolSpec(
+    toolset="web",
     component=ComponentSpec(
         kind="tool", name="web_open_url", qualified_name="builtin.web_open_url",
         description=(
@@ -69,6 +71,7 @@ _OPEN_SPEC = ToolSpec(
 )
 
 _DEEP_SPEC = ToolSpec(
+    toolset="research",
     component=ComponentSpec(
         kind="tool", name="background_research", qualified_name="builtin.background_research",
         description=(

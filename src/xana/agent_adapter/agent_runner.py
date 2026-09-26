@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from typing import Callable, Mapping
@@ -49,24 +50,24 @@ class GatewayAgentRunner(AgentRunner):
         text, status, error = "", "error", "子 agent 没有产出最终回答"
         counts: dict[str, int] = {}
         try:
-            async for event in agent.send(request):
-                he = event.harness_event
-                kind = he.kind if he is not None else event.kind
-                payload = (he.payload if he is not None else event.payload) or {}
-                if kind == "tool_started":
-                    name = str(payload.get("tool_name") or "")
-                    counts[name] = counts.get(name, 0) + 1
-                    if on_tool is not None:
-                        on_tool(name)
-                elif kind == "final":
-                    text, status, error = str(payload.get("text") or ""), "completed", ""
-                    break
-                elif kind == "error":
-                    error = str(payload.get("error") or payload.get("text") or "error")
-                    break
-                elif kind == "cancelled":
-                    status, error = "cancelled", "子 agent 被取消"
-                    break
+            # 读到流结束(不在 final 处 break):子 run 在 final 之后还要收尾(写 RunRecord、回合结束钩子);
+            # 中途被取消时 aclosing 保证生成器就地关闭,不留给 GC 在别的事件循环里收尾。
+            async with contextlib.aclosing(agent.send(request)) as events:
+                async for event in events:
+                    he = event.harness_event
+                    kind = he.kind if he is not None else event.kind
+                    payload = (he.payload if he is not None else event.payload) or {}
+                    if kind == "tool_started":
+                        name = str(payload.get("tool_name") or "")
+                        counts[name] = counts.get(name, 0) + 1
+                        if on_tool is not None:
+                            on_tool(name)
+                    elif kind == "final" and status != "completed":
+                        text, status, error = str(payload.get("text") or ""), "completed", ""
+                    elif kind == "error" and status != "completed":
+                        error = str(payload.get("error") or payload.get("text") or "error")
+                    elif kind == "cancelled":
+                        status, error = "cancelled", "子 agent 被取消"
         except asyncio.CancelledError:
             abort.trigger("parent_cancelled")   # 父任务被取消:连同后台子 run 一起中止
             raise

@@ -23,6 +23,7 @@ from xana.tools.interfaces import Tool
 _BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 
 _SPEC = ToolSpec(
+    toolset="web",
     component=ComponentSpec(
         kind="tool", name="web_search", qualified_name="builtin.web_search",
         description=(

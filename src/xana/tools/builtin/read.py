@@ -18,6 +18,7 @@ _DEFAULT_LIMIT = 2000
 
 
 _SPEC = ToolSpec(
+    toolset="fs",
     component=ComponentSpec(
         kind="tool",
         name="Read",

@@ -97,6 +97,16 @@ class ToolSpec:
     # True = provider 有等价的原生服务端能力(如 deepseek 原生联网搜索)时让位:harness 从 schema 剔除本工具,
     # 改由 provider 注入原生能力。仅当本工具在该 agent 的可用范围内时才触发。
     yields_to_native: bool = False
+    # 所属工具组(docs/design/agent-composition-design.md §3.1);"" = 未分组,只能按工具名或 "*" 选中
+    toolset: str = ""
+
+
+@dataclass(frozen=True)
+class Toolset:
+    """工具组:agent 按组选工具。default=True 的组构成"默认组合"(agent 不写 tools 时拿到的工具)。"""
+    name: str
+    description: str
+    default: bool = False
 
 
 @dataclass(frozen=True)

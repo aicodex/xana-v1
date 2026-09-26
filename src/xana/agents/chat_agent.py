@@ -141,13 +141,12 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             "provider": self.provider,
             "context_window": ctx_win,
             "force_compact": force_at,
-            "agent_identity": spec.identity,
             "agent_system_prompt": spec.system_prompt,
             "async_mode": async_mode,
             "max_turns": spec.max_turns,
             "prompt_profile": profile.to_dict(),
             "verify": [c.to_dict() for c in spec.verify],
-            "allowed_tools": list(spec.allowed_tools),
+            "tools": list(spec.tools),
             "disallowed_tools": list(spec.disallowed_tools),
         }
         if cfg is not None:

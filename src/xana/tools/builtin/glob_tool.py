@@ -13,6 +13,7 @@ _DEFAULT_LIMIT = 250
 
 
 _SPEC = ToolSpec(
+    toolset="fs",
     component=ComponentSpec(
         kind="tool",
         name="Glob",

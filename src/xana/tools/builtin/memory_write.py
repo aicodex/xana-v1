@@ -32,6 +32,7 @@ from xana.tools.interfaces import Tool
 _ACTIONS = ("create", "refine", "supersede")
 
 _SPEC = ToolSpec(
+    toolset="memory",
     component=ComponentSpec(
         kind="tool",
         name="memory_write",
