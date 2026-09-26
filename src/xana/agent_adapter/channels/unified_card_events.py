@@ -221,10 +221,14 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
         state.top_buttons = compute_top_buttons(state)
         return
     if kind == "error":
-        # leave answer text intact; flip to cancelled so renderer shows
-        # cancelled-styled block. Adapter may decorate with error text.
-        if state.answer is not None:
-            cancel_answer(state.answer)
+        # 出错不是取消:回答区写明原因(保留已有输出),脚标红点。
+        # 以前翻成"回答已取消"且不带原因,用户看到的是"被取消了"(如 kimi token 刷新失败)。
+        msg = str(payload.get("error") or payload.get("text") or "未知错误").strip()
+        if state.answer is None:
+            state.answer = AnswerSection()
+        prev = state.answer.answer_text.rstrip()
+        finalize_answer(state.answer, final_text=(prev + "\n\n" if prev else "") + f"⚠️ 出错:{msg}")
+        state.footer.cancelled = True
         state.top_buttons = compute_top_buttons(state)
         return
 
