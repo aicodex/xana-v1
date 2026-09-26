@@ -129,6 +129,14 @@ _SYNTHETIC_WARNING_TEXT_READONLY = (
 _TOOL_ABORT_GRACE_SECONDS = 2.0
 
 
+def _tool_allowed(name: str, snapshot: dict[str, Any]) -> bool:
+    """AgentSpec 的工具范围:白名单非空时只允许名单内的工具;黑名单里的一律不允许。"""
+    allowed = snapshot.get("allowed_tools") or ()
+    if allowed and name not in allowed:
+        return False
+    return name not in (snapshot.get("disallowed_tools") or ())
+
+
 class DefaultHarness(Harness):
     def __init__(self, extension_registry: "ExtensionRegistry | None" = None) -> None:
         self.last_assembled_messages: tuple[ModelMessage, ...] | None = None
@@ -501,6 +509,12 @@ class DefaultHarness(Harness):
 
         await _fire_tool_start()
 
+        if not _tool_allowed(tool_name, context.config_snapshot):
+            result = ToolResult(ok=False, content=None, failure_kind="policy_forbidden",
+                                error=f"工具 {tool_name} 不在本 agent 的可用范围内",
+                                rendered=f"[工具 {tool_name} 不在本 agent 的可用范围内]")
+            await _fire_tool_finish(result, result.rendered or "")
+            return result, result.rendered or ""
         # provider 解析不出合法 arguments(如 kimi 的非 JSON 片段)→ 不执行,
         # 以失败结果回给模型让其重发,而不是静默用 {} 调用工具。
         if tc.get("input_error"):
@@ -1206,6 +1220,9 @@ class DefaultHarness(Harness):
                     + [_to_anthropic_tool_schema(t.spec()) for t in ext_tools.values()]
                 )
                 deferred_names = [d for d in deferred_names if d[0] not in ext_tool_names]
+            # agent 的工具白名单 / 黑名单(AgentSpec.allowed_tools / disallowed_tools;空白名单 = 不限制)
+            schemas = [sc for sc in schemas if _tool_allowed(sc["name"], context.config_snapshot)]
+            deferred_names = [d for d in deferred_names if _tool_allowed(d[0], context.config_snapshot)]
             # native web_search 互斥(同构 yuxu _maybe_inject_web_search):
             # search_provider 为 native(或未设)且 provider 为 deepseek 系 →
             # 函数版 web_search 整体让位给模型端 server tool,从 schema 与

@@ -145,3 +145,13 @@ class ApprovalReviewInput:
     result: PermissionResult  # the non-allow result a reviewer may override
     thread_store: ExtensionData
     turn_store: ExtensionData
+
+
+@dataclass(frozen=True)
+class AgentRunOutcome:
+    """AgentRunner.run 的结果:子 agent 跑完后的最终文本与统计。"""
+    run_id: str
+    status: Literal["completed", "error", "cancelled"]
+    text: str
+    tool_counts: dict[str, int]
+    error: str = ""

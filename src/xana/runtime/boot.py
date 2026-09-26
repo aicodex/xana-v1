@@ -95,7 +95,7 @@ from xana.tools.builtin.tool_search import ToolSearchTool
 from xana.tools.builtin.web_fetch import WebFetchTool
 from xana.tools.builtin.report_goal import ReportGoalTool
 from xana.tools.builtin.web_search import WebSearchTool
-from xana.tools.builtin.xana_search import (DeepResearchTool, WebOpenUrlTool, XanaSearchClient,
+from xana.tools.builtin.xana_search import (BackgroundResearchTool, WebOpenUrlTool, XanaSearchClient,
                                             XanaWebSearchTool)
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import ToolRegistry
@@ -297,14 +297,15 @@ async def boot(
         system_json_path=_sys_json_path,
     )
     # 联网:配置了 xana-search 服务时用 web_search(只返回搜索摘要)/ web_open_url(读全文 + 按目标提炼)
-    # / deep_research(服务端后台研究);未配置时沿用旧的 web_search / web_fetch(brave key 走
+    # / background_research(服务端后台研究,本地模型);deep_research(主模型 + 子研究员)在 agent 注册后接入。
+    # 未配置时沿用旧的 web_search / web_fetch(brave key 走
     # web_search.brave_search_key)
     if system_cfg.web_search.xana_search_url:
         search_client = XanaSearchClient(system_cfg.web_search.xana_search_url,
                                          system_cfg.web_search.xana_search_token)
         await tools.register(XanaWebSearchTool(search_client))
         await tools.register(WebOpenUrlTool(search_client))
-        await tools.register(DeepResearchTool(search_client))
+        await tools.register(BackgroundResearchTool(search_client))
     else:
         await tools.register(WebSearchTool(
             session_config_store=session_config_store,
@@ -427,7 +428,7 @@ async def boot(
     from xana.agents.contracts import AgentSpec
     from xana.agents.registry import FileAgentRegistry
 
-    def _doc_agent_factory(spec: AgentSpec) -> Agent:
+    def _doc_agent_factory(spec: AgentSpec, *, progress: bool = True) -> Agent:
         return ChatAgent(
             spec=spec,
             harness=_harness,
@@ -442,7 +443,7 @@ async def boot(
             model=model,
             provider=provider,
             session_config_store=session_config_store,
-            progress_sink=progress_sink,
+            progress_sink=progress_sink if progress else None,
             context_window=runtime_config.default_model.context_window,
             force_compact=runtime_config.default_model.force_compact,
             model_thresholds=model_thresholds,
@@ -465,6 +466,18 @@ async def boot(
         _doc_agent = await agent_registry.get(_spec.component.name)
         if _doc_agent is not None:
             gateway.agents[_spec.component.name] = _doc_agent
+
+    # deep_research(docs/design/lead-research-design.md):主模型当研究负责人,并行派出内置子研究员
+    # (researcher:只有 web_search / web_open_url / read)。子研究员不接进度汇报(不触碰渠道)。
+    if system_cfg.web_search.xana_search_url:
+        from xana.agent_adapter.agent_runner import GatewayAgentRunner
+        from xana.agents.researcher import RESEARCHER_AGENT, build_researcher_agent_spec
+        from xana.tools.builtin.lead_research import LeadResearchTool
+        gateway.agents[RESEARCHER_AGENT] = _doc_agent_factory(build_researcher_agent_spec(), progress=False)
+        await tools.register(LeadResearchTool(
+            runner=GatewayAgentRunner(agents=gateway.agents, session_store=state.sessions()),
+            model_registry=model_registry, provider=provider, model=model,
+            findings_root=project_root / "research", researcher_agent=RESEARCHER_AGENT))
 
     # §6.3: 元 agent 服务。迭代对象 = 首个文档 agent(没有则 builtin.chat);
     # cron 幂等安装,首个 episode 时创建。

@@ -1,4 +1,4 @@
-"""web_search / web_open_url / deep_research:调用独立部署的 xana-search 服务(~/project/xana-search)。
+"""web_search / web_open_url / background_research:调用独立部署的 xana-search 服务(~/project/xana-search)。
 
 服务负责并行搜索(自建 SearXNG)、并行抓取、小模型按目标阅读与引用校验、深度搜索后台任务;
 这里只做参数校验、带 token 的 HTTP 请求和结果渲染。地址与 token 在 system.json
@@ -70,9 +70,9 @@ _OPEN_SPEC = ToolSpec(
 
 _DEEP_SPEC = ToolSpec(
     component=ComponentSpec(
-        kind="tool", name="deep_research", qualified_name="builtin.deep_research",
+        kind="tool", name="background_research", qualified_name="builtin.background_research",
         description=(
-            "深度搜索(后台任务,另一个研究流程在服务端独立运行)。给一个研究问题,服务自己拆子问题、多轮检索与补搜、阅读上百个网页,最后写出带编号"
+            "后台研究(在搜索服务端独立运行,用本地模型规划和阅读,不占用主模型)。给一个研究问题,服务自己拆子问题、多轮检索与补搜、阅读上百个网页,最后写出带编号"
             "引用的报告。effort:low 约 3 个子问题 1 轮(几分钟);medium 4 个子问题 2 轮(默认,约 5–15 分钟);"
             "high 6 个子问题 3 轮(约 15–40 分钟,适合产业链梳理、多方交叉验证)。\n"
             "用法:提交时给 question,立即返回 job_id;之后用 job_id 查询,wait_s 表示最多等待多少秒(≤600),"
@@ -90,7 +90,7 @@ _DEEP_SPEC = ToolSpec(
         },
     },
     read_only=True, open_world=True, concurrency="parallel", timeout_s=_MAX_WAIT_S + 30,
-    display=ToolDisplay(category="research", verb="深度研究", summary_args=("question", "job_id")),
+    display=ToolDisplay(category="research", verb="后台研究", summary_args=("question", "job_id")),
 )
 
 
@@ -235,7 +235,7 @@ class WebOpenUrlTool(_Base):
                           metadata={"display_text": f"{stats['fetched']}/{stats['read']} 个网页{rel}"})
 
 
-class DeepResearchTool(_Base):
+class BackgroundResearchTool(_Base):
     _spec = _DEEP_SPEC
 
     async def validate(self, invocation: ToolInvocation) -> None:
@@ -250,7 +250,7 @@ class DeepResearchTool(_Base):
                 sub = await self.client.request("POST", "/v1/research", timeout=30, json={
                     "question": str(inp["question"]), "effort": str(inp.get("effort") or "medium")})
                 text = (f"深度搜索已提交,job_id={sub['job_id']},预计 {sub['expected_minutes']:g} 分钟内完成。"
-                        f"用 deep_research(job_id=\"{sub['job_id']}\", wait_s=600) 等待结果,"
+                        f"用 background_research(job_id=\"{sub['job_id']}\", wait_s=600) 等待结果,"
                         "等待期间可以先做别的事。")
                 return ToolResult(ok=True, content=sub, rendered=text,
                                   metadata={"display_text": f"深度搜索已提交 · {sub['job_id']}"})
@@ -266,7 +266,7 @@ class DeepResearchTool(_Base):
             else:
                 row = await self.client.request("GET", f"/v1/jobs/{job_id}", timeout=30)
         except (httpx.HTTPError, XanaSearchError) as exc:
-            return _failure("deep_research", exc)
+            return _failure("background_research", exc)
         return ToolResult(ok=True, content={k: row.get(k) for k in ("id", "status", "phase", "counters")},
                           rendered=_render_job(row), metadata={"display_text": _job_display(row)})
 
@@ -293,4 +293,4 @@ def _render_job(row: dict) -> str:
     recent = ";".join(e["message"] for e in (row.get("events") or [])[-5:])
     return (f"深度搜索进行中(job_id={row['id']}):{row.get('message')}。已完成查询 {c.get('queries', 0)} 个,"
             f"阅读网页 {c.get('pages', 0)} 个,证据 {c.get('evidence', 0)} 条。最近进展:{recent}。"
-            f"继续用 deep_research(job_id=\"{row['id']}\", wait_s=600) 等待。")
+            f"继续用 background_research(job_id=\"{row['id']}\", wait_s=600) 等待。")

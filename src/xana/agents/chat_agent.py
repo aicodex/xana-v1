@@ -147,6 +147,8 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             "max_turns": spec.max_turns,
             "prompt_profile": profile.to_dict(),
             "verify": [c.to_dict() for c in spec.verify],
+            "allowed_tools": list(spec.allowed_tools),
+            "disallowed_tools": list(spec.disallowed_tools),
         }
         if cfg is not None:
             config_snapshot.update({

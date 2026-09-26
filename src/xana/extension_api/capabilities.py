@@ -7,7 +7,9 @@ Phase 1 defines the interfaces only; implementations come with consumers.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Callable
+
+from xana.extension_api.contracts import AgentRunOutcome
 
 
 class SchedulerService(ABC):
@@ -48,3 +50,24 @@ class AgentSpawner(ABC):
         copies the parent's context prefix into the child session before the
         run starts (read-only share — the child only appends a private suffix).
         """
+
+
+class AgentRunner(ABC):
+    """同步运行一个子 agent 直到结束并取回最终文本(AgentSpawner 是发射后不管)。
+
+    用于主 agent 派出子 agent 并等待结果的场景(如 deep_research 的并行子研究员)。
+    实现不得触碰渠道(不发卡片、不切换前台);取消等待中的任务即中止子 run。
+    """
+
+    @abstractmethod
+    async def run(
+        self,
+        *,
+        agent_name: str,
+        prompt: str,
+        session_id: str,
+        parent_run_id: str | None = None,
+        on_tool: Callable[[str], None] | None = None,
+    ) -> AgentRunOutcome:
+        """在 ``session_id``(调用方给的独立会话)里运行 ``agent_name``,返回最终文本。
+        ``on_tool`` 在子 agent 每次调用工具时以工具名回调(给调用方汇总进度)。"""
