@@ -35,6 +35,7 @@ _SPEC = ToolSpec(
         "required": ["file_path"],
     },
     read_only=True,
+    concurrency="parallel",
     display=ToolDisplay(category="read", verb="读取", unit="个文件", summary_args=("file_path",)),
 )
 

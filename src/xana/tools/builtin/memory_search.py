@@ -26,6 +26,7 @@ _SPEC = ToolSpec(
         "required": ["query"],
     },
     read_only=True,
+    concurrency="parallel",
     display=ToolDisplay(category="memory", verb="查记忆", summary_args=("query",)),
 )
 

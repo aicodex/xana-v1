@@ -56,6 +56,7 @@ _SPEC = ToolSpec(
     read_only=True,
     open_world=True,
     defer=True,
+    concurrency="parallel",
     display=ToolDisplay(category="web_open", verb="打开", unit="个网页", summary_args=("url",)),
 )
 

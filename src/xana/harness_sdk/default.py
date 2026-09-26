@@ -56,6 +56,7 @@ from xana.harness_sdk.contracts import (
     PromptProfile,
     VerifyCheck,
 )
+from xana.harness_sdk.tool_batches import Progress, partition, run_batch
 from xana.harness_sdk.goal import (
     GOAL_ACTIVATED,
     REPORT_GOAL_TOOL,
@@ -420,6 +421,21 @@ class DefaultHarness(Harness):
                     )
             await asyncio.sleep(poll)
         return task.result()
+
+    @staticmethod
+    async def _resolve_tool(name: str, context: HarnessContext, ext_tools: dict[str, Tool]) -> Tool | None:
+        tool = ext_tools.get(name)
+        if tool is None and context.tool_registry is not None:
+            tool = await context.tool_registry.get(name)
+        return tool
+
+    @classmethod
+    async def _tool_parallel(cls, tc: dict[str, Any], context: HarnessContext,
+                             ext_tools: dict[str, Tool]) -> bool:
+        if tc.get("input_error"):
+            return False
+        tool = await cls._resolve_tool(tc["tool_name"], context, ext_tools)
+        return tool is not None and tool.spec().concurrency == "parallel"
 
     @staticmethod
     async def _tool_display(tc: dict[str, Any], context: HarnessContext,
@@ -1431,88 +1447,87 @@ class DefaultHarness(Harness):
                                    run_id=run_id, payload={"text": turn_text})
             else:
                 stop_state.silent_calls += 1
-            for call_idx, tc in enumerate(iter_tool_calls):
-                yield HarnessEvent(
-                    kind="tool_started",
-                    session_id=session_id,
-                    run_id=run_id,
-                    payload={
-                        "tool_name": tc["tool_name"],
-                        "call_id": tc["call_id"],
-                        "input": dict(tc["input"]),
-                        # 渠道按显示模式分组计数用(docs/design/tool-display-modes.md)
-                        "display": await self._tool_display(tc, context, ext_tools),
-                        "view_mode": context.config_snapshot.get("view_mode"),
-                    },
-                )
-                _tool_t0 = time.monotonic()
-                # 工具执行中的进度(report_progress)边执行边以 tool_progress 事件发出
-                progress_q: asyncio.Queue[str] = asyncio.Queue()
-                dispatch = asyncio.create_task(self._dispatch_tool(
-                    tc, context, session_id, agent_name, run_id,
-                    ext_tools=ext_tools, ext=ext,
-                    thread_store=thread_store, turn_store=turn_store,
-                    progress=progress_q.put_nowait,
-                ))
-                try:
-                    while True:
-                        getter = asyncio.create_task(progress_q.get())
-                        await asyncio.wait({dispatch, getter}, return_when=asyncio.FIRST_COMPLETED)
-                        if not getter.done():
-                            getter.cancel()
-                            break
+            # 同一轮的调用分批:连续的可并行调用(ToolSpec.concurrency == "parallel")并发执行,
+            # 其余独占;完成事件按发出顺序交付,历史写回顺序与模型发出时一致(tool_batches.py)
+            parallel_flags = [await self._tool_parallel(tc, context, ext_tools) for tc in iter_tool_calls]
+            for batch in partition(parallel_flags):
+                calls = [iter_tool_calls[i] for i in batch]
+                for tc in calls:
+                    yield HarnessEvent(
+                        kind="tool_started",
+                        session_id=session_id,
+                        run_id=run_id,
+                        payload={
+                            "tool_name": tc["tool_name"],
+                            "call_id": tc["call_id"],
+                            "input": dict(tc["input"]),
+                            # 渠道按显示模式分组计数用(docs/design/tool-display-modes.md)
+                            "display": await self._tool_display(tc, context, ext_tools),
+                            "view_mode": context.config_snapshot.get("view_mode"),
+                        },
+                    )
+
+                def _dispatch(tc: dict[str, Any], progress: Callable[[str], None]):
+                    return self._dispatch_tool(
+                        tc, context, session_id, agent_name, run_id,
+                        ext_tools=ext_tools, ext=ext,
+                        thread_store=thread_store, turn_store=turn_store,
+                        progress=progress,
+                    )
+
+                async for item in run_batch(calls, _dispatch):
+                    tc = calls[item.index]
+                    if isinstance(item, Progress):
+                        # 工具执行中的进度(report_progress)边执行边以 tool_progress 事件发出
                         yield HarnessEvent(kind="tool_progress", session_id=session_id, run_id=run_id,
                                            payload={"call_id": tc["call_id"], "tool_name": tc["tool_name"],
-                                                    "text": getter.result()})
-                    result, rendered = await dispatch
-                finally:
-                    if not dispatch.done():  # 事件流被上游关闭:工具任务一并取消,不留后台执行
-                        dispatch.cancel()
-                _tool_elapsed_ms = int(
-                    (time.monotonic() - _tool_t0) * 1000)
-                tool_meta: dict[str, Any] = {
-                    "tool_use_id": tc["call_id"],
-                    "tool_name": tc["tool_name"],
-                    "ok": result.ok,
-                }
-                if result.metadata.get("revealed_tools"):
-                    tool_meta["revealed_tools"] = list(result.metadata["revealed_tools"])
-                if result.metadata.get("goal_status"):
-                    stop_state.goal_report = (str(result.metadata["goal_status"]),
-                                              str(result.metadata.get("goal_reason", "")))
-                model_content = rendered
-                if profile.time_signal != "off":
-                    # 时间软信号(Anthropic 指南):写进工具结果、保留在历史中,不改 system
-                    model_content += f"\n\n已用 {int(time.monotonic() - run_started)} 秒"
-                tool_msg = MemoryMessage(role="tool", content=model_content, metadata=tool_meta)
-                await context.active_context_store.append_message(session_id, agent_name, tool_msg)
-                await context.history_mirror.append(
-                    HistoryRow(
-                        row_id=f"{run_id}:tool:{turn_index}:{call_idx}",
-                        session_id=session_id,
-                        agent_name=agent_name,
-                        kind="tool",
-                        payload=tool_msg,
-                        ts=0.0,
-                    )
-                )
-                # UI 展示可被 display_text 覆盖(如 tool_search 的友好文案);
-                # 模型上下文(MemoryMessage)仍存 rendered,完整 schema 不变。
-                display_text = result.metadata.get("display_text") or rendered
-                yield HarnessEvent(
-                    kind="tool_finished",
-                    session_id=session_id,
-                    run_id=run_id,
-                    payload={
-                        "text": display_text,
+                                                    "text": item.text})
+                        continue
+                    call_idx = batch[item.index]
+                    result, rendered, _tool_elapsed_ms = item.result, item.rendered, item.elapsed_ms
+                    tool_meta: dict[str, Any] = {
+                        "tool_use_id": tc["call_id"],
                         "tool_name": tc["tool_name"],
-                        "call_id": tc["call_id"],
-                        "input": dict(tc["input"]),
                         "ok": result.ok,
-                        "cancelled": result.failure_kind == "cancelled",
-                        "elapsed_ms": _tool_elapsed_ms,
-                    },
-                )
+                    }
+                    if result.metadata.get("revealed_tools"):
+                        tool_meta["revealed_tools"] = list(result.metadata["revealed_tools"])
+                    if result.metadata.get("goal_status"):
+                        stop_state.goal_report = (str(result.metadata["goal_status"]),
+                                                  str(result.metadata.get("goal_reason", "")))
+                    model_content = rendered
+                    if profile.time_signal != "off":
+                        # 时间软信号(Anthropic 指南):写进工具结果、保留在历史中,不改 system
+                        model_content += f"\n\n已用 {int(time.monotonic() - run_started)} 秒"
+                    tool_msg = MemoryMessage(role="tool", content=model_content, metadata=tool_meta)
+                    await context.active_context_store.append_message(session_id, agent_name, tool_msg)
+                    await context.history_mirror.append(
+                        HistoryRow(
+                            row_id=f"{run_id}:tool:{turn_index}:{call_idx}",
+                            session_id=session_id,
+                            agent_name=agent_name,
+                            kind="tool",
+                            payload=tool_msg,
+                            ts=0.0,
+                        )
+                    )
+                    # UI 展示可被 display_text 覆盖(如 tool_search 的友好文案);
+                    # 模型上下文(MemoryMessage)仍存 rendered,完整 schema 不变。
+                    display_text = result.metadata.get("display_text") or rendered
+                    yield HarnessEvent(
+                        kind="tool_finished",
+                        session_id=session_id,
+                        run_id=run_id,
+                        payload={
+                            "text": display_text,
+                            "tool_name": tc["tool_name"],
+                            "call_id": tc["call_id"],
+                            "input": dict(tc["input"]),
+                            "ok": result.ok,
+                            "cancelled": result.failure_kind == "cancelled",
+                            "elapsed_ms": _tool_elapsed_ms,
+                        },
+                    )
             # 长时间无进度:连续 5 次模型调用没有对用户输出 → 在工具结果后追加提醒,
             # 同一静默期最多 3 次;子 agent 不注入(照 CC)
             if (stop_state.silent_calls >= _SILENT_CALLS_BEFORE_REMINDER

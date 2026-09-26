@@ -42,6 +42,7 @@ _SPEC = ToolSpec(
         "required": ["pattern"],
     },
     read_only=True,
+    concurrency="parallel",
     display=ToolDisplay(category="search_code", verb="搜索代码", summary_args=("pattern", "path")),
 )
 
