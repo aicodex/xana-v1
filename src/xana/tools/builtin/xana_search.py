@@ -26,7 +26,8 @@ _SEARCH_SPEC = ToolSpec(
         kind="tool", name="web_search", qualified_name="builtin.web_search",
         description=(
             "联网搜索。一次给 1–4 条查询,并行执行、合并去重,返回每条结果的标题、链接、日期和搜索引擎摘要"
-            "(不是网页全文),几秒内返回。\n"
+            "(不是网页全文),几秒内返回。彼此独立的搜索(不同对象、不同角度)超过 4 条时,在同一条回复里发出"
+            "多个 web_search 调用,它们会并行执行。\n"
             "摘要里看起来相关、需要细节或核实的结果,用 web_open_url 打开读全文;只打开真正需要的几个。"
             "查询要具体、简短,从不同角度切入;结果里没有需要的内容就换关键词再搜。回答中引用来源用 [标题](url)。"),
         source=ComponentSource(source_type="builtin", scope="system")),
@@ -50,6 +51,7 @@ _OPEN_SPEC = ToolSpec(
         kind="tool", name="web_open_url", qualified_name="builtin.web_open_url",
         description=(
             "打开网页读全文(一次 1–10 个 URL,并行抓取;需要 JS 渲染的页面会用浏览器渲染,PDF 会抽文本)。"
+            "目的不同的几组网页,可以在同一条回复里发出多个 web_open_url 调用(各带自己的 objective),并行执行。"
             "给了 objective 时,按它提炼要点,每条附原文引用,数字已逐字核对;不给则返回正文开头。"
             "全文保存在返回的目录里,要核对原文时用 read/grep。返回的内容像登录页或落地页,说明被登录墙挡住了。"),
         source=ComponentSource(source_type="builtin", scope="system")),

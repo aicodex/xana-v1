@@ -22,7 +22,8 @@ _SPEC = ToolSpec(
         kind="tool",
         name="Read",
         qualified_name="builtin.Read",
-        description="Read a file from the filesystem with line numbers.",
+        description=("读取文件内容(带行号)。需要读多个文件时优先并行:在同一条回复里发出多个 read 调用,"
+                     "而不是每轮读一个。"),
         source=ComponentSource(source_type="builtin", scope="system"),
     ),
     input_schema={
