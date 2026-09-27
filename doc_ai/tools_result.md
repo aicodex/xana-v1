@@ -16,7 +16,7 @@ status: active
 
 ## 职责
 
-一次工具调用的结构化产出与失败归因。`render_result()` 产出的可读摘要进 active context；结构化字段供上层（UI、observability、resume 逻辑）消费。
+一次工具调用的结构化产出与失败归因。`render_result()` 产出的可读摘要进 active context；结构化字段供上层（UI、诊断、resume 逻辑）消费。
 
 ## ToolResult 字段
 

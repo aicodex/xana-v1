@@ -12,22 +12,21 @@ status: active
 
 ## 代码锚点
 
-- [interfaces.py](../src/xana/harness_sdk/interfaces.py) — `TurnController` ABC
 - [contracts.py](../src/xana/harness_sdk/contracts.py) — `AbortSignal`
 - [default.py](../src/xana/harness_sdk/default.py) — 实际的 turn 状态转换内联在 `_invoke` / `_run_query_loop`
 
 ## 职责
 
-Turn 状态转换的合约层。状态权威是 `state.RunStore` / `RunRecord`，harness 不持有。
+Turn 状态转换与取消机制。状态权威是 `state.RunStore` / `RunRecord`，harness 不持有。
 
-## 仅接口合约，无实现
+## 状态转换（内联在 DefaultHarness）
 
-`TurnController`（start / checkpoint / pause / resume / cancel / finish / fail / status）是 ABC，**没有任何实现类**。实际行为：
+不设 turn 控制器 ABC，各状态转换内联在 `DefaultHarness`：
 
 - **start / finish / fail**：`DefaultHarness._run_query_loop` 开头经 `StateRepository.runs()` 建 `RunRecord(status="running")`，结束时 `update_usage` + `update_status("completed")`；出错路径发 `error` 事件。crash 恢复时 state 层的 startup_scan 把孤儿 run 标 paused（见 [state_resume](state_resume.md)）。
 - **pause / resume**：无运行时 pause 实现——`paused` 只出现在 `HarnessEventKind` 枚举与 RunStatus 中，作为恢复/中断的持久化状态，不由 harness 发出。
 - **cancel**：运行态取消走 `AbortSignal`（可变 dataclass，`trigger(reason)` 翻 `aborted`）。loop 每轮开头与 model streaming 循环内轮询；工具执行中的中止见 [harness_tool_dispatch](harness_tool_dispatch.md)。命中后发 `cancelled` 事件，并向 extension 触发 `on_turn_abort`。
-- **checkpoint**：无调用方，合约预留。
+- **checkpoint**：harness 不调用。
 
 ## 不变量
 

@@ -19,8 +19,8 @@ status: active
 - `ModelClient`（ABC）— `stream` / `cancel` / `capabilities`
 - `ModelRegistry`（ABC）— `register` / `get`
 - `ProviderCapabilities` — provider 能力声明
-- `ProviderRequest` / `ProviderToolSchema` — 数据合约，当前无实现消费
-- `ModelRequestSerializer` / `ModelResponseParser` / `ToolSchemaAdapter` / `UsageParser` — 仅接口合约，无实现（请求构建 / 响应解析当前是各 client 内部私有函数）
+
+请求构建 / 响应解析 / 工具 schema 转换 / usage 解析都是各 client 内部私有函数，不设独立 ABC。
 
 ## 代码锚点
 

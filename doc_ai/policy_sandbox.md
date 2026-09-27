@@ -12,22 +12,19 @@ status: active
 
 ## 职责
 
-Sandbox policy planning and runner enter/exit.
+沙箱策略的数据合约。
 
 ## 相关接口 / 类型
 
 - `SandboxPolicySpec`
-- `SandboxPlanner`
-- `SandboxRunner`
 
 ## 代码锚点
 
 - [contracts.py](../src/xana/policy/contracts.py) — 数据结构和枚举
-- [interfaces.py](../src/xana/policy/interfaces.py) — 抽象接口
 
 ## 当前状态
 
-仅接口合约，无实现。`src/xana/policy/` 下只有 contracts.py / interfaces.py，没有实现类。
+只有 `SandboxPolicySpec` 数据合约，没有沙箱规划/执行实现。
 
 ## 验收要求
 

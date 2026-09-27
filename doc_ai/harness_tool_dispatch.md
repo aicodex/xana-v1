@@ -12,8 +12,7 @@ status: active
 
 ## 代码锚点
 
-- [default.py](../src/xana/harness_sdk/default.py) — `_dispatch_tool()`（:215）、`_run_tool_with_abort()`（:161）、`_split_tool_schemas()`（:1155）
-- [interfaces.py](../src/xana/harness_sdk/interfaces.py) — `ToolCallParser` / `ToolDispatcher` / `HarnessEventMapper` ABC（仅合约）
+- [default.py](../src/xana/harness_sdk/default.py) — `_dispatch_tool()`（:471）、`_run_tool_with_abort()`（:393）、`_split_tool_schemas()`（:1716）
 - [compact.py](../src/xana/harness_sdk/compact.py) — `revealed_tools_from_messages()`（揭示状态恢复）
 
 ## 职责
@@ -48,6 +47,6 @@ status: active
 - native web_search 互斥：`search_provider` 为 native 且 provider 是 deepseek 系时，函数版 web_search 从 schema 与 deferred 名单剔除，改经 request metadata 通知 provider 注入 server tool。
 - `thinking` config → request metadata 方言开关。
 
-## 仅接口合约，无实现
+## 实现位置
 
-`ToolCallParser` / `ToolDispatcher` / `HarnessEventMapper` 三个 ABC 在 interfaces.py 定义，但**没有任何实现类**——实际的解析（流事件缓冲）、调度（`_dispatch_tool`）与事件映射（`_run_query_loop` 内联 yield）都内联在 `DefaultHarness` 里。
+解析（流事件缓冲）、调度（`_dispatch_tool`）与事件映射（`_run_query_loop` 内联 yield）都内联在 `DefaultHarness` 里，不另设 ABC。

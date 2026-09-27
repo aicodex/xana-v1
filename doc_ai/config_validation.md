@@ -12,13 +12,12 @@ status: active
 
 ## 代码锚点
 
-- [interfaces.py](../src/xana/config/interfaces.py) — `ConfigValidator` / `ConfigWatcher`（均仅接口合约，无实现）
 - [loader.py](../src/xana/config/loader.py) — `JsonSystemConfigReader`、`write_system_config`
 - [system_model.py](../src/xana/config/system_model.py) — pydantic 校验与字段级 validator
 
 ## 职责
 
-保证进入运行时的配置是形状合法、语义自洽的。分"读取时校验"（已实现）和"合并后校验/变更监听"（仅合约）两部分。
+保证进入运行时的配置是形状合法、语义自洽的。当前只有"读取时校验"；合并后校验与变更监听未实现。
 
 ## 已实现：读取时 pydantic 校验
 
@@ -30,10 +29,9 @@ status: active
 
 **没有单独的"合并后 validate 阶段"**——因为当前只有 system 一层参与解析（见 [config_merge](config_merge.md)），读取时校验已覆盖全部形状错误。
 
-## 仅接口合约：`ConfigValidator` / `ConfigWatcher`
+## 无热重载
 
-- `ConfigValidator.validate(config: RuntimeConfig)`（interfaces.py:20）：合并后语义校验（如引用完整性、budget 约束）的预留边界，**无实现、无调用点**。
-- `ConfigWatcher.changed() -> bool`：热重载监听预留，**无实现**；当前 system.json 只在 boot 时读一次（I16，见 [runtime_boot](runtime_boot.md)），运行时手写改配置需重启 serve 生效。
+system.json 只在 boot 时读一次（I16，见 [runtime_boot](runtime_boot.md)），运行时手写改配置需重启 serve 生效。
 
 ## 镜像写的一致性
 

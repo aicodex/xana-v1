@@ -33,7 +33,7 @@ status: active
 
 - 工具执行、LLM 调用、adapter 协议、持久记忆权威。
 - AGENT.md 角色定义文档：与 SKILL.md 共用同一个解析器（`MarkdownDocParser` 按 frontmatter `kind` 区分），但目录分开（`~/.xana/skills/` vs `~/.xana/agents/`）、消费方不同——skill 是做法库（经 `skill_load` 两阶段按需取全文），agent 是角色定义（可被 spawn 的 AgentSpec 来源），见 [agents](agents.md) 与 [agents_registry](agents_registry.md)。
-- `SkillResourceResolver` / `SkillPromptProvider` / `SkillContextLoader` 等 ABC 仍无实现；文件加载只覆盖 SKILL.md/AGENT.md 这一种文档形态（见 [skills_package](skills_package.md) 实现现状）。
+- 资源解析、prompt 提供、上下文加载不设独立 ABC；文件加载只覆盖 SKILL.md/AGENT.md 这一种文档形态（见 [skills_package](skills_package.md) 实现现状）。
 
 ## Inputs
 

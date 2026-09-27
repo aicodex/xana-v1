@@ -13,7 +13,7 @@ status: active
 ## 代码锚点
 
 - [contracts.py](../src/xana/agent_adapter/contracts.py) — `InboundMessage`
-- [interfaces.py](../src/xana/agent_adapter/interfaces.py) — `InboundParser` / `AgentRequestRouter` ABC
+- [interfaces.py](../src/xana/agent_adapter/interfaces.py) — `AgentRequestRouter` ABC
 - [router.py](../src/xana/agent_adapter/router.py) — `DefaultAgentRequestRouter`
 - [feishu_events.py](../src/xana/agent_adapter/channels/feishu_events.py) — 飞书消息事件解析
 - [telegram.py](../src/xana/agent_adapter/channels/telegram.py) — TG long-polling 入站循环
@@ -26,9 +26,9 @@ status: active
 
 `InboundMessage`（frozen）：`adapter_id`（来源 adapter，如 `cli` / `telegram` / `feishu`）、`session_id`、 `text`、`user_id`、`attachments`、`metadata`。gateway 与 router 之间的所有跨层数据（`chat_id`、`gateway_run_id`、`abort_signal`、`command_run_id`）都走 metadata，不扩契约字段。
 
-## InboundParser
+## 协议解析
 
-仅接口合约，无实现：v1 没有 `InboundParser` 实现类。各 channel adapter 在自己的事件循环里直接解析协议负载（飞书 `parse_message_event` 把 im.message.receive_v1 事件转成 InboundMessage；TG 在 long-polling 循环里处理 Update），解析结果投入 adapter 内部队列，`receive()` 迭代产出。
+不设独立的解析 ABC：各 channel adapter 在自己的事件循环里直接解析协议负载（飞书 `parse_message_event` 把 im.message.receive_v1 事件转成 InboundMessage；TG 在 long-polling 循环里处理 Update），解析结果投入 adapter 内部队列，`receive()` 迭代产出。
 
 ## DefaultAgentRequestRouter
 

@@ -15,7 +15,7 @@ session、run、checkpoint、resume、usage 状态合约。
 - [state_session](state_session.md) — `SessionRecord` / `SessionStore`；仅内存实现，`parent_*` 为 subagent 预留字段
 - [state_run](state_run.md) — `RunRecord` / `RunStore` / `Checkpoint`；`FileRunStore` 落盘、`RunJsonlWriter` 与 `.aborted.jsonl` 墓碑语义
 - [state_resume](state_resume.md) — resumable exit_reason 集合、/resume fork 语义、boot 时 startup_scan 冷启动仲裁
-- [state_usage](state_usage.md) — `UsageSnapshot` 估算/精确双轨字段；`UsageEstimator` 仅接口合约
+- [state_usage](state_usage.md) — `UsageSnapshot` 估算/精确双轨字段；`BudgetTracker` 预算护栏
 - [state_repository](state_repository.md) — `StateRepository` 门面；`_CompositeStateRepository`（run 落盘 + session 内存）
 
 ## 全局合约

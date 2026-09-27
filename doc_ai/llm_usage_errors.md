@@ -20,7 +20,6 @@ usage 精确提取与错误/限流信号：`ModelUsage`、`ProviderError`、`Rat
 - `ProviderError` / `ProviderErrorKind`
 - `RateLimitSignal`
 - `RetryPolicy` — 仅合约字段，当前无消费者
-- `UsageParser`（ABC）— 仅接口合约，无实现
 
 ## 代码锚点
 

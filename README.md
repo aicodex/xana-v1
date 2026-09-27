@@ -37,13 +37,12 @@ xana/
 │   ├── tools/              # 内置工具(bash/read/edit/write/glob/grep/webfetch/...)+ 权限/沙箱
 │   ├── skills/             # Skill 元数据 + 激活 + 注入
 │   ├── extension_api/      # Contributor ABC + Registry + PromptAssembler
-│   ├── runtime/            # boot()、SessionResolver、daemon HTTP+SSE、Scheduler
+│   ├── runtime/            # boot()、SessionResolver、daemon HTTP+SSE、定时任务调度
 │   ├── cli/                # xana CLI 命令 + xanac(CLI 客户端)+ Textual REPL
 │   ├── config/             # ~/.xana/config/system.json 加载 + schema
 │   ├── session_config/     # 会话级配置(model/effort/streaming/thinking...)
 │   ├── state/              # SessionStore + RunStore + FileHistoryMirror
-│   ├── policy/             # 权限模式 (default/plan/write)
-│   └── observability/      # health / trace / debug snapshot
+│   └── policy/             # 权限模式 (default/plan/write)
 │
 ├── docs/design/            # ★ 终极版设计文档 —— 单一来源,先经用户确认才可改
 │   ├── session-and-card-state.md   # session / run / card 状态机 + 23 项不变量

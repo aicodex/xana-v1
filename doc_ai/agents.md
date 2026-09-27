@@ -13,7 +13,6 @@ agent spec、outer API、会话侧行为包装。
 ## 详细设计
 
 - [agents_spec](agents_spec.md) — Agent identity, model, tools, skills, permissions, memory scope.
-- [agents_prompt_provider](agents_prompt_provider.md) — Agent prompt blocks: identity, instructions, memory.
 - [agents_request_mapping](agents_request_mapping.md) — Map AgentRequest to HarnessRequest and HarnessContext.
 - [agents_subagents](agents_subagents.md) — Subagent dispatch contract and delegation result shape.
 - [agents_registry](agents_registry.md) — Agent registration and spec listing；含 `FileAgentRegistry`（AGENT.md 文件加载）。
@@ -35,7 +34,7 @@ AGENT.md 与 SKILL.md 共用同一个解析器（`MarkdownDocParser` 按 frontma
 
 ## Owns
 
-Agent identity, prompt provider selection, allowed tools/skills, outer chat/control API, and session-facing behavior.
+Agent identity, system prompt template, allowed tools/skills, outer chat/control API, and session-facing behavior.
 
 ## Does Not Own
 

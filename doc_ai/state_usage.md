@@ -13,7 +13,7 @@ status: active
 ## 代码锚点
 
 - [contracts.py](../src/xana/state/contracts.py) — `UsageSnapshot`
-- [interfaces.py](../src/xana/state/interfaces.py) — `UsageEstimator`（仅接口合约，无实现）、`RunStore.update_usage`
+- [interfaces.py](../src/xana/state/interfaces.py) — `RunStore.update_usage`
 - [budget.py](../src/xana/state/budget.py) — `BudgetTracker`（跨 run 预算护栏，concrete helper，不抽 ABC）
 
 ## 职责
@@ -25,9 +25,9 @@ status: active
 - **双轨字段是有意的**：调用方先用估算值占位（turn 进行中），LLM usage 回调到位后经 `RunStore.update_usage(run_id, snapshot)` 整字段替换为带精确值的快照。`RunRecord.usage` 默认空快照，消费方必须容忍 `exact_*` 为 `None`。
 - `RunStore.update_usage` 与 `checkpoint` 一样是全字段替换语义（读-改-写落盘，见 [state_run](state_run.md)）。
 
-## UsageEstimator
+## 估算归属
 
-`UsageEstimator.estimate(messages, model) -> UsageSnapshot`：**仅接口合约，当前无实现**。运行中实际的 token 估算与精确回填由 harness 侧承担（见 [harness_usage](harness_usage.md)），不经过本模块的 ABC。`UsageSnapshot` 数据类型是 state 合约的一部分，estimator 只是预留的估算边界。
+运行中实际的 token 估算与精确回填由 harness 侧承担（见 [harness_usage](harness_usage.md)），state 模块不定义估算器，只持有 `UsageSnapshot` 数据合约。
 
 ## BudgetTracker（budget.py）
 

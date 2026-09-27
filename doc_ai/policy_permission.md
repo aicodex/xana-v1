@@ -18,18 +18,16 @@ Permission rules, contexts, requests, decisions.
 
 - `PermissionRule`
 - `PermissionContext`
-- `PermissionPolicy`
 - `PermissionRequest`
 - `PermissionResult`
 
 ## 代码锚点
 
 - [contracts.py](../src/xana/policy/contracts.py) — 数据结构和枚举
-- [interfaces.py](../src/xana/policy/interfaces.py) — 抽象接口
 
 ## 当前状态
 
-仅接口合约，无实现。`src/xana/policy/` 下只有 contracts.py / interfaces.py，没有实现类。
+只有数据合约，没有独立的权限策略类。每个工具的 `Tool.check_permission` 返回 `PermissionResult`，harness 直接消费；non-allow 时交给 `ApprovalReviewContributor` 复核（见 [policy_approval](policy_approval.md)）。
 
 ## 验收要求
 

@@ -52,4 +52,4 @@ status: active
 
 **serve 重启**：sync 后（`--no-restart` 可关）检查 `~/.xana/run/serve.pid`——pid 存活且 `/proc/<pid>/cmdline` 含 "serve" 才重启：SIGTERM（5s 超时后 SIGKILL），然后用 `~/.xana/bin/xana serve` 后台拉起（日志 `~/.xana/logs/serve.log`）。daemon 未运行则清掉 pidfile、跳过。
 
-`xana_home()`（`sync.py` 与 `serve.py` 各有一份）统一认 `XANA_HOME` 环境变量，默认 `~/.xana`。
+`$XANA_HOME` 的唯一解析点是 `config/paths.xana_home()`（缺省 `~/.xana`），sync/serve/boot 等全部经它取根目录；唯一例外是 launcher 脚本——它是自包含 Python，运行时自行读 `XANA_HOME`。

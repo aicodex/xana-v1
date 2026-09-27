@@ -40,4 +40,4 @@ Skill 的数据合约层：一个技能是一个「manifest + 指令路径 + 资
 - `scan_skill_docs(root, *, loader)`：扫描 `{root}/*/SKILL.md`，返回 `(skills, errors)`；**坏文档收集为错误返回，不中断其余文档**；root 不是目录时返回空。
 - boot 从 `{XANA_HOME}/skills`（默认 `~/.xana/skills`，`XANA_HOME` 环境变量可覆盖）扫描，坏文档记 warning 跳过（见 [runtime_boot](runtime_boot.md)）。
 
-仍未实现的：bundled skill 的「包」字段仍是占位（`root=None, instructions_path=None`，全文为内嵌 `_BODY`）；`SkillResource` / `SkillScript` 只活在合约里；`SkillSpec` 的 mode/fork、model/effort 覆盖、activation_paths 匹配等仍是声明位，无消费方。`SkillResourceResolver` / `SkillPromptProvider` / `SkillContextLoader` 三个 ABC 仍无实现。
+仍未实现的：bundled skill 的「包」字段仍是占位（`root=None, instructions_path=None`，全文为内嵌 `_BODY`）；`SkillResource` / `SkillScript` 只活在合约里；`SkillSpec` 的 mode/fork、model/effort 覆盖、activation_paths 匹配等仍是声明位，无消费方。

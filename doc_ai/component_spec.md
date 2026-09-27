@@ -18,16 +18,14 @@ Shared component metadata and source identity.
 
 - `ComponentSpec`
 - `ComponentSource`
-- `Component`
 
 ## 代码锚点
 
 - [contracts.py](../src/xana/component/contracts.py) — 数据结构和枚举
-- [interfaces.py](../src/xana/component/interfaces.py) — 抽象接口
 
 ## 当前状态
 
-仅接口合约，无实现。`src/xana/component/` 下只有 contracts.py / interfaces.py，没有实现类和 boot 注册。
+只有数据合约。`src/xana/component/` 下只有 contracts.py，没有 ABC、实现类和 boot 注册；`ComponentSpec` 作为工具/skill/agent spec 的 `component` 字段被直接引用。
 
 ## 验收要求
 

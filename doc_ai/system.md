@@ -27,7 +27,7 @@ The system is organized around explicit contracts. Each module has:
 
 - Active runtime context: `memory.ActiveContextStore`.
 - Durable conversation mirror: `memory.HistoryMirror`.
-- Turn lifecycle: `harness_sdk.TurnController`.
+- Turn lifecycle: `state.RunStore`（`RunRecord.status`），由 `DefaultHarness` 驱动转换。
 - Model choice and effort: `config` plus session state, not adapter state.
 - External protocol state: `agent_adapter`, only for transport concerns.
 
@@ -37,6 +37,6 @@ The system is organized around explicit contracts. Each module has:
 
 ## Recovery Flow
 
-`Config -> HistoryMirror replay -> ActiveContextStore -> Resume policy -> Adapters start`
+`Config -> HistoryMirror replay -> ActiveContextStore -> startup_scan（run 仲裁）-> Adapters start`
 
 History is only a mirror unless the memory contract is explicitly changed.

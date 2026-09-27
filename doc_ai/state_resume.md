@@ -12,8 +12,8 @@ status: active
 
 ## 代码锚点
 
-- [contracts.py](../src/xana/state/contracts.py) — `ResumeDecision`、`ResumeAction`、`RESUMABLE_EXIT_REASONS`、`EXCLUDED_EXIT_REASONS`
-- [interfaces.py](../src/xana/state/interfaces.py) — `ResumePolicy`（仅接口合约，无实现）、`RunStore.list_unfinished`
+- [contracts.py](../src/xana/state/contracts.py) — `ResumeAction`、`RESUMABLE_EXIT_REASONS`、`EXCLUDED_EXIT_REASONS`
+- [interfaces.py](../src/xana/state/interfaces.py) — `RunStore.list_unfinished`
 - [startup_scan.py](../src/xana/state/startup_scan.py) — `scan_runs_dir`、`replace_completed_placeholders`、`mark_unfinished_as_resumable`
 - [gateway.py](../src/xana/agent_adapter/gateway.py) — `resume()` / `cancel()` / `cancel_all()`
 - [commands.py](../src/xana/agent_adapter/commands.py) — `/resume` 命令
@@ -25,8 +25,7 @@ status: active
 ## 合约
 
 - `RESUMABLE_EXIT_REASONS` = {user_cancel, tool_kill_timeout, shutdown_graceful, shutdown_force}；`EXCLUDED_EXIT_REASONS` = {network_error, llm_timeout, session_lost, tool_error, unknown}。`RunStore.list_unfinished` 只放行 resumable 集合（见 [state_run](state_run.md)）。
-- `ResumePolicy.decide(run) -> ResumeDecision` 与 `ResumeAction`（resume_from_checkpoint / rerun_turn / drop / mark_cancelled）：**仅接口合约，当前无实现**。真实 resume 只有 fork 一种形态，不消费 checkpoint。
-- `ResumeDecision` 数据类型保留在 contracts 里，供未来 policy 实现使用。
+- 没有 resume 策略类：真实 resume 只有 fork 一种形态，不消费 checkpoint。`ResumeAction` 字面量类型（resume_from_checkpoint / rerun_turn / drop / mark_cancelled）仍在 contracts 里。
 
 ## /resume（运行中）
 

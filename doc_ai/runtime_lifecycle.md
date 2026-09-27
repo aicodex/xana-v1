@@ -14,11 +14,10 @@ status: active
 
 - [serve.py](../src/xana/cli/serve.py) — `xana serve` 进程生命周期编排
 - [daemon_http.py](../src/xana/runtime/daemon_http.py) — HTTP+SSE daemon app 构造
-- [interfaces.py](../src/xana/runtime/interfaces.py) — `ComponentLifecycle` / `Runtime`（仅接口合约，无实现）
 
 ## 职责
 
-进程级生命周期：`xana serve` 的启动（preflight → boot → adapters → daemon HTTP）、运行中健康维持（心跳 / idle 卸载 / 调度轮询）、关闭（SIGTERM → `cancel_all` → 任务回收）。`runtime/interfaces.py` 的 `ComponentLifecycle`（install/start/stop/uninstall）与 `Runtime`（boot/shutdown/health）是早期接口合约，当前**无实现**；真实生命周期由 `serve.py` 的函数体承担，`RuntimeHealth`/`RuntimePhase` 等 contract 仅作为数据类型保留。
+进程级生命周期：`xana serve` 的启动（preflight → boot → adapters → daemon HTTP）、运行中健康维持（心跳 / idle 卸载 / 调度轮询）、关闭（SIGTERM → `cancel_all` → 任务回收）。runtime 不定义生命周期 ABC，生命周期由 `serve.py` 的函数体承担。
 
 ## 启动序列（serve.py）
 

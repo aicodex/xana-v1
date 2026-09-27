@@ -45,7 +45,7 @@ status: active
 - **后台 bash task 系统**：待 run registry 稳定后自然延伸，未实施。
 - **着陆期 compaction 换保留策略**：landing 期仍用普通聊天式 compaction，
   面向收尾的交接 checkpoint / 保留策略未实施（见 [evolution_module](evolution_module.md)"未实施"）。
-- 参数级训练、SandboxManager、成本换算（先用 token 预算）——明确不做。
+- 参数级训练、沙箱管理服务、成本换算（先用 token 预算）——明确不做。
 
 ## 相关模块
 

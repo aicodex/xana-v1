@@ -17,7 +17,7 @@ turn loop、prompt 组装、工具调度、auto-compact、暂停/取消、事件
 - [harness_tool_dispatch](harness_tool_dispatch.md) — 工具调用解析与 validate→permission→execute 管线、deferred 工具、取消宽限期。
 - [harness_compact](harness_compact.md) — auto-compact 同步触发、9 节摘要、Compact-as-PH、revealed tools 保留。
 - [harness_usage](harness_usage.md) — `UsageSnapshot` 累积规则（exact vs estimated、cache token 并回）。
-- [harness_turn_controller](harness_turn_controller.md) — `TurnController` ABC（仅合约）与 `AbortSignal` 取消机制。
+- [harness_turn_controller](harness_turn_controller.md) — turn 状态转换（内联在 `DefaultHarness`）、`AbortSignal` 取消机制与 Stop 决策。
 
 ## 全局合约
 

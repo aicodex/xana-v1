@@ -14,15 +14,9 @@ status: active
 
 `ModelRequest.tools_schema` 到各 provider 方言的转换。
 
-## 相关接口 / 类型
-
-- `ProviderToolSchema` — 数据合约，当前无实现消费
-- `ToolSchemaAdapter`（ABC）— 仅接口合约，无实现
-
 ## 代码锚点
 
-- [contracts.py](../src/xana/llm_driver/contracts.py) — `ProviderToolSchema`, `ModelRequest.tools_schema`
-- [interfaces.py](../src/xana/llm_driver/interfaces.py) — `ToolSchemaAdapter`
+- [contracts.py](../src/xana/llm_driver/contracts.py) — `ModelRequest.tools_schema`
 - [providers/anthropic_deepseek.py](../src/xana/llm_driver/providers/anthropic_deepseek.py) — Anthropic 方言透传
 - [providers/kimi.py](../src/xana/llm_driver/providers/kimi.py) — `_convert_tools`
 
@@ -33,7 +27,7 @@ status: active
 - anthropic_deepseek：原样透传（`body["tools"] = [dict(t) for t in tools_schema]`）——调用方需直接给 Anthropic 形状。
 - kimi 的 `_convert_tools`：转成 OpenAI function tools——`{"type": "function", "function": {"name", "description", "parameters": input_schema}}`；input_schema 缺失时补 `{"type": "object", "properties": {}}`。
 
-`ToolSchemaAdapter` ABC 与 `ProviderToolSchema` 合约存在但没有实现使用：当前转换是各 client 内部私有函数，不经 ABC。
+转换是各 client 内部私有函数，不设独立的 schema 适配 ABC。
 
 ## Native web_search（server tool）
 

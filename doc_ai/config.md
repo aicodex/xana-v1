@@ -13,8 +13,8 @@ status: active
 ## 详细设计
 
 - [config_sources](config_sources.md) — `ConfigSource`/`RawConfig`/`ConfigReader`；当前仅 system 层（`~/.xana/config/system.json`）有真实读取
-- [config_merge](config_merge.md) — `RuntimeConfig` 组装；`ConfigMerger` 仅接口合约，实际解析在 `DefaultConfigProvider`
-- [config_validation](config_validation.md) — 读取时 pydantic 校验已实现；`ConfigValidator`/`ConfigWatcher` 仅接口合约
+- [config_merge](config_merge.md) — `RuntimeConfig` 组装；无通用合并器，实际解析在 `DefaultConfigProvider`
+- [config_validation](config_validation.md) — 读取时 pydantic 校验；无合并后校验与热重载
 
 ## session 级覆盖的归属（doc_ai 缺口声明）
 
@@ -27,7 +27,7 @@ status: active
 
 ## Owns
 
-system.json 的读取、校验与 RuntimeConfig 组装；project/agent 层的合并规则（合约已立，实现未落）。
+system.json 的读取、校验与 RuntimeConfig 组装；project/agent 层的合并规则（未实现）。
 
 ## Does Not Own
 

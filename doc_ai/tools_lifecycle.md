@@ -12,7 +12,7 @@ status: active
 
 ## 代码锚点
 
-- [interfaces.py](../src/xana/tools/interfaces.py) — `Tool` 的七个生命周期方法
+- [interfaces.py](../src/xana/tools/interfaces.py) — `Tool` ABC（spec + 七个生命周期方法）
 - [default.py](../src/xana/harness_sdk/default.py) — `DefaultHarness._dispatch_tool` / `_run_tool_with_abort`（编排者）
 
 ## 职责
@@ -45,6 +45,14 @@ status: active
 
 resume 语义（P5.1）：read_only 工具取消后 resume = 重跑该工具；write 工具取消后 resume = fork 新 run。
 
-## 独立 ABC 组
+## Tool ABC：必须实现与默认实现
 
-`interfaces.py` 还定义了一组细粒度 ABC：`ToolValidator` / `ToolPermissionPolicy` / `ToolSandboxPolicy` / `ToolContextBuilder` / `ToolExecutor` / `ToolProgressStream` / `ToolRenderer`。这组是把 `Tool` 的各阶段拆成可单独替换的策略，**当前全库无实现、无引用**（编排直接走 `Tool` 方法）；仅作为合约存在。`Tool` ABC 自身有 17 个内置实现。
+`Tool` 只有三个抽象方法，每个工具必须实现：`spec()`、`check_permission()`（每个工具都要明确表态，不给默认）、`execute()`。其余钩子带透传默认实现，需要时才覆盖：
+
+- `validate` → 不做额外校验（返回 None）；
+- `pre_tool_use` → 原样返回 invocation；
+- `post_tool_use` → 原样返回 result；
+- `render_result` → 返回 `result.rendered or ""`；
+- `cancel` → no-op。
+
+tools 模块不再拆分各阶段的独立策略 ABC，编排直接走 `Tool` 方法。

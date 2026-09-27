@@ -13,11 +13,11 @@ status: active
 ## 代码锚点
 
 - [boot.py](../src/xana/runtime/boot.py) — `boot()` 唯一组合点（Rule 4：全项目只有这里调 `register()`）
-- [interfaces.py](../src/xana/runtime/interfaces.py) — `BootSequence` / `Runtime`（仅接口合约，无实现，见下）
+- [paths.py](../src/xana/config/paths.py) — `xana_home()`，`$XANA_HOME` 唯一解析点
 
 ## 职责
 
-`boot()` 把第一条核心流程的全部依赖在一处组装好，返回 `BootResult` 供 CLI 和测试自省。它是进程内唯一的组合点；`runtime/interfaces.py` 里的 `BootSequence`、`Runtime` ABC 是早期接口合约，当前无实现——真实启动序列就是 `boot()` 函数体本身。
+`boot()` 把第一条核心流程的全部依赖在一处组装好，返回 `BootResult` 供 CLI 和测试自省。它是进程内唯一的组合点，启动序列就是 `boot()` 函数体本身，不另设启动 ABC。
 
 ## 组装顺序（boot.py）
 
@@ -49,7 +49,7 @@ status: active
 ## 不变量
 
 - `boot()` 是唯一组合点；`extension_registry=None` 时行为与未引入 Extension API 前一致（内部自动补 `SkillsListingContributor`）。
-- 文档扫描根目录统一走 `_xana_home()`：默认 `~/.xana`，`XANA_HOME` 环境变量可覆盖；skills 与 agents 文档的坏文件都记 warning 跳过，不阻塞 boot。
+- 所有 `~/.xana` 下路径统一走 `config/paths.xana_home()`（`$XANA_HOME` 的唯一解析点，缺省 `~/.xana`）；skills 与 agents 文档的坏文件都记 warning 跳过，不阻塞 boot。
 - `history_root` 是唯一持久化开关：不给就全是内存实现，不静默写盘。
 - 模型选择权威在 `DefaultConfigProvider` + `_build_model_client`；ChatAgent 的 provider/model 钉死为实际注册值，保证 `config_snapshot["provider"]` 在 harness 内可解析。
 

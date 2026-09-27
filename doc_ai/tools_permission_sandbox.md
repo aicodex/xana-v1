@@ -12,7 +12,7 @@ status: active
 
 ## 代码锚点
 
-- [interfaces.py](../src/xana/tools/interfaces.py) — `ToolPermissionPolicy` / `ToolSandboxPolicy` / `ToolContextBuilder`（仅合约）
+- [interfaces.py](../src/xana/tools/interfaces.py) — `Tool.check_permission`（抽象，每个工具必须实现）
 - [default.py](../src/xana/harness_sdk/default.py) — `check_permission` 编排与 `approval_review` 覆写
 - [policy/contracts.py](../src/xana/policy/contracts.py) — `PermissionContext`, `PermissionResult`, `SandboxPolicySpec`
 
@@ -35,7 +35,7 @@ status: active
 ## 沙箱
 
 - `ToolSpec.sandbox_policy`（`SandboxPolicySpec`：mode / writable_roots / readable_roots / allow_network / allow_subprocess / env）是声明位；harness 分发循环目前不强制，写越界防护由具体工具自行实现（如 `TodoStore._path` 拒绝含 `/` 的 session_id，`EnterWorktree` 校验 name 与 session_id）。
-- `ToolSandboxPolicy` / `ToolContextBuilder` / `ToolPermissionPolicy` 三个 ABC **仅接口合约，无实现**：harness 直接用 `Tool.check_permission`，没有独立的 policy 策略类。
+- 没有独立的权限/沙箱策略类：harness 直接用 `Tool.check_permission`。
 
 ## denial 结果
 

@@ -13,7 +13,6 @@ status: active
 ## 代码锚点
 
 - [scheduler.py](../src/xana/runtime/scheduler.py) — `FileSchedulerService`、`SchedulerRunner`
-- [interfaces.py](../src/xana/runtime/interfaces.py) — `Scheduler`（仅接口合约，无实现）
 - [capabilities.py](../src/xana/extension_api/capabilities.py) — `SchedulerService`
 - [cron.py](../src/xana/tools/builtin/cron.py) — `CronCreateTool` / `CronListTool` / `CronDeleteTool`
 - [schedule.py](../src/xana/skills/bundled/schedule.py) — `ScheduleSkill`（bundled skill）
@@ -23,10 +22,9 @@ status: active
 
 把"定时任务"做成一个闭环：模型经 cron 工具建任务 → 文件持久化 → serve 内轮询到点 → prompt 注回对应 session。调度器只做外壳（存取、触发、路由），不拥有任务内容——prompt 注入后走普通 inbound 管线，行为由 agent/harness 决定。
 
-## 两个平级接口（重要：不是一个接口）
+## 接口
 
-- **`Scheduler`**（runtime/interfaces.py:37）— `spawn/cancel/status` 三方法的早期 ABC，面向"任务外壳"抽象。**当前仅接口合约，无实现**，代码里没有任何类继承它。
-- **`SchedulerService`**（extension_api/capabilities.py:13）— Extension API 的运行期服务 ABC，`add(cron, prompt, recurring) / remove(task_id) / list_all()`，构造注入给 Extension。这是真实在用的接口。
+**`SchedulerService`**（extension_api/capabilities.py:15）— Extension API 的运行期服务 ABC，`add(cron, prompt, recurring) / remove(task_id) / list_all()`，构造注入给 Extension。这是调度的唯一接口。
 
 实现 `SchedulerService` 的是 **`FileSchedulerService`**（runtime/scheduler.py:25）：
 
@@ -50,7 +48,6 @@ dispatch 回调（serve.py `_make_scheduler_dispatch`）把 prompt 包装成 `In
 
 - 任务的唯一权威是 scheduled_tasks.json + `FileSchedulerService`；serve 重启后从文件恢复。
 - 调度触发只产生 inbound，不直接调 harness——执行语义与普通消息一致。
-- `Scheduler`（runtime ABC）无实现，不要把它当成调度入口写新代码。
 
 ## 验收要求
 

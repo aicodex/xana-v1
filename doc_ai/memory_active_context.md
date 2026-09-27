@@ -13,7 +13,7 @@ status: active
 ## 代码锚点
 
 - [contracts.py](../src/xana/memory/contracts.py) — `ActiveContext`, `MemoryMessage`, `Placeholder`（:73-86）
-- [interfaces.py](../src/xana/memory/interfaces.py) — `ActiveContextStore`, `MemoryPolicy`（placeholder 三操作 :50-70）
+- [interfaces.py](../src/xana/memory/interfaces.py) — `ActiveContextStore`（placeholder 三操作 :51-70）
 - [active_context.py](../src/xana/memory/active_context.py) — `InMemoryActiveContextStore` 默认实现
 
 ## 职责
@@ -40,7 +40,7 @@ It does not own:
 - `compact(...)` replaces selected messages with summary according to policy.
 - `clear(...)` removes runtime context for the session.
 
-## Placeholder 机制（contracts.py:73-86, interfaces.py:45-70）
+## Placeholder 机制（contracts.py:73-86, interfaces.py:46-70）
 
 `Placeholder` 是会话消息序列中的占位符：`run_id` + `label` + `status ∈ {running, completed, cancelled, failed}` + 可选 `jsonl_path`，标记「这里有一个 run，结果稍后回填」。它**与 `MemoryMessage` 平级**，由 `snapshot()` 返回为混合序列 `tuple[MemoryMessage | Placeholder, ...]`；**不**塞进 `ActiveContext.messages`（那里只放 `MemoryMessage`，保持类型纯净），回填时再从 snapshot 重算 messages 视图。
 

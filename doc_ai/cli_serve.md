@@ -19,7 +19,7 @@ status: active
 7. **细节接线**：Telegram adapter 把 gateway 可见命令经 `setMyCommands` 推成 `/` 菜单（飞书无此能力，靠 `/h`）；`SchedulerRunner` 的 dispatch 把到点任务包成 `InboundMessage` 走 `gateway.submit` 同一条入站路径，`adapter_id` 按 session 前缀推断（`tg-…` → telegram、`feishu-…` → feishu，无匹配退回首个 adapter）。dispatch 回调是 `_make_scheduler_dispatch(gateway, meta_service=None)`：**元 agent cron 的 marker 任务（`[xana-evolution-meta]`）先过 `meta_service.owns(text)`，命中 → `meta_service.fire()`**（declare 新 episode + 全新窗口注入元 prompt，见 [evolution_module](evolution_module.md)），不走路通 adapter 注入；serve 组装时传 `getattr(boot_result, "meta_service", None)`。
 8. **SIGTERM 优雅退出**：`graceful_shutdown(gateway, grace_seconds=2.0)` 先 `gateway.cancel_all()`，等 background run drain，超时记日志强制退出（未完 run 下次启动按 shutdown_force 走 /resume）；之后停 scheduler、cancel pumps、停 daemon server 与 bridge、停 adapter、关 main_writer。
 
-`build_adapters_from_env()` 是带空 `SystemConfig` 的兼容 shim，委托给 `build_adapters()`。`_start_daemon_in_process()` 把 boot + bridge + HTTP server 打包成协程，测试用它；`serve_main` 内联同样的积木。
+`_start_daemon_in_process()` 把 boot + bridge + HTTP server 打包成协程，测试用它；`serve_main` 内联同样的积木。
 
 ## daemon HTTP 动作桥
 

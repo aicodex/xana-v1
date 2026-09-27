@@ -24,7 +24,7 @@ status: active
 
 ## 契约
 
-- `SubagentRequest` — `parent_session_id` / `parent_agent` / `parent_run_id` / `target_agent` / `task` / `new_session_id`，外加形态控制：`mode`（`inline / background / isolated`，默认 `isolated`）、`allowed_tools`、`fork_context_messages`、`inherit_cwd`（默认 `True`）、`isolation`、`metadata`。
+- `SubagentRequest` — `parent_session_id` / `parent_agent` / `parent_run_id` / `target_agent` / `task` / `new_session_id`，外加形态控制：`mode`（`inline / background / isolated`，默认 `isolated`）、`fork_context_messages`、`inherit_cwd`（默认 `True`）、`isolation`、`metadata`。
 - `SubagentResult` — `parent_session_id` / `child_session_id` / `target_agent` / `ok` / `result` / `transcript_ref` / `metadata`。
 - `DelegationPolicy` — `allow_subagents`（默认 `True`）、`max_depth`（默认 1）、`allowed_agents`、权限与工具继承方式（`inherit / override / intersect`，默认 `intersect`）、`context_fork`（`none / messages / full`，默认 `none`）、后台/prompt 相关开关。
 

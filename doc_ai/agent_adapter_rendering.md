@@ -13,7 +13,6 @@ status: active
 ## 代码锚点
 
 - [contracts.py](../src/xana/agent_adapter/contracts.py) — `DraftHandle` / `RenderedMessage`
-- [interfaces.py](../src/xana/agent_adapter/interfaces.py) — `DraftRenderer` ABC
 - [unified_card.py](../src/xana/agent_adapter/channels/unified_card.py) — `UnifiedCardState` 平台无关卡片模型
 - [unified_card_events.py](../src/xana/agent_adapter/channels/unified_card_events.py) — `apply_event` 状态机
 - [card.py](../src/xana/agent_adapter/channels/card.py) — `Card` ViewModel
@@ -25,9 +24,9 @@ status: active
 
 把 agent/harness 事件流变成平台特定的可视消息：draft 的打开/更新/关闭，以及协议特定的渲染输出。
 
-## DraftRenderer
+## 渲染契约
 
-仅接口合约，无实现：v1 没有 `DraftRenderer` 实现类。`DraftHandle`（adapter_id/session_id/draft_id）与 `RenderedMessage`（text + 可选 draft + metadata）仍是 gateway 与 adapter 之间的渲染契约——gateway 在 `submit` 中把 adapter.render 的结果以 `RenderedMessage` yield 给消费者，并用 `metadata.event_kind` 标注事件类型。
+`DraftHandle`（adapter_id/session_id/draft_id）与 `RenderedMessage`（text + 可选 draft + metadata）是 gateway 与 adapter 之间的渲染契约——gateway 在 `submit` 中把 adapter.render 的结果以 `RenderedMessage` yield 给消费者，并用 `metadata.event_kind` 标注事件类型。
 
 ## v1 实际渲染栈：UnifiedCard（MVVM）
 
@@ -46,4 +45,3 @@ status: active
 
 - `AdapterProgressSink`：harness `ProgressSink` → adapter 的 `note_progress` 分发，只转发 `usage_progress` 和 `compact_progress` 两种 payload，并补写 `run_id` 便于 adapter 按 run 路由。
 - `PairingStore`（`_pairing.py`）：per-platform 用户 allowlist + pending 队列，JSON sidecar（`~/.xana/channels/pairings.json`），mtime 热重载使长跑的 `xana serve` 能看到另一个进程里 `xana pair` 的审批。
-- `TurnDraft`（`_draft.py`）：旧 per-turn 渲染状态，仍被部分路径引用；新卡路径以 UnifiedCardState 为准。

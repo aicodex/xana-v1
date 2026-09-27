@@ -8,14 +8,14 @@ status: active
 
 ## 定位
 
-权限、沙箱、approval 策略合约。仅接口合约，无实现——`src/xana/policy/` 只有 contracts.py / interfaces.py；approval 实际走 extension_api 的 `ApprovalReviewContributor`（见 [policy_approval](policy_approval.md)）。
+权限、沙箱、approval 的数据合约。`src/xana/policy/` 只有 contracts.py（interfaces.py 为空，不定义 ABC）；权限判定走 `Tool.check_permission`，approval 实际走 extension_api 的 `ApprovalReviewContributor`（见 [policy_approval](policy_approval.md)）。
 
 ## 详细设计
 
 - [policy_permission](policy_permission.md) — Permission rules, contexts, requests, decisions.
-- [policy_approval](policy_approval.md) — Ask-user approval provider seam.
-- [policy_sandbox](policy_sandbox.md) — Sandbox policy planning and runner enter/exit.
-- [policy_registry](policy_registry.md) — Registry for permission policy, approval provider, sandbox planner.
+- [policy_approval](policy_approval.md) — approval 的实际运行路径（ApprovalReviewContributor）。
+- [policy_sandbox](policy_sandbox.md) — `SandboxPolicySpec` 数据合约。
+- [policy_registry](policy_registry.md) — 当前无 policy 注册表。
 
 ## 全局合约
 

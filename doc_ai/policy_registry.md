@@ -12,20 +12,15 @@ status: active
 
 ## 职责
 
-Registry for permission policy, approval provider, sandbox planner.
-
-## 相关接口 / 类型
-
-- `PolicyRegistry`
+policy 组件注册表（当前不存在）。
 
 ## 代码锚点
 
 - [contracts.py](../src/xana/policy/contracts.py) — 数据结构和枚举
-- [interfaces.py](../src/xana/policy/interfaces.py) — 抽象接口
 
 ## 当前状态
 
-仅接口合约，无实现。`src/xana/policy/` 下只有 contracts.py / interfaces.py，没有实现类，boot 也不注册任何 policy 组件。
+没有 policy 注册表：`src/xana/policy/` 只有数据合约，boot 也不注册任何 policy 组件。权限由各 `Tool.check_permission` 自行判定，approval 复核由 extension 的 `ApprovalReviewContributor` 提供。
 
 ## 验收要求
 

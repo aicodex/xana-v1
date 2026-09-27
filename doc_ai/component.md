@@ -8,15 +8,11 @@ status: active
 
 ## 定位
 
-共享组件元数据、加载、校验、override、registry 合约。仅接口合约，无实现——`src/xana/component/` 只有 contracts.py / interfaces.py。
+共享组件元数据合约。`src/xana/component/` 只有 contracts.py，不定义 ABC、无实现；`ComponentSpec` / `ComponentSource` 被工具、skill、agent 声明直接引用。
 
 ## 详细设计
 
 - [component_spec](component_spec.md) — Shared component metadata and source identity.
-- [component_loading](component_loading.md) — Load roots and report loaded/disabled/errors/source maps.
-- [component_override](component_override.md) — Source priority, override resolution, override logs.
-- [component_registry](component_registry.md) — Register/get/list/remove components.
-- [component_cache](component_cache.md) — Load cache key/entry/invalidation.
 
 ## 全局合约
 
@@ -25,4 +21,4 @@ status: active
 
 ## Owns
 
-共享组件元数据、加载、校验、override、registry 合约。
+共享组件元数据合约。
