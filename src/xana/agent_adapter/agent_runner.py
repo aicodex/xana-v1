@@ -34,6 +34,8 @@ class GatewayAgentRunner(AgentRunner):
         prompt: str,
         session_id: str,
         parent_run_id: str | None = None,
+        parent_session_id: str | None = None,
+        tool_ceiling: frozenset[str] | None = None,
         on_tool: Callable[[str], None] | None = None,
     ) -> AgentRunOutcome:
         agent = self._agents.get(agent_name)
@@ -41,12 +43,14 @@ class GatewayAgentRunner(AgentRunner):
             raise LookupError(f"unknown agent {agent_name!r}")
         if self._session_store is not None and await self._session_store.get(session_id) is None:
             await self._session_store.upsert(SessionRecord(
-                session_id=session_id, current_agent=agent_name, parent_run_id=parent_run_id, depth=1))
+                session_id=session_id, current_agent=agent_name, parent_session_id=parent_session_id,
+                parent_run_id=parent_run_id, depth=1))
         run_id = f"run-{session_id}-{uuid.uuid4().hex[:8]}"
         abort = AbortSignal()
         request = AgentRequest(
             session_id=session_id, text=prompt, source="agent_runner", target_agent=agent_name,
-            metadata={"gateway_run_id": run_id, "parent_run_id": parent_run_id, "abort_signal": abort})
+            metadata={"gateway_run_id": run_id, "parent_run_id": parent_run_id, "abort_signal": abort},
+            tool_ceiling=tool_ceiling)
         text, status, error = "", "error", "子 agent 没有产出最终回答"
         counts: dict[str, int] = {}
         try:

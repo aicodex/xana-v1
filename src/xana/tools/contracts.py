@@ -129,6 +129,8 @@ class ToolContext:
     # 执行中上报进度(一句给人看的话,如"正在阅读 18/40 个网页");harness 转成 tool_progress 事件
     # 由渠道显示,不进入模型上下文。None = 调用方不接收进度。
     report_progress: Callable[[str], None] | None = None
+    # 本 run 可用的工具名(agent 工具选择解析结果);None = 不限。委派 / 创建 agent 时据此收窄权限
+    available_tools: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)

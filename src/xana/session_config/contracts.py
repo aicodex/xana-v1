@@ -23,6 +23,8 @@ class SessionConfig:
     async_mode: bool = True  # P3 完成,默认 async
     # 工具过程显示模式(detailed / grouped / summary);None = 渠道默认(飞书、TG grouped,CLI detailed)
     view_mode: str | None = None
+    # 会话绑定的 agent(/agent 设置,docs/design/agent-delegation-design.md §3.1);None = 默认 agent
+    agent: str | None = None
     # 会话创建时由 AgentSpec.prompt_profile 解析后写入(PromptProfile.to_dict),之后只读
     prompt_profile: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

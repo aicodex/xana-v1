@@ -54,6 +54,9 @@ class AgentRequest:
     target_agent: str | None = None
     attachments: tuple[dict[str, Any], ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 本 run 可用工具的上限(委派时 = 调用方可用工具 − 委派 / 会话控制类工具);None = 不设上限。
+    # harness 在 agent 自身工具选择的解析结果上再取交集(docs/design/agent-delegation-design.md §3.2)
+    tool_ceiling: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)

@@ -59,7 +59,10 @@ class AgentRunner(ABC):
         prompt: str,
         session_id: str,
         parent_run_id: str | None = None,
+        parent_session_id: str | None = None,
+        tool_ceiling: frozenset[str] | None = None,
         on_tool: Callable[[str], None] | None = None,
     ) -> AgentRunOutcome:
         """在 ``session_id``(调用方给的独立会话)里运行 ``agent_name``,返回最终文本。
-        ``on_tool`` 在子 agent 每次调用工具时以工具名回调(给调用方汇总进度)。"""
+        同一 ``session_id`` 再次运行即在原子会话上下文里继续。``tool_ceiling`` 限定子 agent 可用工具的上限
+        (与它自身的工具选择取交集;None = 不设上限)。``on_tool`` 在子 agent 每次调用工具时以工具名回调。"""

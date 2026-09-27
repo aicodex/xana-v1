@@ -24,6 +24,7 @@ BUILTIN_TOOLSETS: tuple[Toolset, ...] = (
     Toolset("meta", "按需加载工具 schema 与技能说明:tool_search / skill_load", default=True),
     Toolset("research", "多步深度研究:deep_research / background_research", default=True),
     Toolset("schedule", "定时任务:CronCreate / CronList / CronDelete", default=True),
+    Toolset("agents", "委派子 agent 与创建 agent:agent_run / agent_define", default=True),
 )
 
 

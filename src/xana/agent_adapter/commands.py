@@ -52,8 +52,10 @@ class DefaultCommandRouter(CommandRouter):
         progress_sink: Any = None,
         write_queue: Any = None,
         context_sdk: Any = None,
+        default_agent: str = "chat",
     ) -> None:
         self.session_config_store = session_config_store
+        self.default_agent = default_agent
         self.active_context_store = active_context_store
         self.gateway = gateway
         self.available_models = available_models
@@ -72,6 +74,7 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/help",     description="显示命令菜单。用法 `/help` 或 `/help /命令`"),
             CommandSpec(name="/h",        description="同 /help"),
             CommandSpec(name="/clear",    description="清空当前会话上下文"),
+            CommandSpec(name="/agent",    description="用指定 agent 开新会话,无参列出可选"),
             CommandSpec(name="/compact",  description="用 LLM 把本会话历史压缩成摘要"),
             CommandSpec(name="/model",    description="切换本会话模型，无参列出可选"),
             CommandSpec(name="/effort",   description="推理强度切换，无参列出可选"),
@@ -90,6 +93,7 @@ class DefaultCommandRouter(CommandRouter):
             "/help":            DefaultCommandRouter._cmd_help,
             "/h":               DefaultCommandRouter._cmd_help,
             "/clear":           DefaultCommandRouter._cmd_clear,
+            "/agent":           DefaultCommandRouter._cmd_agent,
             "/compact":         DefaultCommandRouter._cmd_compact,
             "/model":           DefaultCommandRouter._cmd_model,
             "/effort":          DefaultCommandRouter._cmd_effort,
@@ -143,14 +147,13 @@ class DefaultCommandRouter(CommandRouter):
         return CommandResult(ok=True, message="\n".join(lines),
                              payload={"buttons": rows, "linkify_commands": True})
 
-    async def _cmd_clear(self, inbound: InboundMessage, args: str) -> CommandResult:
-        # I17 (docs/design/session-and-card-state.md §1.7): /clear ROTATES the
-        # session_id for the current (adapter_id, thread_id). It does NOT wipe
-        # the old session's active_context, memory tree, or bg runs — those
-        # stay live in memory under the old sid (reachable via system.json
-        # edit + restart). Effect: the next inbound on the same external
-        # thread resolves to a NEW sid via SessionResolver, so prompts start
-        # from a true blank slate without losing prior work.
+    def _rotate_session(self, inbound: InboundMessage) -> str | None:
+        """为当前外部会话 (adapter_id, thread_id) 换一个新 session id;失败返回 None。
+
+        I17 (docs/design/session-and-card-state.md §1.7): rotation does NOT wipe
+        the old session's active_context, memory tree, or bg runs — they stay
+        under the old sid. The next inbound on the same external thread resolves
+        to the NEW sid via SessionResolver."""
         adapters = getattr(self.gateway, "adapters", {}) if self.gateway is not None else {}
         adapter = adapters.get(inbound.adapter_id) if adapters else None
         # thread_id: feishu/tg = chat_id; cli = "" (single host = single thread)
@@ -158,20 +161,52 @@ class DefaultCommandRouter(CommandRouter):
             external_thread_id = inbound.metadata.get("chat_id") or ""
         else:
             external_thread_id = ""
-        new_sid: str | None = None
         rotate = getattr(adapter, "rotate_session", None) if adapter is not None else None
-        if rotate is not None:
-            try:
-                new_sid = rotate(external_thread_id)
-            except Exception:
-                new_sid = None
-        if new_sid is None or new_sid == inbound.session_id:
+        if rotate is None:
+            return None
+        try:
+            new_sid = rotate(external_thread_id)
+        except Exception:
+            return None
+        return None if new_sid == inbound.session_id else new_sid
+
+    async def _cmd_clear(self, inbound: InboundMessage, args: str) -> CommandResult:
+        new_sid = self._rotate_session(inbound)
+        if new_sid is None:
             return CommandResult(
                 ok=False,
                 message="[clear] 未能换会话 id (adapter 不支持 rotate_session)",
             )
+        # 清空上下文不换 agent:把会话绑定的 agent 带到新会话
+        cfg = await self._current_config(inbound.session_id)
+        if cfg is not None and cfg.agent:
+            await self._persist_with(new_sid, agent=cfg.agent)
         return CommandResult(
             ok=True, message=f"[cleared] 已切换会话 id → {new_sid}",
+            payload={"new_session_id": new_sid},
+        )
+
+    async def _cmd_agent(self, inbound: InboundMessage, args: str) -> CommandResult:
+        """/agent:列出可用 agent;/agent <名字>:换新会话 id 并绑定该 agent(会话创建时绑定、之后不切换,
+        docs/design/agent-delegation-design.md §3.1)。旧会话原样保留。"""
+        agents = dict(getattr(self.gateway, "agents", {}) or {}) if self.gateway is not None else {}
+        name = args.strip()
+        if not name:
+            cfg = await self._current_config(inbound.session_id)
+            current = (cfg.agent if cfg else None) or self.default_agent
+            lines = [f"当前 agent: {current}", "可用 agent:"]
+            for n in sorted(agents):
+                lines.append(f"  {n:<16} {agents[n].spec().component.description}")
+            return CommandResult(ok=True, message="\n".join(lines),
+                                 payload={"buttons": _option_buttons("/agent", tuple(sorted(agents)))})
+        if name not in agents:
+            return CommandResult(ok=False, message=f"未知 agent {name}(/agent 查看可选)")
+        new_sid = self._rotate_session(inbound)
+        if new_sid is None:
+            return CommandResult(ok=False, message="[agent] 未能开新会话 (adapter 不支持 rotate_session)")
+        await self._persist_with(new_sid, agent=None if name == self.default_agent else name)
+        return CommandResult(
+            ok=True, message=f"[agent] 已开新会话 {new_sid},由 {name} 负责",
             payload={"new_session_id": new_sid},
         )
 

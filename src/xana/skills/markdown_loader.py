@@ -88,7 +88,7 @@ class MarkdownDocParser(SkillManifestParser):
     """SkillManifestParser 首个实现:frontmatter yaml + 正文,双 kind。
 
     - kind=skill(默认):必填 name/description;可选 when_to_use/allowed_tools。
-    - kind=agent:必填 name/goal;goal 映射到 manifest.description;可选 tools(不写 = 默认组合,
+    - kind=agent:必填 name/goal;goal 映射到 manifest.description;可选 when_to_use / tools(不写 = 默认组合,
       [] = 零工具)/ disallowed_tools / skills/budget/stop_rules/output_contract/prompt_profile/verify
       放入 metadata,由 AgentRegistry 消费(docs/design/agent-composition-design.md §3.3)。
     """
@@ -106,6 +106,12 @@ class MarkdownDocParser(SkillManifestParser):
         if kind == "agent":
             goal = _require_str(fm, path=path, kind=kind, field="goal")
             metadata: dict[str, Any] = {"kind": "agent"}
+            when_to_use = fm.get("when_to_use")
+            if when_to_use is not None:
+                if not isinstance(when_to_use, str):
+                    raise SkillManifestError(path=path, kind=kind, field="when_to_use",
+                                             reason="when_to_use 必须是字符串")
+                metadata["when_to_use"] = when_to_use
             for list_field in ("tools", "disallowed_tools"):
                 if fm.get(list_field) is not None:  # tools 不写 = 默认组合;[] = 零工具
                     metadata[list_field] = list(

@@ -137,11 +137,14 @@ def _available_tools(
     context: HarnessContext, specs: tuple[ToolSpec, ...], toolsets: tuple[Toolset, ...],
 ) -> frozenset[str] | None:
     """本 run 可用的工具名(agent 工具选择表达式解析结果,docs/design/agent-composition-design.md §3.3)。
-    config_snapshot 没有 tools 键(直接使用 harness、不经 agent 层)→ None,不过滤。"""
+    config_snapshot 没有 tools 键(直接使用 harness、不经 agent 层)→ None,不过滤;
+    有 tool_ceiling(委派的子 run)时再与它取交集。"""
+    ceiling = context.config_snapshot.get("tool_ceiling")
     if "tools" not in context.config_snapshot:
-        return None
-    return resolve_tools(context.config_snapshot["tools"] or (),
-                         context.config_snapshot.get("disallowed_tools") or (), specs, toolsets)
+        return frozenset(ceiling) if ceiling is not None else None
+    resolved = resolve_tools(context.config_snapshot["tools"] or (),
+                             context.config_snapshot.get("disallowed_tools") or (), specs, toolsets)
+    return resolved & frozenset(ceiling) if ceiling is not None else resolved  # 委派时不超出调用方给的上限
 
 
 def _can_use(available: frozenset[str] | None, name: str) -> bool:
@@ -570,6 +573,7 @@ class DefaultHarness(Harness):
             permission=context.permission or _default_permission(session_id),
             run_id=run_id,
             report_progress=progress,
+            available_tools=available,
         )
         try:
             await tool.validate(invocation)

@@ -62,6 +62,7 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path) -> Ag
         tools=tuple(md["tools"]) if "tools" in md else AgentSpec.tools,
         disallowed_tools=tuple(md.get("disallowed_tools", ())),
         allowed_skills=tuple(md.get("skills", ())),
+        when_to_use=str(md.get("when_to_use") or ""),
         system_prompt=body.strip() or None,
         prompt_profile=prompt_profile,
         verify=verify,
@@ -90,16 +91,18 @@ class FileAgentRegistry(AgentRegistry):
             return ()
         for path in sorted(self._root.glob(f"*/{_AGENT_DOC_NAME}")):
             try:
-                manifest = await self._parser.parse(path)
-                _fm, body = split_frontmatter(
-                    path.read_text(encoding="utf-8"), path=path,
-                )
-                await self.register(self._agent_factory(
-                    agent_spec_from_doc(manifest, body=body, path=path),
-                ))
+                await self.load_file(path)
             except SkillManifestError as err:
                 errors.append(err)
         return tuple(errors)
+
+    async def load_file(self, path: Path) -> Agent:
+        """加载(或重新加载)单个 AGENT.md 并注册;文档不合法抛 SkillManifestError。"""
+        manifest = await self._parser.parse(path)
+        _fm, body = split_frontmatter(path.read_text(encoding="utf-8"), path=path)
+        agent = self._agent_factory(agent_spec_from_doc(manifest, body=body, path=path))
+        await self.register(agent)
+        return agent
 
     async def register(self, agent: Agent) -> None:
         self._agents[agent.spec().component.name] = agent

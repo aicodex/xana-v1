@@ -148,6 +148,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             "verify": [c.to_dict() for c in spec.verify],
             "tools": list(spec.tools),
             "disallowed_tools": list(spec.disallowed_tools),
+            "tool_ceiling": sorted(request.tool_ceiling) if request.tool_ceiling is not None else None,
         }
         if cfg is not None:
             config_snapshot.update({

@@ -30,6 +30,7 @@ from xana.config.loader import (
     default_system_json_source,
     derive_compact_thresholds,
 )
+from xana.extension_api.builtin.agent_listing import AgentListingContributor
 from xana.extension_api.builtin.skills_listing import SkillsListingContributor
 from xana.extension_api.registry import ExtensionRegistry, ExtensionRegistryBuilder
 from xana.harness_sdk.default import DefaultHarness
@@ -64,6 +65,7 @@ from xana.memory.markdown import (
 )
 from xana.skills.bundled.loop import LoopSkill
 from xana.skills.bundled.schedule import ScheduleSkill
+from xana.skills.bundled.agent_creator import AgentCreatorSkill
 from xana.skills.bundled.skill_creator import SkillCreatorSkill
 from xana.skills.interfaces import SkillRegistry
 from xana.skills.markdown_loader import MarkdownDocParser
@@ -79,6 +81,9 @@ from xana.session_config.interfaces import SessionConfigStore
 from xana.tools.builtin._todo_store import TodoStore
 from xana.runtime.scheduler import FileSchedulerService
 from xana.runtime.session_resolver import SessionResolver
+from xana.agent_adapter.agent_runner import GatewayAgentRunner
+from xana.tools.builtin.agent_define import AgentDefineTool
+from xana.tools.builtin.agent_run import AgentRunTool
 from xana.tools.builtin.bash import BashTool
 from xana.tools.builtin.cron import CronCreateTool, CronDeleteTool, CronListTool
 from xana.tools.builtin.edit import EditTool
@@ -193,7 +198,7 @@ async def boot(
     from xana.skills.markdown_loader import FileSkillLoader, scan_skill_docs
     _doc_parser = MarkdownDocParser()
     bundled_skills = InMemorySkillRegistry()
-    for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill()):
+    for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill(), AgentCreatorSkill()):
         await bundled_skills.register(bundled)
     _file_skills, _skill_doc_errors = await scan_skill_docs(
         xana_home() / "skills", loader=FileSkillLoader(parser=_doc_parser),
@@ -202,9 +207,13 @@ async def boot(
         _logger.warning("SKILL.md 加载失败: %s", _err)
     for _file_skill in _file_skills:
         await bundled_skills.register(_file_skill)
+    # agent 表与工具目录先建空容器(后面逐个注册):默认扩展(可委派 agent 列表)持有的是活的引用。
+    agents: dict[str, Agent] = {}
+    tools = InMemoryToolRegistry()
     if extension_registry is None:
         extension_registry = (ExtensionRegistryBuilder()
                               .add(SkillsListingContributor(skills=bundled_skills))
+                              .add(AgentListingContributor(agents=agents, tool_registry=tools))
                               .build())
 
     # 扩展注册表须在构造 harness 之前组装完毕(harness 构造时即持有它)。
@@ -250,7 +259,6 @@ async def boot(
 
     # 工具目录(docs/design/agent-composition-design.md §3.1–3.2):内置工具组先登记;
     # system.json tools.disabled 里的组 / 工具不注册,对所有 agent 都不存在。
-    tools = InMemoryToolRegistry()
     for _toolset in BUILTIN_TOOLSETS:
         await tools.register_toolset(_toolset)
     _disabled_tools = set(system_cfg.tools.disabled)
@@ -338,8 +346,8 @@ async def boot(
         state = InMemoryStateRepository()
 
     gateway = DefaultAgentGateway(
-        agents={},
-        router=DefaultAgentRequestRouter(default_agent="chat"),
+        agents=agents,
+        router=DefaultAgentRequestRouter(default_agent="chat", session_config_store=session_config_store),
     )
     # P5: wire RunStore + RunJsonlWriter so /resume + cancel_all have backing.
     gateway.run_store = run_store
@@ -472,15 +480,28 @@ async def boot(
         if _doc_agent is not None:
             gateway.agents[_spec.component.name] = _doc_agent
 
+    # 子 agent 运行器:agent_run 委派与 deep_research 共用(同步跑完子 run 取回最终文本,不触碰渠道)。
+    agent_runner = GatewayAgentRunner(agents=gateway.agents, session_store=state.sessions())
+
+    # agent 委派与创建(docs/design/agent-delegation-design.md):agent_run 同步委派;agent_define 写 AGENT.md
+    # 后经 FileAgentRegistry 同一路径加载并注册进 gateway,立即可用。
+    async def _install_agent(path: Path) -> Agent:
+        agent = await agent_registry.load_file(path)
+        gateway.agents[agent.spec().component.name] = agent
+        return agent
+
+    await _register(AgentRunTool(runner=agent_runner, agents=gateway.agents, tool_registry=tools))
+    await _register(AgentDefineTool(agents_root=xana_home() / "agents", agents=gateway.agents,
+                                    tool_registry=tools, install=_install_agent))
+
     # deep_research(docs/design/lead-research-design.md):主模型当研究负责人,并行派出内置子研究员
     # (researcher:只有 web 组与 Read)。子研究员不接进度汇报(不触碰渠道)。
     if system_cfg.web_search.xana_search_url:
-        from xana.agent_adapter.agent_runner import GatewayAgentRunner
         from xana.agents.researcher import RESEARCHER_AGENT, build_researcher_agent_spec
         from xana.tools.builtin.lead_research import LeadResearchTool
         gateway.agents[RESEARCHER_AGENT] = _doc_agent_factory(build_researcher_agent_spec(), progress=False)
         await _register(LeadResearchTool(
-            runner=GatewayAgentRunner(agents=gateway.agents, session_store=state.sessions()),
+            runner=agent_runner,
             model_registry=model_registry, provider=provider, model=model,
             findings_root=project_root / "research", researcher_agent=RESEARCHER_AGENT))
 
