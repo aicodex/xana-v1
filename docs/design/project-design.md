@@ -44,8 +44,8 @@ date: 2026-09-27
 ## 4. 配置分层
 
 - 用户级 `system.json`:models / default_model / model_tiers / limits / web_search / mcp / policy / tools。
-- 项目级 `projects/<id>/config.json`:channels、daemon、sessions、tools。
-- 合并:加载 `system.json` 后,用项目配置覆盖允许的键(channels、daemon、sessions、tools);项目配置出现其他键报错(模型、凭据、搜索服务地址、策略不能由项目改)。
+- 项目级 `projects/<id>/config.json`:channels、daemon、sessions、tools、agent_defaults(§8)。
+- 合并:加载 `system.json` 后,用项目配置覆盖允许的键(channels、daemon、sessions、tools、agent_defaults);项目配置出现其他键报错(模型、凭据、搜索服务地址、策略不能由项目改)。
 - `daemon.unix_socket` 未配置时取 `projects/<id>/run/serve.sock`;`daemon.port` 每个项目不同(default 沿用 17777,新项目创建时分配空闲端口)。
 - `SessionResolver` 的渠道→会话映射写回项目 `config.json`;项目 `config.json` 权限 600(含机器人凭据)。
 
@@ -55,7 +55,7 @@ date: 2026-09-27
 |---|---|
 | `xana setup` | 除原有步骤外,创建默认项目(`projects/default/`、`project.json`、`config.json`、`workspace/README_ai.md`);旧布局就地迁移(§6) |
 | `xana serve [--project <id>]` | 以某个项目运行;缺省 default。`--project` 由"项目目录路径"改为"项目 id"(目录由 `project.json` 决定) |
-| `xana project create <id> --root <目录> [--port N]` / `xana project list` | 注册新项目 / 列出项目(含是否在运行);机器人凭据之后用 `xana setup --project <id>` 或编辑其 `config.json` 配 |
+| `xana project create <id> [--root <目录>] [--port N]` / `xana project list` | 注册新项目(不给目录时放在 `projects/<id>/workspace`)/ 列出项目(含是否在运行);日常用聊天里的 `project_manage`(§7),命令行是保底 |
 | `xana sync` | 停止所有在运行的项目 serve → 同步代码 → 迁移(若需要)→ 逐个重启 |
 | `xanac [--project <id>]` | 连接某个项目的 serve;缺省 default |
 | `xana pair ... [--project <id>]` | 配对数据按项目 |
@@ -73,11 +73,40 @@ date: 2026-09-27
 
 `race_sessions*` 等测试残留不迁移,单独询问后清理。
 
-## 7. 不在本次范围
+## 7. 在聊天里管理项目(shell 只作保底)
+
+首次安装之后,用户尽量不用再回 shell:default 项目是"管理台",带项目管理工具与技能。
+
+### 7.1 `project_manage` 工具(只在 default 项目注册,工具组 `projects`)
+
+| 动作 | 说明 |
+|---|---|
+| `list` | 项目、目录、端口、是否在运行、是否已接飞书机器人 |
+| `create` | 名字(必填)、目录(可选,缺省 `projects/<名字>/workspace`)、`agent_defaults`(可选,见 §8) |
+| `configure` | 修改项目的 `agent_defaults`;名字写错(未知的工具 / 组 / 技能)时报错 |
+| `bind_feishu` | 发起飞书"扫码创建应用"(设备码流程),立即返回授权链接;后台轮询,确认后把机器人凭据写进该项目配置,并把确认人(本应用下的 open_id)直接加入该项目的配对白名单 |
+| `feishu_status` | 等待 / 查看绑定结果(最多等 2 分钟,执行中上报进度) |
+| `start` / `stop` | 启动 / 停止该项目的 serve(`xana serve --project <名字>`,后台进程) |
+
+- 飞书卡片里的链接可点击,手机上在飞书内置浏览器打开即可确认(已登录),不必另一台设备扫码。
+- 授权链接由模型写进回复发给用户;用户确认后说一声,模型再调 `feishu_status`。
+- 不能停 / 删 default 项目自己;删除项目本次不做(误删代价大,命令行也不提供)。
+
+### 7.2 `project_creator` 技能(内置,中文)
+
+流程:弄清项目要做什么 → 起名字(目录默认即可)→ 按用途选工具 / 技能的默认可见性(`project_manage` 可列出可选的组与技能)→ 与用户确认 → `create` → `bind_feishu` 发链接 → 用户确认后 `feishu_status` → `start` → 告诉用户去新机器人那里聊。
+
+## 8. 项目给 agent 的默认配置(`agent_defaults`)
+
+- 项目配置新增键 `agent_defaults`:`tools`(工具选择表达式,缺省 `["default"]`)、`disallowed_tools`、`skills`(技能选择,缺省全部)。
+- 在该项目中:内置 chat,以及 AGENT.md 没写 `tools` / `skills` 的 agent,按项目默认;写了的以 agent 自己为准。不写就是"跟随项目默认",项目默认改了这些 agent 随之改变。`agent_define` 新建 agent 不填 tools / skills 即跟随项目默认。
+- **技能可见性**落地(此前 `allowed_skills` 只是声明):`AgentSpec.skills: tuple | None`(None = 全部,`()` = 无,名单 = 只这些,`*` = 全部)取代 `allowed_skills`;技能列表只列可见技能,`skill_load` 拒绝不可见技能(与工具的"可见 + 执行前校验"一致)。
+
+## 9. 不在本次范围
 
 - 项目级 skills 的加载(目录已预留,与 agents 同样的两级规则,下一步做);项目信任机制(项目目录目前都是自己的);Web 端多会话。
 
-## 8. 验证
+## 10. 验证
 
 - 路径 API 单测:XANA_PROJECT 切换、default 的 root、未注册项目报错。
 - 配置合并:允许键覆盖、禁止键报错、会话映射写回项目配置。

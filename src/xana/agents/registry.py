@@ -5,7 +5,7 @@
 - 直接维护 gateway 共用的 agent 表(table):refresh() 比对每个 AGENT.md 的 (路径, 修改时间, 大小),
   新增 / 变更的重新加载,文件已不存在的移出表;内置 agent 名(reserved)不能被文件覆盖。
 - 文档 → AgentSpec 的字段映射见 agent_spec_from_doc:正文即系统提示词模板;tools 工具选择表达式
-  (不写 = 默认组合,[] = 零工具)/ disallowed_tools;skills → allowed_skills;
+  (不写 = 项目默认,[] = 零工具)/ disallowed_tools;skills 技能选择(不写 = 项目默认);
   budget/stop_rules/output_contract 放入 component.metadata。
 Agent 实例经注入的 agent_factory 构造(boot 用共享 harness/stores 的 ChatAgent 工厂)。
 """
@@ -21,6 +21,7 @@ from xana.harness_sdk.contracts import PromptProfile, VerifyCheck
 from xana.agents.contracts import AgentSpec
 from xana.agents.interfaces import Agent, AgentRegistry
 from xana.component.contracts import ComponentScope, ComponentSource, ComponentSpec
+from xana.config.system_model import AgentDefaults
 from xana.skills.contracts import SkillManifest
 from xana.skills.interfaces import SkillManifestParser
 from xana.skills.markdown_loader import SkillManifestError, split_frontmatter
@@ -30,8 +31,10 @@ _AGENT_DOC_NAME = "AGENT.md"
 
 
 def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path,
-                        scope: ComponentScope = "user") -> AgentSpec:
-    """AGENT.md 的 manifest + 正文 → AgentSpec 字段映射。"""
+                        scope: ComponentScope = "user", defaults: AgentDefaults | None = None) -> AgentSpec:
+    """AGENT.md 的 manifest + 正文 → AgentSpec 字段映射。没写 tools / skills 时用项目默认(defaults);
+    没写 tools 时项目默认的 disallowed_tools 也并入。"""
+    defaults = defaults or AgentDefaults()
     if manifest.metadata.get("kind") != "agent":
         raise SkillManifestError(
             path=path, kind=str(manifest.metadata.get("kind")), field="kind",
@@ -64,9 +67,11 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path,
             metadata=component_metadata,
         ),
         prompt_id=f"agent.{manifest.name}",
-        tools=tuple(md["tools"]) if "tools" in md else AgentSpec.tools,
-        disallowed_tools=tuple(md.get("disallowed_tools", ())),
-        allowed_skills=tuple(md.get("skills", ())),
+        tools=tuple(md["tools"]) if "tools" in md else tuple(defaults.tools),
+        disallowed_tools=tuple(md.get("disallowed_tools", ())) + (
+            () if "tools" in md else tuple(defaults.disallowed_tools)),
+        skills=tuple(md["skills"]) if "skills" in md else (
+            tuple(defaults.skills) if defaults.skills is not None else None),
         when_to_use=str(md.get("when_to_use") or ""),
         system_prompt=body.strip() or None,
         prompt_profile=prompt_profile,
@@ -86,6 +91,7 @@ class FileAgentRegistry(AgentRegistry):
         table: MutableMapping[str, Agent] | None = None,
         reserved: Collection[str] = (),
         min_interval_s: float = 2.0,
+        defaults: AgentDefaults | None = None,
     ) -> None:
         """roots 按优先级从低到高;table 是调用方共用的 agent 表(缺省自建);reserved 是内置 agent 名。"""
         self._roots = tuple((scope, Path(root)) for scope, root in roots)
@@ -94,6 +100,7 @@ class FileAgentRegistry(AgentRegistry):
         self._table: MutableMapping[str, Agent] = table if table is not None else {}
         self._reserved = frozenset(reserved)
         self._min_interval_s = min_interval_s
+        self._defaults = defaults            # 项目给 agent 的默认配置(没写 tools / skills 的 AGENT.md 用)
         # 文件版本 = (修改时间 ns, 大小):同一时间刻度内的连续修改靠大小区分
         self._parsed: dict[Path, tuple[tuple[int, int], AgentSpec]] = {}   # 每个文件最近一次成功解析的版本
         self._loaded: dict[str, tuple[Path, tuple[int, int]]] = {}         # 表中由本注册表维护的 agent → 来源版本
@@ -164,7 +171,7 @@ class FileAgentRegistry(AgentRegistry):
     async def _parse(self, path: Path, scope: ComponentScope) -> AgentSpec:
         manifest = await self._parser.parse(path)
         _fm, body = split_frontmatter(path.read_text(encoding="utf-8"), path=path)
-        return agent_spec_from_doc(manifest, body=body, path=path, scope=scope)
+        return agent_spec_from_doc(manifest, body=body, path=path, scope=scope, defaults=self._defaults)
 
     async def remove(self, name: str) -> Path:
         """删除文件 agent(删掉它当前生效的 AGENT.md)并立即刷新;内置或不存在的 agent 抛 LookupError。

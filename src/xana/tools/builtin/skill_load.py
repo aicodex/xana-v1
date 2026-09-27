@@ -58,10 +58,12 @@ class SkillLoadTool(Tool):
             run_id=context.run_id or "",
             cwd=Path(context.cwd) if context.cwd else None,
         )
-        skill = await self.skills.get(name)
+        visible = context.visible_skills
+        skill = await self.skills.get(name) if visible is None or name in visible else None
         if skill is None:
             available = sorted(
-                s.spec().component.name for s in await self.skills.discover(activation)
+                n for n in (s.spec().component.name for s in await self.skills.discover(activation))
+                if visible is None or n in visible
             )
             listing = ", ".join(available) or "(无)"
             return ToolResult(

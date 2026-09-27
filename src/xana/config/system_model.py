@@ -89,6 +89,15 @@ class ToolsConfig(BaseModel):
     disabled: list[str] = []
 
 
+class AgentDefaults(BaseModel):
+    """项目给 agent 的默认配置(docs/design/project-design.md §8):内置 chat 与没写 tools / skills 的
+    AGENT.md 按此解析。写法同 AgentSpec 的工具 / 技能选择。"""
+    model_config = ConfigDict(extra="forbid")
+    tools: list[str] = ["default"]
+    disallowed_tools: list[str] = []
+    skills: list[str] | None = None     # None = 全部技能可见
+
+
 class McpServer(BaseModel):
     model_config = ConfigDict(extra="allow")
     name: str
@@ -167,6 +176,7 @@ class SystemConfig(BaseModel):
     channels: Channels = Channels()
     web_search: WebSearch = WebSearch()
     tools: ToolsConfig = ToolsConfig()
+    agent_defaults: AgentDefaults = AgentDefaults()
     mcp: Mcp = Mcp()
     policy: PolicyConfig = PolicyConfig()
     daemon: DaemonConfig = DaemonConfig()

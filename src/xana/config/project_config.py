@@ -1,7 +1,7 @@
 """项目配置分层(docs/design/project-design.md §4)。
 
 用户级 {XANA_HOME}/config/system.json 放全局配置;项目级 projects/<id>/config.json 只能放
-PROJECT_KEYS(机器人、daemon 端口 / socket、渠道→会话映射、工具禁用)。加载时用项目配置覆盖用户配置的
+PROJECT_KEYS(机器人、daemon 端口 / socket、渠道→会话映射、工具禁用、agent 默认配置)。加载时用项目配置覆盖用户配置的
 这些键;项目配置出现其他键即报错——模型、凭据、搜索服务地址、策略不能由项目改。
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Any
 from xana.config.paths import project_home, xana_home
 from xana.config.system_model import DaemonConfig, SystemConfig
 
-PROJECT_KEYS = ("channels", "daemon", "sessions", "tools")
+PROJECT_KEYS = ("channels", "daemon", "sessions", "tools", "agent_defaults")
 PROJECT_CONFIG_NAME = "config.json"
 
 

@@ -46,6 +46,8 @@ class TurnInputContext:
     cwd: str | None = None
     # 本 agent 可用的工具名;None = 不限制。贡献者据此决定是否注入(如技能列表需要 skill_load)
     available_tools: frozenset[str] | None = None
+    # 本 agent 可见的技能名;None = 全部
+    visible_skills: frozenset[str] | None = None
 
 
 class ExtensionData:

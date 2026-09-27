@@ -26,7 +26,8 @@ class AgentSpec:
     # () = 零工具。disallowed_tools 在其后再减,同样接受组名。
     tools: tuple[str, ...] = ("default",)
     disallowed_tools: tuple[str, ...] = ()
-    allowed_skills: tuple[str, ...] = ()
+    # 技能选择(docs/design/project-design.md §8):None = 全部可见;() = 没有技能;名单 = 只这些;含 "*" = 全部
+    skills: tuple[str, ...] | None = None
     hooks: tuple[str, ...] = ()
     model: str | None = None
     effort: str | int | None = None

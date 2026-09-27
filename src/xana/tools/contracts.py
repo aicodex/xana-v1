@@ -131,6 +131,8 @@ class ToolContext:
     report_progress: Callable[[str], None] | None = None
     # 本 run 可用的工具名(agent 工具选择解析结果);None = 不限。委派 / 创建 agent 时据此收窄权限
     available_tools: frozenset[str] | None = None
+    # 本 run 可见的技能名;None = 全部(skill_load 据此拒绝不可见技能)
+    visible_skills: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)

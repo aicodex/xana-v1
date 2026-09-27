@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from xana.config.paths import project_home, xana_home
+from xana.config.paths import DEFAULT_PROJECT, project_home, project_id, xana_home
 from xana.config.project_config import write_project_sessions
 from xana.agent_adapter.commands import DefaultCommandRouter
 from xana.agent_adapter.gateway import DefaultAgentGateway
@@ -67,6 +67,7 @@ from xana.memory.markdown import (
 from xana.skills.bundled.loop import LoopSkill
 from xana.skills.bundled.schedule import ScheduleSkill
 from xana.skills.bundled.agent_creator import AgentCreatorSkill
+from xana.skills.bundled.project_creator import ProjectCreatorSkill
 from xana.skills.bundled.skill_creator import SkillCreatorSkill
 from xana.skills.interfaces import SkillRegistry
 from xana.skills.markdown_loader import MarkdownDocParser
@@ -86,6 +87,7 @@ from xana.agent_adapter.agent_runner import GatewayAgentRunner
 from xana.tools.builtin.agent_define import AgentDefineTool
 from xana.tools.builtin.agent_run import AgentRunTool
 from xana.tools.builtin.bash import BashTool
+from xana.tools.builtin.project_manage import ProjectManageTool
 from xana.tools.builtin.cron import CronCreateTool, CronDeleteTool, CronListTool
 from xana.tools.builtin.edit import EditTool
 from xana.tools.builtin.enter_plan_mode import EnterPlanModeTool
@@ -202,6 +204,8 @@ async def boot(
     bundled_skills = InMemorySkillRegistry()
     for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill(), AgentCreatorSkill()):
         await bundled_skills.register(bundled)
+    if project_id() == DEFAULT_PROJECT:   # default 项目是管理台:在聊天里创建 / 管理项目(project-design §7)
+        await bundled_skills.register(ProjectCreatorSkill())
     _file_skills, _skill_doc_errors = await scan_skill_docs(
         xana_home() / "skills", loader=FileSkillLoader(parser=_doc_parser),
     )
@@ -210,6 +214,9 @@ async def boot(
     for _file_skill in _file_skills:
         await bundled_skills.register(_file_skill)
     # agent 表与工具目录先建空容器(后面逐个注册):默认扩展(可委派 agent 列表)持有的是活的引用。
+    cp = config_provider or DefaultConfigProvider()
+    runtime_config = await cp.load(project_root)
+    system_cfg = cp.load_system_config()
     agents: dict[str, Agent] = {}
     tools = InMemoryToolRegistry()
     # 文件 agent:两级目录(用户级 < 项目级),热加载,直接维护共用的 agents 表(agent-delegation-design §7)。
@@ -221,6 +228,7 @@ async def boot(
         agent_factory=lambda spec: _doc_agent_factory(spec),
         table=agents,
         reserved=BUILTIN_AGENT_NAMES,
+        defaults=system_cfg.agent_defaults,     # 项目给 agent 的默认配置(project-design §8)
     )
     if extension_registry is None:
         extension_registry = (ExtensionRegistryBuilder()
@@ -266,9 +274,6 @@ async def boot(
         write_consumer.run(), name="xana-write-queue-consumer",
     )
 
-    cp = config_provider or DefaultConfigProvider()
-    runtime_config = await cp.load(project_root)
-    system_cfg = cp.load_system_config()
 
     # 工具目录(docs/design/agent-composition-design.md §3.1–3.2):内置工具组先登记;
     # system.json tools.disabled 里的组 / 工具不注册,对所有 agent 都不存在。
@@ -312,6 +317,8 @@ async def boot(
     await _register(EnterPlanModeTool(session_config_store=session_config_store))
     await _register(EnterWorktreeTool(session_config_store=session_config_store, worktree_root=worktree_root))
     await _register(SkillLoadTool(skills=bundled_skills))
+    if project_id() == DEFAULT_PROJECT:
+        await _register(ProjectManageTool(tool_registry=tools, skills=bundled_skills))
 
     model_thresholds = {e.name: derive_compact_thresholds(e) for e in system_cfg.models}
     # SessionResolver — single source of truth for (adapter_id, thread_id) -> sid.
@@ -422,7 +429,7 @@ async def boot(
     progress_sink = AdapterProgressSink(gateway.adapters)
 
     chat_agent = ChatAgent(
-        spec=build_chat_agent_spec(),
+        spec=build_chat_agent_spec(system_cfg.agent_defaults),
         harness=_harness,
         active_context_store=active_ctx,
         history_mirror=mirror,
@@ -516,7 +523,7 @@ async def boot(
                                - {sp.component.name for sp in _all_specs})
     if _unknown_disabled:
         _logger.info("tools.disabled 中未匹配到已注册组 / 工具的条目(可能本就未注册):%s", _unknown_disabled)
-    _checked_specs = [build_chat_agent_spec(), *await agent_registry.list_specs()]
+    _checked_specs = [build_chat_agent_spec(system_cfg.agent_defaults), *await agent_registry.list_specs()]
     if system_cfg.web_search.xana_search_url:
         _checked_specs.append(build_researcher_agent_spec())
     for _spec in _checked_specs:

@@ -116,9 +116,8 @@ class MarkdownDocParser(SkillManifestParser):
                 if fm.get(list_field) is not None:  # tools 不写 = 默认组合;[] = 零工具
                     metadata[list_field] = list(
                         _optional_str_list(fm, path=path, kind=kind, field=list_field))
-            skills = _optional_str_list(fm, path=path, kind=kind, field="skills")
-            if skills:
-                metadata["skills"] = list(skills)
+            if fm.get("skills") is not None:   # 不写 = 项目默认;[] = 没有技能
+                metadata["skills"] = list(_optional_str_list(fm, path=path, kind=kind, field="skills"))
             budget = fm.get("budget")
             if budget is not None:
                 if not isinstance(budget, dict):

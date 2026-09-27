@@ -12,12 +12,12 @@ import json
 import os
 import secrets
 import shutil
-import socket
 import time
 from pathlib import Path
 from typing import TextIO
 
-from xana.config.paths import DEFAULT_PROJECT, PROJECT_FILE, list_projects, project_home, project_root, xana_home
+from xana.config.paths import DEFAULT_PROJECT, PROJECT_FILE, project_home, xana_home
+from xana.runtime.projects import all_projects, create_project, register
 from xana.config.project_config import (
     PROJECT_KEYS,
     load_system_config,
@@ -27,28 +27,15 @@ from xana.config.project_config import (
 )
 from xana.config.system_model import SystemConfig
 
-WORKSPACE_SEED = "# xana 助手\n\n你是 xana,一个通过聊天渠道服务用户的个人助手。\n"
 # 旧布局里属于"当前唯一项目"的数据:~/.xana/<name> → projects/default/<name>
 LEGACY_ITEMS = ("workspace", "sessions", "runs", "run", "channels", "scheduled_tasks.json", "evolution", "worktrees")
 LEGACY_LOGS = ("serve.log", "serve_stderr.log", "xana_debug_actctx.log", "xana_debug_compact.log")
 LEGACY_UNIX_SOCKET = "~/.xana/run/serve.sock"
 USER_KEYS_KEPT = ("tools",)   # tools 在用户级也可以有(全局禁用),不从 system.json 挪走
-DEFAULT_PORT = 17777
 
 
 class MigrationError(RuntimeError):
     pass
-
-
-def _register(pid: str, root: Path) -> None:
-    home = project_home(pid)
-    home.mkdir(parents=True, exist_ok=True)
-    root.mkdir(parents=True, exist_ok=True)
-    readme = root / "README_ai.md"
-    if not readme.exists():
-        readme.write_text(WORKSPACE_SEED, encoding="utf-8")
-    (home / PROJECT_FILE).write_text(json.dumps({"root": str(root)}, ensure_ascii=False, indent=2) + "\n",
-                                     encoding="utf-8")   # 最后写:它存在即表示项目就绪
 
 
 def ensure_default_project(*, out: TextIO) -> None:
@@ -79,7 +66,7 @@ def ensure_default_project(*, out: TextIO) -> None:
     if moved:
         print(f"[xana project] 旧布局已迁移进默认项目 {dp}:{', '.join(moved)}", file=out)
     root = dp / "workspace"
-    _register(DEFAULT_PROJECT, root)
+    register(DEFAULT_PROJECT, root)
     cfg = load_system_config(DEFAULT_PROJECT)
     if not cfg.daemon.token:
         update_project_config(project_config_path(DEFAULT_PROJECT),
@@ -137,73 +124,29 @@ def _strip_session_config_keys(sessions: Path, out: TextIO) -> None:
         print(f"[xana project] {fixed} 个会话配置去掉了已废弃字段 {list(REMOVED_SESSION_CONFIG_KEYS)}", file=out)
 
 
-def _free_port(start: int) -> int:
-    used = set()
-    for pid in list_projects():
-        try:
-            used.add(load_system_config(pid).daemon.port)
-        except (OSError, ValueError):
-            pass
-    port = start
-    while port in used or not _port_free(port):
-        port += 1
-    return port
-
-
-def _port_free(port: int) -> bool:
-    with socket.socket() as s:
-        try:
-            s.bind(("127.0.0.1", port))
-            return True
-        except OSError:
-            return False
-
-
-def _running_pid(pid: str) -> int | None:
-    try:
-        n = int((project_home(pid) / "run" / "serve.pid").read_text(encoding="utf-8").strip())
-        os.kill(n, 0)
-        return n
-    except (OSError, ValueError):
-        return None
-
-
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     sub = parser.add_subparsers(dest="project_command", required=True)
     create = sub.add_parser("create", help="注册一个新项目")
     create.add_argument("id")
-    create.add_argument("--root", type=Path, required=True, help="项目目录(记忆树与项目级 agents / skills)")
+    create.add_argument("--root", type=Path, default=None,
+                        help="项目目录(记忆树与项目级 agents / skills);缺省 ~/.xana/projects/<id>/workspace")
     create.add_argument("--port", type=int, default=None, help="daemon 端口;缺省自动分配")
     sub.add_parser("list", help="列出项目")
 
 
 def run(args: argparse.Namespace, *, out: TextIO) -> int:
     if args.project_command == "list":
-        for pid in list_projects():
-            try:
-                port = load_system_config(pid).daemon.port
-            except (OSError, ValueError):
-                port = "?"
-            running = _running_pid(pid)
-            state = f"运行中(pid {running})" if running else "未运行"
-            print(f"{pid:<16} {state:<18} 端口 {port:<6} {project_root(pid)}", file=out)
+        for info in all_projects():
+            state = f"运行中(pid {info.running_pid})" if info.running_pid else "未运行"
+            bot = f"飞书 {info.feishu_bot}" if info.feishu_bot else "未接机器人"
+            print(f"{info.id:<16} {state:<18} 端口 {info.port:<6} {bot:<20} {info.root}", file=out)
         return 0
-    pid = args.id
     try:
-        home = project_home(pid)
-    except ValueError as exc:
+        info = create_project(args.id, root=args.root, port=args.port)
+    except (ValueError, FileExistsError) as exc:
         print(f"[xana project] {exc}", file=out)
         return 1
-    if (home / PROJECT_FILE).exists():
-        print(f"[xana project] 项目 {pid} 已存在:{project_root(pid)}", file=out)
-        return 1
-    port = args.port or _free_port(DEFAULT_PORT + 1)
-    update_project_config(project_config_path(pid),
-                          daemon={"unix_socket": "", "bind": "127.0.0.1", "port": port,
-                                  "token": secrets.token_hex(32)})
-    root = args.root.expanduser().resolve()
-    _register(pid, root)
-    print(f"[xana project] 已创建项目 {pid}:目录 {root},端口 {port}", file=out)
-    print(f"  机器人等渠道配置写在 {project_config_path(pid)} 的 channels;启动:xana serve --project {pid}",
-          file=out)
+    print(f"[xana project] 已创建项目 {info.id}:目录 {info.root},端口 {info.port}", file=out)
+    print(f"  接飞书机器人:在 default 项目里让 xana 帮你绑定(project_manage bind_feishu),"
+          f"或编辑 {project_config_path(info.id)} 的 channels;启动:xana serve --project {info.id}", file=out)
     return 0

@@ -25,6 +25,7 @@ BUILTIN_TOOLSETS: tuple[Toolset, ...] = (
     Toolset("research", "多步深度研究:deep_research / background_research", default=True),
     Toolset("schedule", "定时任务:CronCreate / CronList / CronDelete", default=True),
     Toolset("agents", "委派子 agent 与创建 agent:agent_run / agent_define", default=True),
+    Toolset("projects", "管理 xana 项目(只在 default 项目):project_manage", default=True),
 )
 
 

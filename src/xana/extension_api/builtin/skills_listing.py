@@ -28,7 +28,8 @@ class SkillsListingContributor(TurnInputContributor):
     ) -> list[ContextFragment]:
         if ctx.available_tools is not None and SKILL_LOAD_TOOL not in ctx.available_tools:
             return []  # 没有 skill_load 的 agent 用不了技能,不列
-        specs = await self._list_specs(ctx)
+        specs = [s for s in await self._list_specs(ctx)
+                 if ctx.visible_skills is None or s.component.name in ctx.visible_skills]
         if not specs:
             return []
         lines = "\n".join(f"- {s.component.name}: {s.component.description}" for s in specs)

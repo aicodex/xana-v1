@@ -147,6 +147,12 @@ def _available_tools(
     return resolved & frozenset(ceiling) if ceiling is not None else resolved  # 委派时不超出调用方给的上限
 
 
+def _visible_skills(context: HarnessContext) -> frozenset[str] | None:
+    """agent 可见的技能名(config_snapshot["skills"]);None / 缺省 = 全部。"""
+    skills = context.config_snapshot.get("skills")
+    return frozenset(skills) if skills is not None else None
+
+
 def _can_use(available: frozenset[str] | None, name: str) -> bool:
     return available is None or name in available
 
@@ -574,6 +580,7 @@ class DefaultHarness(Harness):
             run_id=run_id,
             report_progress=progress,
             available_tools=available,
+            visible_skills=_visible_skills(context),
         )
         try:
             await tool.validate(invocation)
@@ -966,6 +973,7 @@ class DefaultHarness(Harness):
         available = _available_tools(
             context, specs + tuple(t.spec() for t in ext_tools.values()), toolsets)
         memory_tools = {sp.component.name for sp in specs if sp.toolset == "memory"}
+        visible_skills = _visible_skills(context)
 
         # §5 ContextNote:每条用户消息一次的上下文(记忆召回、技能/扩展片段)以 note
         # 追加在本条用户消息之后,只在有新内容时注入;system 不再承载它们。
@@ -998,6 +1006,7 @@ class DefaultHarness(Harness):
             tic = TurnInputContext(
                 session_id=session_id, agent_name=agent_name, run_id=run_id,
                 user_input=request.user_input, cwd=context.cwd or None, available_tools=available,
+                visible_skills=visible_skills,
             )
             for c in ext.turn_input:
                 for frag in await c.contribute_turn_input(tic, thread_store, turn_store):

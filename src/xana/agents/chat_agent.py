@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, AsyncGenerator, AsyncIterator
 
+from xana.config.system_model import AgentDefaults
 from xana.agents.contracts import (
     AgentControlRequest,
     AgentEvent,
@@ -38,7 +39,9 @@ from xana.state.interfaces import StateRepository
 from xana.tools.interfaces import ToolRegistry
 
 
-def build_chat_agent_spec() -> AgentSpec:
+def build_chat_agent_spec(defaults: AgentDefaults | None = None) -> AgentSpec:
+    """内置 chat;工具 / 技能按项目默认(docs/design/project-design.md §8)。"""
+    defaults = defaults or AgentDefaults()
     return AgentSpec(
         component=ComponentSpec(
             kind="agent",
@@ -48,6 +51,9 @@ def build_chat_agent_spec() -> AgentSpec:
             source=ComponentSource(source_type="builtin", scope="system"),
         ),
         prompt_id="chat-default",
+        tools=tuple(defaults.tools),
+        disallowed_tools=tuple(defaults.disallowed_tools),
+        skills=tuple(defaults.skills) if defaults.skills is not None else None,
     )
 
 
@@ -149,6 +155,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             "tools": list(spec.tools),
             "disallowed_tools": list(spec.disallowed_tools),
             "tool_ceiling": sorted(request.tool_ceiling) if request.tool_ceiling is not None else None,
+            "skills": (None if spec.skills is None or "*" in spec.skills else sorted(spec.skills)),
         }
         if cfg is not None:
             config_snapshot.update({
