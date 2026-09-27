@@ -123,7 +123,8 @@ def probe_bot(
     if info.get("code", 0) != 0:
         raise RuntimeError(f"feishu bot info error: {info}")
     bot = info.get("bot") or (info.get("data") or {}).get("bot") or {}
-    return {"bot_name": bot.get("bot_name"), "bot_open_id": bot.get("open_id")}
+    # 飞书 bot/v3/info 的机器人名字段是 app_name
+    return {"bot_name": bot.get("app_name"), "bot_open_id": bot.get("open_id")}
 
 
 def render_qr(url: str) -> bool:
