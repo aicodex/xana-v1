@@ -44,4 +44,4 @@ status: active
 ## 辅助机制
 
 - `AdapterProgressSink`：harness `ProgressSink` → adapter 的 `note_progress` 分发，只转发 `usage_progress` 和 `compact_progress` 两种 payload，并补写 `run_id` 便于 adapter 按 run 路由。
-- `PairingStore`（`_pairing.py`）：per-platform 用户 allowlist + pending 队列，JSON sidecar（`~/.xana/channels/pairings.json`），mtime 热重载使长跑的 `xana serve` 能看到另一个进程里 `xana pair` 的审批。
+- `PairingStore`（`_pairing.py`）：per-platform 用户 allowlist + pending 队列，JSON sidecar（按项目：`~/.xana/projects/<id>/channels/pairings.json`），mtime 热重载使长跑的 `xana serve` 能看到另一个进程里 `xana pair` 的审批。

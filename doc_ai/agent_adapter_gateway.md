@@ -40,7 +40,7 @@ gateway 是 adapter 与 agent 之间的唯一组合点：管理 adapter 注册�
 3. `detach_foreground(session_id)`：现前台 run 转后台（不 cancel），向所有 adapter 发 `run_detached` note 刷 tab。
 4. 新建 `InflightRun`（run_id = `run-{sid}-{seq}-{uuid8}`；spawn 路径复用 metadata 预分配的 `spawn_run_id` 以维持 lineage 可寻址；label 取输入前 40 字），插入 `_inflight[sid]` 头部（倒序）。`metadata["spawn_background"]=True` 时 `is_attached=False`（spawn 的子 run 是后台子任务，不抢占用户前台）。
 5. P5：handoff 前注册该 run 的 `AbortSignal` 存入 `_abort_signals`；经 metadata 传 `gateway_run_id` 和 `abort_signal` 给下游（保证 harness 事件 run_id 与 adapter 渲染状态 key 一致、cancel 能原地翻转在跑 turn）。
-6. `router.route` → 取 agent：优先 `metadata["target_agent"]`（spawn 携带的目标 agent），否则 `request.target_agent`，再否则 router 默认路由（未知 agent 渲染错误）→ 发 `run_started` note（PH 状态机依赖它初始化卡片）→ 迭代 `agent.send`，每个事件经 `adapter.render` 后 yield。
+6. `router.route` → 取 agent：优先 `metadata["target_agent"]`（spawn 携带的目标 agent），否则 `request.target_agent`，再否则 router 默认路由；取 agent 前先 `agent_registry.refresh()`（节流热加载，增删改 AGENT.md 不需重启），目标不在 `gateway.agents` 时渲染「agent X 不存在(可能已删除),用 /agent 选择其他 agent」并结束，不回退 chat → 发 `run_started` note（PH 状态机依赖它初始化卡片）→ 迭代 `agent.send`，每个事件经 `adapter.render` 后 yield。
 7. finally：从 `_inflight` 移除；先读 `abort_signal.aborted` 再 pop 信号（顺序不能反）；发 `ph_replaced` note；若 run 期间被 detach，补发 `run_completed_bg`。
 
 ### attach / detach 语义

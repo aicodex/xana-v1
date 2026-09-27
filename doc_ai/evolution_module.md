@@ -40,7 +40,7 @@ status: active
 
 ## ledger.py — Ledger
 
-- 存储：`{XANA_HOME}/evolution/ledger.jsonl`（`default_evolution_home()` 读 `XANA_HOME` 环境变量，缺省 `~/.xana/evolution`）；构造不传 path 时用默认 home。
+- 存储：当前项目的 `~/.xana/projects/<id>/evolution/ledger.jsonl`（`default_evolution_home()` = `project_home() / "evolution"`，进化记录属于项目）；构造不传 path 时用默认 home。
 - **append-only**：只有 `append` / `read_all` / `recent(n)` / `lint()`，刻意不提供 update/delete/rewrite（测试以 `hasattr` 断言锁死），是 `FileHistoryMirror` 同款机制的第三个实例。
 - `append` 拒收无 verdict（None）与非法 verdict（不在 kept/rolled_back/abandoned 三值内）的条目，也拒空 `episode_id`。
 - `lint()` 逐行校验：JSON 损坏行、缺 verdict、非法 verdict → `LintViolation` 列表。
@@ -119,7 +119,7 @@ verdict 规则：canary 失败，或 Δ ≤ 0（有评估时）→ `rolled_back`
 `WriteTool` / `EditTool` 的 `protected_dir` 接受 `Path | tuple[Path, ...] | list[Path]`。boot 注入双目录：
 
 - `{project_root}/L2`（规则目录，唯一写入口 `memory_write`）；
-- `~/.xana/agents`（Agent 文档目录，唯一变更路径 = episode 提案→评估→判决闭环）。
+- `~/.xana/agents`（用户级 Agent 文档目录，元 agent 的 `agents_root`；唯一变更路径 = episode 提案→评估→判决闭环。项目级 `<project_root>/.xana/agents` 同样对 Write / Edit 受保护，写入口是 `agent_define`）。
 
 目标路径落在任一受保护目录内 → `decision="deny"`。详见 [tools_permission_sandbox](tools_permission_sandbox.md)。
 

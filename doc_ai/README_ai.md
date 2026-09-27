@@ -14,17 +14,18 @@ status: active
 - [module_io_map](module_io_map.md) — 模块输入/输出/所有权总表
 - [replacement_rule](replacement_rule.md) — 实现替换规则
 - [io_contract_template](io_contract_template.md) — 新合约模板
+- 项目（project）— 一个项目 = 一套记忆 + 自己作用域的 agents / 工具默认配置 + 一个 serve 进程；数据布局、配置分层、命令与迁移见 [project-design](../docs/design/project-design.md)。路径唯一解析点 `src/xana/config/paths.py`，项目配置分层 `src/xana/config/project_config.py`，注册 / 查询 / 启停 `src/xana/runtime/projects.py`。
 
 ## 核心模块
 
-- [config](config.md) — 配置加载、系统/项目/agent 覆盖规则。
-- [runtime](runtime.md) — 进程生命周期、启动顺序、调度外壳。
+- [config](config.md) — 配置加载、用户级 system.json + 项目级 config.json 分层；路径解析（`config/paths.py`）与项目配置（`config/project_config.py`）。
+- [runtime](runtime.md) — 进程生命周期、启动顺序、调度外壳；项目管理（`runtime/projects.py`）。
 - [harness_sdk](harness_sdk.md) — turn loop、暂停/恢复/取消、事件流和 usage 快照。
 - [agents](agents.md) — agent spec、outer API、会话侧行为包装。
 - [tools](tools.md) — 工具校验、权限、沙箱、执行边界和输出 schema。
 - [skills](skills.md) — 技能元数据、激活规则、上下文/提示注入。
 - [agent_adapter](agent_adapter.md) — CLI/TG/Feishu/HTTP 等外部协议翻译。
-- [cli](cli.md) — 命令分发：`xana` 管理命令（setup/sync/serve/pair/login/logout）与 `xanac` 交互客户端。
+- [cli](cli.md) — 命令分发：`xana` 管理命令（setup/sync/serve/pair/project/login/logout）与 `xanac` 交互客户端。
 - [llm_driver](llm_driver.md) — 模型请求、流式响应、tool call 解析、usage 提取。
 - [memory](memory.md) — active context 权威、history mirror、treemem/search/injection。
 - [context](context.md) — active context 的运行时载体：`ContextSDK` facade、per-sid 锁、compact-as-placeholder。

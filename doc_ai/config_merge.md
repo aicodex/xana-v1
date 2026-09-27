@@ -14,14 +14,15 @@ status: active
 
 - [contracts.py](../src/xana/config/contracts.py) — `RuntimeConfig`、`ModelConfig`、`RawConfig`
 - [loader.py](../src/xana/config/loader.py) — `DefaultConfigProvider.load()`、`_resolve_default_model`、`derive_compact_thresholds`
+- [project_config.py](../src/xana/config/project_config.py) — `merge_system_config`、`read_project_config`、`PROJECT_KEYS`
 
 ## 职责
 
 把（一个或多个）RawConfig 层收敛成一个类型化的 `RuntimeConfig`：`project_root`、`data_root`（`project_root/.xana/data`）、`default_model: ModelConfig`、`raw` 元组（保留来源溯源）。
 
-## 现状：没有通用合并器，只有默认模型解析
+## 现状：用户级 + 项目级按顶层键覆盖，再解析默认模型
 
-- 没有通用合并器 ABC——project/agent 层的合并规则尚未落地。
+- 没有通用合并器 ABC。`DefaultConfigProvider(project_config=None)` 的 `project_config_path` 缺省为 `projects/<当前项目>/config.json`；`load()` 读用户级 system.json 后调 `merge_system_config(user, read_project_config(...))`：项目配置按**顶层键整体覆盖**用户配置（`{**user, **project}`，不做深合并），只允许 `PROJECT_KEYS`（channels / daemon / sessions / tools / agent_defaults）。合并结果缓存为 `SystemConfig`（`load_system_config()` 取）。
 - 实际承担"merge"角色的是 `DefaultConfigProvider.load()` 内部的 `_resolve_default_model(system)`：
   1. 读 `system.default_model.chat` 指定的模型名；
   2. 命中 `models[]` 里的 entry → 产出 `ModelConfig(provider=entry.type, model=entry.name, context_window, force_compact)`；
@@ -31,17 +32,17 @@ status: active
 
 ## 层级与 session 覆盖的真实去向
 
-config 模块文档面写的是 `system -> project -> agent -> session` 优先级，但当前代码里：
+优先级 `user system.json -> project config.json -> agent -> session`，当前代码里：
 
-- **system 层**：本模块，已实现（上面）。
-- **project / agent 层**：未实现。
-- **session 层**：**不在本模块**——由 session_config 模块的 `FileSessionConfigStore`（`~/.xana/sessions/{sid}.json`）承载 `SessionConfig`（model/effort/streaming/thinking/search_provider/project_root 等运行旋钮），CLI 每轮前重读，无 mid-turn 变更。归属声明见 [config](config.md)。
+- **用户级 / 项目级**：本模块，已实现（上面）。
+- **agent 层**：不在本模块——AGENT.md 的 tools / skills 未写时取项目 `agent_defaults`（见 [agents_spec](agents_spec.md)）。
+- **session 层**：**不在本模块**——由 session_config 模块的 `FileSessionConfigStore`（`~/.xana/projects/<id>/sessions/{sid}.json`）承载 `SessionConfig`（model/effort/streaming/thinking/search_provider/view_mode/agent 等运行旋钮），CLI 每轮前重读，无 mid-turn 变更。归属声明见 [config](config.md)。
 
 ## 不变量
 
 - 出口永远是类型化 `RuntimeConfig`，不散落裸 dict（`raw` 只作溯源）。
 - 默认模型解析失败回落 fake，绝不因配置缺失阻断 boot。
-- 合并规则若将来落地 project/agent 层，须同步更新本文件。
+- 项目配置出现 `PROJECT_KEYS` 以外的键即报错，不静默忽略。
 
 ## 验收要求
 

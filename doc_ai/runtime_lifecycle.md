@@ -17,16 +17,17 @@ status: active
 
 ## 职责
 
-进程级生命周期：`xana serve` 的启动（preflight → boot → adapters → daemon HTTP）、运行中健康维持（心跳 / idle 卸载 / 调度轮询）、关闭（SIGTERM → `cancel_all` → 任务回收）。runtime 不定义生命周期 ABC，生命周期由 `serve.py` 的函数体承担。
+进程级生命周期：`xana serve` 的启动（单实例锁 → boot → adapters → preflight → daemon HTTP）、运行中健康维持（心跳 / idle 卸载 / 调度轮询）、关闭（SIGTERM → `cancel_all` → 任务回收）。runtime 不定义生命周期 ABC，生命周期由 `serve.py` 的函数体承担。
 
 ## 启动序列（serve.py）
 
-1. **preflight**：先 bind `(daemon_cfg.bind, daemon_cfg.port)` 探测再释放——TCP 端口是 OS 级单实例锁，第二个 `xana serve` 在抢占 unix socket 之前就会 EADDRINUSE 失败（UnixSite 会静默 unlink 旧 socket，不能当锁用）。
+1. **单实例锁**：进程一启动就对 `projects/<id>/run/serve.lock` 加非阻塞 `flock` 并写 `run/serve.pid`（每个项目一把锁，拿不到即退出，见 [cli_serve](cli_serve.md)）；项目目录由 `projects/<id>/project.json` 解析。
 2. **boot()**：调 [runtime_boot](runtime_boot.md) 的 `boot()` 拿 `BootResult`。
-3. **adapters**：`build_adapters(...)` 按 system.json 的 channels 配置构造 feishu/telegram adapter，注册进 gateway；每个 adapter 一条 `_run_inbound_pump` task（每条 inbound 独立 task，detach 才有机会触发）。
+3. **adapters**：`build_adapters(...)` 按合并配置（项目 config.json）的 channels 构造 feishu/telegram adapter，注册进 gateway；每个 adapter 一条 `_run_inbound_pump` task（每条 inbound 独立 task，detach 才有机会触发）。
+3b. **preflight**：bind `(daemon_cfg.bind, daemon_cfg.port)` 探测再释放——端口被占（另一个 serve 或其他进程占用）即 EADDRINUSE 干净退出。
 4. **daemon HTTP**：构造 `DaemonBridgeAdapter` 并注册为 `cli` adapter，然后双通道：
-   - **unix socket**（`daemon_cfg.unix_socket`，默认 `~/.xana/run/serve.sock`）：`build_daemon_app(bridge, token="", ...)` + `run_unix_socket`（0600 权限）。本地通道不设 token——文件权限即边界。
-   - **TCP**（`daemon_cfg.bind:port`，默认 `127.0.0.1:17777`）：`build_daemon_app(bridge, token=daemon_cfg.token, ...)` + `run_tcp`。`bind == "0.0.0.0"` 时打印 LAN 暴露警告。
+   - **unix socket**（`daemon_socket(daemon_cfg)`：`daemon.unix_socket` 为空（默认）时取 `~/.xana/projects/<id>/run/serve.sock`）：`build_daemon_app(bridge, token="", ...)` + `run_unix_socket`（0600 权限）。本地通道不设 token——文件权限即边界。
+   - **TCP**（`daemon_cfg.bind:port`，每个项目各自端口；default 项目默认 `127.0.0.1:17777`，新项目创建时分配空闲端口）：`build_daemon_app(bridge, token=daemon_cfg.token, ...)` + `run_tcp`。`bind == "0.0.0.0"` 时打印 LAN 暴露警告。
 5. **SchedulerRunner**：`boot_result.scheduler` 非空时启动轮询任务（详见 [runtime_scheduler](runtime_scheduler.md)）。
 6. 无 chat adapters 时退化为 daemon-only 模式，挂起等待 shutdown。
 

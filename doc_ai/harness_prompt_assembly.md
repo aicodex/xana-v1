@@ -58,7 +58,7 @@ status: active
 | kind | 何时追加 |
 |---|---|
 | `memory_recall` | agent 可用 memory 组工具时，每条新用户消息之后，有未注入过的命中时。截断提示"用 Read 查看"仅在可用 Read 时出现。按文件路径去重，跳过模型已 Read 的文件；单次 ≤5 个文件、每个 ≤4KB / 200 行；会话累计 60KB 后停止；检索词少于 2 个不召回（中文不以空格判断） |
-| `turn_input` | 技能 prompt blocks + extension `contribute_turn_input` 片段，内容变化时。贡献者经 `TurnInputContext.available_tools` 得知本 agent 的可用工具（技能列表仅在可用 `skill_load` 时列出） |
+| `turn_input` | 技能 prompt blocks + extension `contribute_turn_input` 片段，内容变化时。贡献者经 `TurnInputContext.available_tools` 得知本 agent 的可用工具（技能列表仅在可用 `skill_load` 时列出），经 `TurnInputContext.visible_skills`（`_visible_skills(context)` 取 `config_snapshot["skills"]`，None = 全部）得知可见技能（技能列表只列这些） |
 | `deferred_tools` | 未揭示的 defer 工具名单（名字: 描述）变化时；名单清空且曾列出过时追加"均已加载"。agent 不可用 `tool_search` 时不隐藏任何工具（全部给完整 schema），也就没有这条 |
 | `todo_reminder` | agent 可用 TodoWrite 时，距上次 TodoWrite 与距上次提醒都满 10 个 assistant 轮次，附当前清单（CC `TODO_REMINDER_CONFIG`） |
 | `model_switch` | 会话内切换模型后 |

@@ -21,11 +21,11 @@ status: active
 | 设计共识 | 实现文档 |
 |---|---|
 | 记忆四层 L0–L3（唯一写入口、查重门禁、supersede 链） | [memory](memory.md) / [memory_rules_gate](memory_rules_gate.md) |
-| 文件 Agent 文档（`~/.xana/agents/{name}/AGENT.md`）→ AgentSpec → ChatAgent | [agents](agents.md) / [agents_registry](agents_registry.md) |
+| 文件 Agent 文档（用户级 `~/.xana/agents/{name}/AGENT.md` + 项目级 `<project_root>/.xana/agents/`，热加载）→ AgentSpec → ChatAgent | [agents](agents.md) / [agents_registry](agents_registry.md) |
 | 迭代 episode 生命周期（declared→running→landing→closing→closed、软/硬阈值、closing 两阶段、僵尸强制闭合、文档冻结/回滚） | [evolution_module](evolution_module.md) |
 | 变更单 schema（假设→diff 摘要→证据指针→判决）走 L2 门禁 | [evolution_module](evolution_module.md) / [memory_rules_gate](memory_rules_gate.md) |
 | 元 agent 定时唤醒（cron 幂等安装、prompt 固定四段组装、held-out 不回流、propose_doc_change 唯一提案路径） | [evolution_module](evolution_module.md) / [runtime_scheduler](runtime_scheduler.md) |
-| spawn/分叉门禁 + Write/Edit 受保护目录（L2 + ~/.xana/agents） | [agent_adapter_gateway](agent_adapter_gateway.md) / [tools_permission_sandbox](tools_permission_sandbox.md) |
+| spawn/分叉门禁 + Write/Edit 受保护目录（L2 + 两级 agent 目录） | [agent_adapter_gateway](agent_adapter_gateway.md) / [tools_permission_sandbox](tools_permission_sandbox.md) |
 | serve 侧 marker 任务 dispatch（`_make_scheduler_dispatch`） | [cli_serve](cli_serve.md) |
 | harness usage 写点消费 episode 阈值（`episode_threshold` 事件、优雅落地、RunRecord.metadata `episode_exceeded`） | [harness_sdk](harness_sdk.md) / [evolution_module](evolution_module.md) |
 

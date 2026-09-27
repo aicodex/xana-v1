@@ -27,20 +27,20 @@ status: active
 - `DaemonConfig.bind` 为 `None`/`""` 时自动升级 `127.0.0.1`；
 - `ModelEntry` 顶层 `extra="forbid"`，但 channels 段 `extra="allow"`（保留渠道专有扩展键）。
 
-**没有单独的"合并后 validate 阶段"**——因为当前只有 system 一层参与解析（见 [config_merge](config_merge.md)），读取时校验已覆盖全部形状错误。
+项目级 config.json 先经 `read_project_config` 检查键白名单（`PROJECT_KEYS` 之外抛 `ProjectConfigError`），合并时 `merge_system_config` 以合并结果构造 `SystemConfig`，同一套 pydantic 校验即覆盖合并后的形状（见 [config_merge](config_merge.md)）；没有另设的合并后 validate 阶段。
 
 ## 无热重载
 
-system.json 只在 boot 时读一次（I16，见 [runtime_boot](runtime_boot.md)），运行时手写改配置需重启 serve 生效。
+system.json 与项目 config.json 只在 boot 时读一次（I16，见 [runtime_boot](runtime_boot.md)），运行时手写改配置需重启该项目的 serve 生效（`project_manage configure` 改 `agent_defaults` 后同样需重启目标项目）。
 
 ## 镜像写的一致性
 
-`write_system_config(path, system)`（loader.py）供 SessionResolver 做镜像写：tmp + fsync + `os.replace` 原子替换，chmod 600，内容相同则跳过（避免热路径 inode 抖动）。写失败只记日志不抛出（I15：内存为准，磁盘为 best-effort 镜像）。
+boot 给 SessionResolver 注入 `write_project_sessions(path, system)`（project_config.py），镜像写目标是项目 config.json，只改写 `sessions` 键（经 `update_project_config`：tmp + fsync + `os.replace` 原子替换，chmod 600，内容相同则跳过，避免热路径 inode 抖动）。SessionResolver 未注入 writer 时的缺省仍是 `write_system_config`（loader.py，整份写）。写失败只记日志不抛出（I15：内存为准，磁盘为 best-effort 镜像）。
 
 ## 不变量
 
 - 校验失败 = 启动失败，不存在"告警但继续"的带病配置路径。
-- 运行时永不重读 system.json；变更生效的唯一方式是重启。
+- serve 运行时永不重读 system.json / 项目 config.json；变更生效的唯一方式是重启。
 
 ## 验收要求
 

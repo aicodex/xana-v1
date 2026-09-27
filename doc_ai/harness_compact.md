@@ -44,7 +44,7 @@ status: active
 
 ## 写回路径（Bug C fix：优先 SDK Compact-as-PH）
 
-1. **transcript 诚信落盘（compact 前）**：摘要生成成功后、写回前，`_persist_compact_transcript()`（default.py:1195-1216）把将被压缩的消息区间逐条写成 `~/.xana/sessions/{sid}/compact-{微秒时间戳}.jsonl`（每行 `{role, content, metadata}` JSON；`XANA_HOME` 可改根目录）。落盘成功 → `CompactSummary` 的 transcript 路径指向这个真实可读文件；落盘失败 → 退回旧式相对路径 `runs/autocompact-{session}-{run}.jsonl`，不阻断 compact。修复了此前 default.py 虚构 transcript 路径、文件并不存在的问题。
+1. **transcript 诚信落盘（compact 前）**：摘要生成成功后、写回前，`_persist_compact_transcript()`（default.py:1195-1216）把将被压缩的消息区间逐条写成 `<sessions 根>/{sid}/compact-{微秒时间戳}.jsonl`（sessions 根 = `metadata["runs_dir"]` 的父目录，缺省当前项目的 `~/.xana/projects/<id>/sessions`）（每行 `{role, content, metadata}` JSON；`XANA_HOME` 可改根目录）。落盘成功 → `CompactSummary` 的 transcript 路径指向这个真实可读文件；落盘失败 → 退回旧式相对路径 `runs/autocompact-{session}-{run}.jsonl`，不阻断 compact。修复了此前 default.py 虚构 transcript 路径、文件并不存在的问题。
 2. **SDK Compact-as-PH（优先）**：经 `ContextSDK.append_compact_placeholder` + `replace_placeholder` 写入，run_id 形如 `autocompact-{session}-{run}`，transcript 为上一步的真实落盘路径。收益：与手动 /compact 走同一把 per-sid compact_lock（auto 与 manual 串行化），boundary marker 留在 SDK buffer（legacy `set()` 镜像经 `_message_bridge` 丢 role="system"，boundary 会丢）。
 3. **legacy fallback**（store 无 SDK 时）：有 write_queue → `ReplaceRangeItem` 替换 `[0, fork_point)`（fork_point = 第一个 running PH 的下标），boundary metadata 记 `compact_boundary: True` + `compact_summary: True` + `boundary_marker`；无 write_queue → `store.set(build_post_compact_context(...))`。
 

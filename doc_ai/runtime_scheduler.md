@@ -28,7 +28,7 @@ status: active
 
 实现 `SchedulerService` 的是 **`FileSchedulerService`**（runtime/scheduler.py:25）：
 
-- 持久化 `~/.xana/scheduled_tasks.json`（boot 注入实际路径），每条任务 `{id, cron, prompt, recurring, session_id, created_at, next_fire}`；`next_fire` 由 croniter 按本地时区算出。
+- 持久化 `~/.xana/projects/<id>/scheduled_tasks.json`（按项目；boot 注入实际路径），每条任务 `{id, cron, prompt, recurring, session_id, created_at, next_fire}`；`next_fire` 由 croniter 按本地时区算出。
 - 文件损坏（半写/非法 JSON）不杀死进程：记警告、丢弃并从空重建。
 - 公有可变属性 `session_id`：ABC 的 `add()` 不收 session_id，而任务必须记录创建它的会话——`CronCreateTool.execute` 在 `add` 前用 `ToolContext.session_id` 覆写。Runner 串行消费、工具执行同事件循环串行，无并发风险。
 - `pop_due(now_epoch)`：到点任务一次性删除、循环任务滚动 `next_fire` 后回库（返回的 due 条目保留触发时刻的 `next_fire`）。Runner 专用。
@@ -42,7 +42,7 @@ dispatch 回调（serve.py `_make_scheduler_dispatch`）把 prompt 包装成 `In
 ## cron 工具与 schedule skill 的联动
 
 - **cron_create / cron_list / cron_delete**（tools/builtin/cron.py）：三个工具都 `defer=True`（默认只见名字，经 tool_search 揭示后可用）；permission 恒 allow。create 校验 cron 合法性（`croniter.is_valid`，非法返回 `failure_kind="validation"`）。
-- **ScheduleSkill**（skills/bundled/schedule.py）：bundled skill，指导模型走完"弄清意图 → 定时间 → 用人话复述确认 → cron_create → 告知任务 ID"的交互流程；查看/修改/删除分别对应 cron_list / delete+create / cron_delete。任务持久化在 `~/.xana/scheduled_tasks.json`，serve 重启后仍有效。
+- **ScheduleSkill**（skills/bundled/schedule.py）：bundled skill，指导模型走完"弄清意图 → 定时间 → 用人话复述确认 → cron_create → 告知任务 ID"的交互流程；查看/修改/删除分别对应 cron_list / delete+create / cron_delete。任务持久化在当前项目的 `projects/<id>/scheduled_tasks.json`，serve 重启后仍有效。
 
 ## 不变量
 

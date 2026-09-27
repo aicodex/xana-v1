@@ -25,7 +25,7 @@ status: active
 - 大多数内置工具恒返回 `PermissionResult(decision="allow")`，把门禁留给上层（如 Bash 的注释："gating delegated to caller"）。
 - 例外是文件写类工具的**受保护目录门禁**：
   - `WriteTool` / `EditTool` 构造可接收 `protected_dir`（`Path | tuple[Path, ...] | list[Path]`，支持多目录）；目标路径解析后落在任一受保护目录内 → `decision="deny"`，理由是规则目录的唯一写入口是 `memory_write` 工具、Agent 文档的唯一变更路径是 episode 提案→评估→判决闭环（见 [evolution_module](evolution_module.md)）。
-  - boot 已接线（boot.py:234-237）：`protected_dir=(project_root / "L2", ~/.xana/agents)` 双目录注入两工具，同时注入 `memory_tree` 启用写后 reindex。门禁只罩 `L2/` 规则目录与 Agent 文档目录，树内其他 markdown 文件照常可写（写后走 `_reindex` 增量更新索引）。
+  - boot 已接线：`protected_dir=(project_root / "L2", ~/.xana/agents, project_root / ".xana/agents")` 三目录注入两工具（两级 agent 目录只能经 `agent_define` 写），同时注入 `memory_tree` 启用写后 reindex。门禁只罩 `L2/` 规则目录与 Agent 文档目录，树内其他 markdown 文件照常可写（写后走 `_reindex` 增量更新索引）。
 - `web_fetch` / `web_search` 的 `validate` 阶段也做入口校验（URL 必须是 http/https）。
 
 ## 编排层覆写（approval_review）

@@ -14,13 +14,17 @@
 ## 快速上手
 
 ```bash
-xana setup     # 初始化 ~/.xana(配置 + 代码副本 + 内存挂载 + PATH)
-xana serve     # 启动后端 daemon(TCP 单实例锁 + Unix socket)
+xana setup     # 初始化 ~/.xana(配置 + 代码副本 + 内存挂载 + PATH + 默认项目 default)
+xana serve     # 启动默认项目的后端 daemon(单实例锁 + TCP 端口 + Unix socket)
 xanac "你好"   # CLI 一发一答,自动走 daemon SSE
 xanac -i       # Textual 交互式 REPL
 ```
 
-飞书 / Telegram 通道通过 `~/.xana/config/system.json` 配置 bot token 后由 `xana serve` 自动接入。
+**项目**:一个项目 = 一套记忆 + 自己的 agent / 工具默认配置 + 一个 serve 进程(通常接一个飞书机器人)。安装即有默认项目 `default`。其他项目用 `xana project create <id> [--root <目录>]` / `xana project list` 管理,或在 default 项目的聊天里让 xana 用 `project_manage` 创建并接机器人;`xana serve --project <id>`、`xanac --project <id>` 选择项目。设计见 [docs/design/project-design.md](docs/design/project-design.md)。
+
+`~/.xana` 布局:用户级 `config/system.json`(模型、搜索、策略)、`credentials/`、`agents/`、`skills/`、`code/`、`bin/`、`mem/`;每个项目的私有数据在 `projects/<id>/`(`project.json`、`config.json` 含机器人凭据 / daemon 端口 / 会话映射、`sessions/`、`runs/`、`logs/`、`run/`、`channels/`、`scheduled_tasks.json`、`evolution/`、`worktrees/`);default 项目的项目目录是 `projects/default/workspace`。
+
+飞书 / Telegram 通道在项目配置 `~/.xana/projects/<id>/config.json` 的 `channels` 配置 bot 凭据(`xana setup` 向导写默认项目)后由该项目的 `xana serve` 自动接入。
 
 ## 目录结构
 
@@ -37,9 +41,9 @@ xana/
 │   ├── tools/              # 内置工具(bash/read/edit/write/glob/grep/webfetch/...)+ 权限/沙箱
 │   ├── skills/             # Skill 元数据 + 激活 + 注入
 │   ├── extension_api/      # Contributor ABC + Registry + PromptAssembler
-│   ├── runtime/            # boot()、SessionResolver、daemon HTTP+SSE、定时任务调度
+│   ├── runtime/            # boot()、SessionResolver、daemon HTTP+SSE、定时任务调度、项目管理
 │   ├── cli/                # xana CLI 命令 + xanac(CLI 客户端)+ Textual REPL
-│   ├── config/             # ~/.xana/config/system.json 加载 + schema
+│   ├── config/             # 路径解析(paths.py)+ system.json / 项目 config.json 分层加载 + schema
 │   ├── session_config/     # 会话级配置(model/effort/streaming/thinking...)
 │   ├── state/              # SessionStore + RunStore + FileHistoryMirror
 │   └── policy/             # 权限模式 (default/plan/write)
@@ -92,7 +96,7 @@ export XANA_DEBUG_ACTCTX=1     # 主上下文每次读写完整快照写日志
 export XANA_DEBUG_COMPACT=1    # compact lock/event/collapse trace
 ```
 
-日志:`~/.xana/logs/xana_debug_actctx.log` / `xana_debug_compact.log`
+日志:`~/.xana/projects/<id>/logs/xana_debug_actctx.log` / `xana_debug_compact.log`
 
 ## License
 

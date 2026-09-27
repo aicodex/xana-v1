@@ -10,9 +10,9 @@ status: active
 
 ## endpoint 解析与 serve 自动拉起
 
-`_resolve_endpoint()` 读 `~/.xana/config/system.json` 的 `daemon` 段：unix socket 配了且文件存在 → `http://unix`（无 token）；否则 TCP `http://<bind>:<port>`（带 token）；bind 为空回退 `127.0.0.1`。
+`xanac --project <id>` 选择连接哪个项目的 serve（写入 `XANA_PROJECT`，缺省 default）。`_resolve_endpoint()` 经 `project_config.load_system_config()` 读合并配置的 `daemon` 段：`daemon_socket(daemon)`（未配置时 `~/.xana/projects/<id>/run/serve.sock`）文件存在 → `http://unix`（无 token）；否则 TCP `http://<bind>:<port>`（带 token）；bind 为空回退 `127.0.0.1`。
 
-`_ensure_serve_running()`：unix / TCP 都不在监听就 `subprocess.Popen` 拉起 `~/.xana/bin/xana serve`（不存在则用 PATH 里的 `xana`），日志追加到 `~/.xana/logs/serve.log`，轮询 healthz 最多 20s，超时报错并附日志尾部。
+`_ensure_serve_running()`：unix / TCP 都不在监听时，若该项目 `run/serve.pid` 指向存活进程（serve 拿到单实例锁后即写 pidfile，说明正在启动）就只等待，否则 `subprocess.Popen` 拉起 `~/.xana/bin/xana serve --project <id>`（不存在则用 PATH 里的 `xana`），日志追加到 `~/.xana/projects/<id>/logs/serve.log`；轮询端口最多 120s，超时报错并附日志尾部。
 
 ## session 解析
 

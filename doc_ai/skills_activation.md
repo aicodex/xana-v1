@@ -36,4 +36,4 @@ status: active
 
 - 激活是**只读的、幂等的**：bundled 实现 `activate()` 不碰任何状态，`deactivate()` 是 no-op。
 - 技能内容以 prompt 文本形式进模型上下文，没有 fork/inline 执行分支被实现（`SkillSpec.mode` 是声明位）。
-- 失败路径：`skill_load` 查不到名字时返回 `failure_kind="not_found"`，并在 rendered 里列出可用技能名单。
+- 失败路径：`skill_load` 查不到名字、或名字不在 `ToolContext.visible_skills`（本 agent 可见技能，None = 全部）内时返回 `failure_kind="not_found"`，并在 rendered 里列出可用技能名单（只含可见技能）。
