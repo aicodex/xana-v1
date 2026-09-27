@@ -24,6 +24,8 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
+from xana.config.paths import xana_home
+
 CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
 
 # region → (oauth_host, api_base)
@@ -59,8 +61,7 @@ def api_base(region: str) -> str:
 
 
 def credentials_path() -> Path:
-    home = os.environ.get("XANA_HOME")
-    root = Path(home).expanduser() if home else Path.home() / ".xana"
+    root = xana_home()
     return root / "credentials" / "kimi.json"
 
 

@@ -14,8 +14,9 @@ from typing import Any
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
+from textual.widgets import Footer, Header, Input, Label, ListItem, ListView
 
+from xana.agent_adapter.channels.daemon_bridge import agent_event_from_wire
 from xana.agent_adapter.channels.unified_card import UnifiedCardState
 from xana.agent_adapter.channels.unified_card_events import apply_event
 from xana.agent_adapter.channels.unified_card_cli import render_widgets
@@ -28,23 +29,6 @@ class _TabItem(ListItem):
     def __init__(self, run_id: str, label: str) -> None:
         super().__init__(Label(label))
         self.run_id = run_id
-
-
-def _evt_from_wire(data: dict):
-    """Mirror of xanac._evt_from_wire — reconstruct AgentEvent from SSE."""
-    from xana.agents.contracts import AgentEvent
-    from xana.harness_sdk.contracts import HarnessEvent
-    he = data.get("harness_event")
-    harness_event = None
-    if he:
-        harness_event = HarnessEvent(
-            kind=he["kind"], session_id=he["session_id"],
-            run_id=he["run_id"], payload=he.get("payload") or {},
-        )
-    return AgentEvent(
-        kind=data["kind"], session_id=data["session_id"],
-        payload=data.get("payload") or {}, harness_event=harness_event,
-    )
 
 
 class XanacApp(App):
@@ -134,7 +118,7 @@ class XanacApp(App):
                     continue
                 if ev.event != "agent_event":
                     continue
-                aev = _evt_from_wire(ev.data)
+                aev = agent_event_from_wire(ev.data)
                 he = aev.harness_event
                 if (he is not None and he.kind in ("final", "error")
                         and self._state.answer is None):

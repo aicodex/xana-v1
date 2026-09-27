@@ -5,6 +5,7 @@ Task 1 scope: 平台无关数据模型 dataclasses + 默认值。
 """
 from __future__ import annotations
 
+from xana.harness_sdk.compact import SUMMARY_SECTIONS as COMPACT_SUMMARY_SECTIONS
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -194,7 +195,7 @@ class FooterText:
 
 # --- compact section state machine ---------------------------------------
 
-SUMMARY_SECTIONS = 7
+SUMMARY_SECTIONS = len(COMPACT_SUMMARY_SECTIONS)  # 摘要小节数,权威定义在 harness_sdk/compact.py
 _COMPACT_INPUT_ESTIMATE_S = 20.0
 
 
@@ -211,7 +212,7 @@ def advance_compact_input(sec: CompactSection, elapsed_s: float) -> None:
 
 
 def advance_compact_streaming(sec: CompactSection, sections_done: int) -> None:
-    """streaming 阶段从 7 起,SUMMARY_SECTIONS=7,每段 0.43 → floor(N/7*3)。
+    """streaming 阶段从 7 格起,按已完成小节占比补满剩余 3 格:7 + floor(N/SUMMARY_SECTIONS*3)。
 
     首次调用(sections_done=0)即把 state 切到 streaming 并跳到 7 格。
     """

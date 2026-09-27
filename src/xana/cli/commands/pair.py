@@ -9,17 +9,15 @@ approve.
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 from typing import TextIO
 
+from xana.config.paths import xana_home
 from xana.agent_adapter.channels._pairing import PairingStore
 
 
 def pairings_path() -> Path:
-    home = os.environ.get("XANA_HOME")
-    root = Path(home).expanduser() if home else Path.home() / ".xana"
-    return root / "channels" / "pairings.json"
+    return xana_home() / "channels" / "pairings.json"
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:

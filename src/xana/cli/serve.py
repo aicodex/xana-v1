@@ -24,6 +24,7 @@ import asyncio
 import os
 from pathlib import Path
 
+from xana.config.paths import xana_home
 from xana.agent_adapter.channels._bindings import BindingStore
 from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels.daemon_bridge import DaemonBridgeAdapter
@@ -151,13 +152,6 @@ async def _run_inbound_pump(adapter: Adapter, gateway) -> None:
         t.add_done_callback(tasks.discard)
 
 
-def _xana_home() -> Path:
-    override = os.environ.get("XANA_HOME")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".xana"
-
-
 _WORKSPACE_SEED = """# xana 助手
 
 你是 xana,一个通过聊天渠道服务用户的个人助手。
@@ -175,7 +169,7 @@ def _resolve_project_root(argv_project: Path | None) -> Path:
     """
     if argv_project is not None:
         return Path(argv_project).resolve()
-    workspace = _xana_home() / "workspace"
+    workspace = xana_home() / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     readme = workspace / "README_ai.md"
     if not readme.exists():
@@ -232,7 +226,7 @@ async def _start_daemon_in_process(
     """
     boot_result = await boot(
         project_root=project_root,
-        history_root=Path.home() / ".xana" / "sessions",
+        history_root=xana_home() / "sessions",
     )
     bridge = DaemonBridgeAdapter()
     await bridge.start()
@@ -250,7 +244,7 @@ async def _start_daemon_in_process(
 
 
 async def _run(argv: argparse.Namespace) -> int:
-    home = _xana_home()
+    home = xana_home()
     _write_pidfile(home)
     try:
         return await _run_inner(argv)
@@ -266,7 +260,7 @@ async def _run_inner(argv: argparse.Namespace) -> int:
     boot_result = await boot(
         project_root=project_root,
         config_provider=cp,
-        history_root=_xana_home() / "sessions",
+        history_root=xana_home() / "sessions",
     )
     system = cp.load_system_config()  # boot() already called cp.load()
     bindings_root = pairings_path().parent

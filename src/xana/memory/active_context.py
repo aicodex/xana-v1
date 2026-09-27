@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from xana.config.paths import xana_home
 from xana.memory.contracts import ActiveContext, HistoryRow, InjectedBlock, MemoryMessage, Placeholder, ReplayResult
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror, MemoryInjector, MemoryInjectorRegistry
 
@@ -35,7 +36,7 @@ def _debug_path() -> Path:
     override = os.environ.get("XANA_DEBUG_ACTCTX_FILE", "").strip()
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".xana" / "logs" / "xana_debug_actctx.log"
+    return xana_home() / "logs" / "xana_debug_actctx.log"
 
 
 def _fmt_item(m: object) -> str:

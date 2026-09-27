@@ -14,8 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
-from typing import Any, Awaitable, Callable, TextIO
+from typing import Any, TextIO
 
 from xana.cli.commands.setup_wizard import _load_raw, _save_raw
 from xana.llm_driver.providers import kimi_oauth

@@ -10,9 +10,9 @@ FileHistoryMirror 同款机制的第三个实例:只有 append/read/lint,
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
+from xana.config.paths import xana_home
 from xana.evolution.contracts import LedgerEntry, LintViolation
 
 _VERDICTS = ("kept", "rolled_back", "abandoned")
@@ -20,9 +20,7 @@ _VERDICTS = ("kept", "rolled_back", "abandoned")
 
 def default_evolution_home() -> Path:
     """{XANA_HOME}/evolution(缺省 ~/.xana/evolution)。"""
-    override = os.environ.get("XANA_HOME")
-    base = Path(override).expanduser() if override else Path.home() / ".xana"
-    return base / "evolution"
+    return xana_home() / "evolution"
 
 
 class Ledger:

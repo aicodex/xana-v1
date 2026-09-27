@@ -33,6 +33,8 @@ from typing import TextIO
 
 import xana
 
+from xana.config.paths import xana_home
+
 
 _CODE_SUBDIR = "code"
 _MEM_SUBDIR = "mem"
@@ -167,13 +169,6 @@ def _restart_serve_if_running(xana_home: Path, out: TextIO) -> None:
             start_new_session=True,
         )
     print(f"[xana sync] serve restarted (pid {proc.pid}, log {log_path})", file=out)
-
-
-def xana_home() -> Path:
-    override = os.environ.get("XANA_HOME")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".xana"
 
 
 def _resolve_code_source(

@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import TextIO
 
+from xana.agent_adapter.channels.daemon_bridge import agent_event_from_wire
+from xana.config.paths import xana_home
 from xana.agent_adapter.channels.unified_card import UnifiedCardState
 from xana.agent_adapter.channels.unified_card_events import apply_event
 from xana.agent_adapter.channels.unified_card_cli import render as render_card
@@ -40,7 +42,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 def _resolve_endpoint() -> tuple[str, str, str | None]:
     """Returns (base_url, token, unix_socket_path or None)."""
-    home = Path.home() / ".xana"
+    home = xana_home()
     sys_json = home / "config" / "system.json"
     cfg = SystemConfig()
     if sys_json.exists():
@@ -90,10 +92,10 @@ def _ensure_serve_running() -> None:
         host, port_s = "127.0.0.1", "17777"
     if _is_listening(unix, host, int(port_s)):
         return
-    log = Path.home() / ".xana" / "logs" / "serve.log"
+    log = xana_home() / "logs" / "serve.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     f = open(log, "a")
-    xana_bin = Path.home() / ".xana" / "bin" / "xana"
+    xana_bin = xana_home() / "bin" / "xana"
     if not xana_bin.exists():
         xana_bin_str = "xana"
     else:
@@ -114,23 +116,6 @@ def _ensure_serve_running() -> None:
         msg = "(log unavailable)"
     raise RuntimeError(
         f"xana serve failed to come up within 20s. log tail ({log}):\n{msg}")
-
-
-def _evt_from_wire(data: dict):
-    """Reconstruct AgentEvent from SSE wire payload (mirror of
-    daemon_bridge._agent_event_to_dict)."""
-    from xana.agents.contracts import AgentEvent
-    from xana.harness_sdk.contracts import HarnessEvent
-    he = data.get("harness_event")
-    harness_event = None
-    if he:
-        harness_event = HarnessEvent(
-            kind=he["kind"], session_id=he["session_id"],
-            run_id=he["run_id"], payload=he.get("payload") or {})
-    return AgentEvent(
-        kind=data["kind"], session_id=data["session_id"],
-        payload=data.get("payload") or {}, harness_event=harness_event,
-    )
 
 
 def _progress_from_wire(data: dict):
@@ -175,7 +160,7 @@ async def _oneshot_run(
                         card_id=session_id, ph_run_id=session_id)
                     continue
                 if ev.event == "agent_event":
-                    aev = _evt_from_wire(ev.data)
+                    aev = agent_event_from_wire(ev.data)
                     # Ensure terminal events surface even when no prior
                     # turn_started/model_delta was observed (e.g. cached
                     # replay starting partway through, or short server

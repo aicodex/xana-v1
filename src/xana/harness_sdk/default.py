@@ -24,7 +24,6 @@ import collections.abc
 import contextlib
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -92,6 +91,7 @@ from xana.state.contracts import RunRecord, UsageSnapshot
 from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset
 from xana.tools.interfaces import Tool
 from xana.tools.toolsets import resolve_tools
+from xana.config.paths import xana_home
 
 
 _logger = logging.getLogger(__name__)
@@ -1676,9 +1676,7 @@ def _sessions_root_from(context: HarnessContext) -> Path:
     runs_dir = context.metadata.get("runs_dir")
     if runs_dir:
         return Path(runs_dir).parent
-    override = os.environ.get("XANA_HOME")
-    base = Path(override).expanduser() if override else Path.home() / ".xana"
-    return base / "sessions"
+    return xana_home() / "sessions"
 
 
 async def _persist_compact_transcript(

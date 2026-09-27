@@ -15,10 +15,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from xana.config.paths import xana_home
 from xana.agent_adapter.commands import DefaultCommandRouter
 from xana.agent_adapter.gateway import DefaultAgentGateway
 from xana.agent_adapter.progress import AdapterProgressSink
@@ -150,11 +150,6 @@ class _CompositeStateRepository(StateRepository):
     def runs(self) -> RunStore: return self._runs
 
 
-def _xana_home() -> Path:
-    override = os.environ.get("XANA_HOME")
-    return Path(override).expanduser() if override else Path.home() / ".xana"
-
-
 def _search_db_path(project_root: Path) -> Path:
     """L1: 持久索引文件 ~/.xana/sessions/search-{project_hash}.db。
 
@@ -162,7 +157,7 @@ def _search_db_path(project_root: Path) -> Path:
     reindex 钩子增量更新,boot 的 rebuild_from_tree 只做幂等校准。
     """
     digest = hashlib.sha256(str(project_root).encode("utf-8")).hexdigest()[:16]
-    sessions = _xana_home() / "sessions"
+    sessions = xana_home() / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
     return sessions / f"search-{digest}.db"
 
@@ -201,7 +196,7 @@ async def boot(
     for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill()):
         await bundled_skills.register(bundled)
     _file_skills, _skill_doc_errors = await scan_skill_docs(
-        _xana_home() / "skills", loader=FileSkillLoader(parser=_doc_parser),
+        xana_home() / "skills", loader=FileSkillLoader(parser=_doc_parser),
     )
     for _err in _skill_doc_errors:
         _logger.warning("SKILL.md 加载失败: %s", _err)
@@ -272,7 +267,7 @@ async def boot(
     # (protected_dir 多目录,§6.3);root 内 .md 写后走 post_tool_use 增量
     # reindex(memory_tree)。
     l2_root = project_root / "L2"
-    agents_root = _xana_home() / "agents"
+    agents_root = xana_home() / "agents"
     await _register(EditTool(memory_tree=tree, protected_dir=(l2_root, agents_root)))
     await _register(WriteTool(memory_tree=tree, protected_dir=(l2_root, agents_root)))
     await _register(GlobTool())
@@ -281,14 +276,14 @@ async def boot(
     await _register(ToolSearchTool(tool_registry=tools))
     await _register(ReportGoalTool())  # 仅目标模式会话可见(harness 按 PromptProfile 过滤)
     scheduler = FileSchedulerService(
-        path=_xana_home() / "scheduled_tasks.json", session_id="default")
+        path=xana_home() / "scheduled_tasks.json", session_id="default")
     await _register(CronCreateTool(scheduler))
     await _register(CronListTool(scheduler))
     await _register(CronDeleteTool(scheduler))
 
-    todo_root = Path.home() / ".xana" / "sessions"
-    worktree_root = Path.home() / ".xana" / "worktrees"
-    session_config_root = Path.home() / ".xana" / "sessions"
+    todo_root = xana_home() / "sessions"
+    worktree_root = xana_home() / "worktrees"
+    session_config_root = xana_home() / "sessions"
     session_config_store: SessionConfigStore = FileSessionConfigStore(root=session_config_root)
     todo_store = TodoStore(root=todo_root)
     await _register(TodoWriteTool(todo_store))
@@ -466,7 +461,7 @@ async def boot(
         )
 
     agent_registry = FileAgentRegistry(
-        root=_xana_home() / "agents",
+        root=xana_home() / "agents",
         parser=_doc_parser,
         agent_factory=_doc_agent_factory,
     )
@@ -522,7 +517,7 @@ async def boot(
         episode_runner=episode_runner,
         ledger=ledger,
         todo_store=todo_store,
-        agents_root=_xana_home() / "agents",
+        agents_root=xana_home() / "agents",
         agent_name=_meta_agent_name,
     )
 

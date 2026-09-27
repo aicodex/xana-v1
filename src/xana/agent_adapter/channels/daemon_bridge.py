@@ -24,6 +24,7 @@ from xana.agent_adapter.contracts import (
 )
 from xana.agent_adapter.interfaces import Adapter
 from xana.agents.contracts import AgentEvent
+from xana.harness_sdk.contracts import HarnessEvent
 
 
 @dataclass
@@ -122,7 +123,7 @@ class DaemonBridgeAdapter(Adapter):
 
     async def render(self, event: AgentEvent) -> RenderedMessage:
         sid = event.session_id
-        self._enqueue(sid, "agent_event", _agent_event_to_dict(event))
+        self._enqueue(sid, "agent_event", agent_event_to_wire(event))
         return RenderedMessage(
             adapter_id=self.adapter_id, session_id=sid,
             text=str((event.payload or {}).get("text", "")),
@@ -186,7 +187,8 @@ class DaemonBridgeAdapter(Adapter):
             self._sessions.pop(sid, None)
 
 
-def _agent_event_to_dict(ev: AgentEvent) -> dict:
+def agent_event_to_wire(ev: AgentEvent) -> dict:
+    """AgentEvent → SSE 线格式(dict);逆操作 agent_event_from_wire,两者同处一地。"""
     out = {
         "kind": ev.kind,
         "session_id": ev.session_id,
@@ -200,3 +202,17 @@ def _agent_event_to_dict(ev: AgentEvent) -> dict:
             "payload": dict(ev.harness_event.payload or {}),
         }
     return out
+
+
+def agent_event_from_wire(data: dict) -> AgentEvent:
+    """SSE 线格式 → AgentEvent(xanac 客户端用)。"""
+    he = data.get("harness_event")
+    harness_event = None
+    if he:
+        harness_event = HarnessEvent(
+            kind=he["kind"], session_id=he["session_id"],
+            run_id=he["run_id"], payload=he.get("payload") or {})
+    return AgentEvent(
+        kind=data["kind"], session_id=data["session_id"],
+        payload=data.get("payload") or {}, harness_event=harness_event,
+    )

@@ -408,7 +408,6 @@ class DefaultAgentGateway(AgentGateway):
 
     async def cancel_all(self) -> None:
         """SIGTERM 入口 — 翻所有 inflight runs 的 abort,标 exit_reason=shutdown_graceful。"""
-        from xana.state.contracts import RunRecord  # local to avoid boot cycles
         for sid, runs in list(self._inflight.items()):
             for ir in list(runs):
                 await self.cancel(ir.session_id, ir.run_id)

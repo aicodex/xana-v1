@@ -22,7 +22,7 @@ from typing import Any
 import yaml
 
 from xana.component.contracts import ComponentSource, ComponentSpec
-from xana.memory.contracts import MemoryNode, SearchQuery
+from xana.memory.contracts import SearchQuery
 from xana.memory.interfaces import MemorySearchEngine
 from xana.memory.markdown import MarkdownMemoryTree, search_terms
 from xana.policy.contracts import PermissionResult

@@ -17,6 +17,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from xana.config.paths import xana_home
+
 
 def _debug_on() -> bool:
     return os.environ.get("XANA_DEBUG_COMPACT", "") in ("1", "true", "on", "yes")
@@ -26,7 +28,7 @@ def _debug_path() -> Path:
     override = os.environ.get("XANA_DEBUG_COMPACT_FILE", "").strip()
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".xana" / "logs" / "xana_debug_compact.log"
+    return xana_home() / "logs" / "xana_debug_compact.log"
 
 
 def _emit(line: str) -> None:

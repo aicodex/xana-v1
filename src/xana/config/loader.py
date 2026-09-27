@@ -24,6 +24,7 @@ import os
 from importlib import resources
 from pathlib import Path
 
+from xana.config.paths import xana_home
 from xana.config.contracts import ConfigSource, ModelConfig, RawConfig, RuntimeConfig
 from xana.config.interfaces import ConfigProvider, ConfigReader
 from xana.config.system_model import ModelEntry, SystemConfig
@@ -39,10 +40,7 @@ _SEED_RESOURCE_PACKAGE = "xana.config.defaults"
 
 
 def user_config_dir() -> Path:
-    override = os.environ.get("XANA_HOME")
-    if override:
-        return Path(override).expanduser() / "config"
-    return Path.home() / ".xana" / "config"
+    return xana_home() / "config"
 
 
 def default_system_json_source() -> ConfigSource:

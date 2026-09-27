@@ -13,10 +13,10 @@ primitives:
 from __future__ import annotations
 
 import asyncio
-import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from xana.context._internal import importer_of
 from xana.context.message import (
     CompactPlaceholder,
     Message,
@@ -26,17 +26,7 @@ from xana.context.message import (
 _ALLOWED_CALLERS = {"xana.context.sdk"}
 
 
-def _find_real_caller() -> str:
-    frame = sys._getframe(1)
-    while frame is not None:
-        name = frame.f_globals.get("__name__", "")
-        if name and name != __name__ and not name.startswith("importlib"):
-            return name
-        frame = frame.f_back
-    return ""
-
-
-_caller = _find_real_caller()
+_caller = importer_of(__name__)
 if _caller not in _ALLOWED_CALLERS:
     raise ImportError(
         f"xana.context._store is private — only ContextSDK may import. "
