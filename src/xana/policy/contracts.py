@@ -58,17 +58,3 @@ class PermissionResult:
     decision: PermissionDecision
     reason: str | None = None
     updated_context: PermissionContext | None = None
-
-
-@dataclass(frozen=True)
-class ApprovalRequest:
-    permission: PermissionRequest
-    prompt: str
-    choices: tuple[PermissionDecision, ...] = ("allow", "deny")
-
-
-@dataclass(frozen=True)
-class ApprovalResult:
-    decision: PermissionDecision
-    reason: str | None = None
-    remember_rule: PermissionRule | None = None

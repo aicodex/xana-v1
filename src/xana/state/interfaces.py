@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from xana.state.contracts import Checkpoint, ResumeDecision, RunRecord, RunStatus, SessionRecord, UsageSnapshot
+from xana.state.contracts import Checkpoint, RunRecord, RunStatus, SessionRecord, UsageSnapshot
 
 
 class SessionStore(ABC):
@@ -63,16 +63,6 @@ class RunStore(ABC):
         RunRecord.status 过滤(如 status="running" 取在途集合)。
         """
         ...
-
-
-class ResumePolicy(ABC):
-    @abstractmethod
-    async def decide(self, run: RunRecord) -> ResumeDecision: ...
-
-
-class UsageEstimator(ABC):
-    @abstractmethod
-    async def estimate(self, messages: tuple[dict, ...], model: str) -> UsageSnapshot: ...
 
 
 class StateRepository(ABC):

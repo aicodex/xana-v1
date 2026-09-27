@@ -103,14 +103,6 @@ class MemoryReplayer(ABC):
     async def rebuild_active_context(self, mirror: HistoryMirror, store: ActiveContextStore) -> ReplayResult: ...
 
 
-class MemoryPolicy(ABC):
-    @abstractmethod
-    async def should_compact(self, context: ActiveContext) -> bool: ...
-
-    @abstractmethod
-    async def select_messages(self, context: ActiveContext) -> tuple[MemoryMessage, ...]: ...
-
-
 class MemoryTree(ABC):
     """Storage + atomic operations for the knowledge tree (yuxu treemem).
 

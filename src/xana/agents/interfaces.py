@@ -8,17 +8,6 @@ from xana.agents.contracts import AgentControlRequest, AgentEvent, AgentRequest,
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest
 
 
-class PromptProvider(ABC):
-    @abstractmethod
-    async def identity(self, spec: AgentSpec) -> str: ...
-
-    @abstractmethod
-    async def instructions(self, request: AgentRequest) -> str: ...
-
-    @abstractmethod
-    async def memory_block(self, session_id: str) -> str: ...
-
-
 class AgentRequestMapper(ABC):
     @abstractmethod
     async def to_harness_request(self, spec: AgentSpec, request: AgentRequest) -> HarnessRequest: ...

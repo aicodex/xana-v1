@@ -23,14 +23,6 @@ class SchedulerService(ABC):
     async def list_all(self) -> tuple[dict[str, Any], ...]: ...
 
 
-class SandboxManager(ABC):
-    @abstractmethod
-    async def run_subprocess(
-        self, command: list[str], *, cwd: str | None = None, timeout_s: float | None = None
-    ) -> tuple[int, str, str]:
-        """Returns (exit_code, stdout, stderr)."""
-
-
 class AgentSpawner(ABC):
     @abstractmethod
     async def spawn(

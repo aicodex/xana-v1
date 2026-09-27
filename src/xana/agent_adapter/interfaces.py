@@ -4,13 +4,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import AsyncIterator
 
-from xana.agent_adapter.contracts import AdapterHealth, CommandResult, CommandSpec, DraftHandle, InboundMessage, RenderedMessage, SessionBinding
+from xana.agent_adapter.contracts import AdapterHealth, CommandResult, CommandSpec, InboundMessage, RenderedMessage, SessionBinding
 from xana.agents.contracts import AgentEvent, AgentRequest
-
-
-class InboundParser(ABC):
-    @abstractmethod
-    async def parse(self, raw: object) -> InboundMessage: ...
 
 
 class CommandRouter(ABC):
@@ -24,17 +19,6 @@ class CommandRouter(ABC):
 class AgentRequestRouter(ABC):
     @abstractmethod
     async def route(self, inbound: InboundMessage) -> AgentRequest: ...
-
-
-class DraftRenderer(ABC):
-    @abstractmethod
-    async def open(self, session_id: str) -> DraftHandle: ...
-
-    @abstractmethod
-    async def update(self, draft: DraftHandle, event: AgentEvent) -> RenderedMessage: ...
-
-    @abstractmethod
-    async def close(self, draft: DraftHandle, event: AgentEvent) -> RenderedMessage: ...
 
 
 class Adapter(ABC):

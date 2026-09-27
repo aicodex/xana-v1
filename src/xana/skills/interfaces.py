@@ -4,32 +4,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from xana.skills.contracts import SkillActivation, SkillContext, SkillContribution, SkillManifest, SkillPackage, SkillResource, SkillSpec
+from xana.skills.contracts import SkillActivation, SkillContribution, SkillManifest, SkillSpec
 
 
 class SkillManifestParser(ABC):
     @abstractmethod
     async def parse(self, path: Path) -> SkillManifest: ...
-
-
-class SkillResourceResolver(ABC):
-    @abstractmethod
-    async def resolve(self, package: SkillPackage, resource: SkillResource) -> Path: ...
-
-
-class SkillPromptProvider(ABC):
-    @abstractmethod
-    async def prompt(self, activation: SkillActivation) -> str: ...
-
-
-class SkillContextLoader(ABC):
-    @abstractmethod
-    async def load(self, activation: SkillActivation) -> SkillContext: ...
-
-
-class SkillActivator(ABC):
-    @abstractmethod
-    async def should_activate(self, activation: SkillActivation) -> bool: ...
 
 
 class Skill(ABC):

@@ -48,20 +48,6 @@ class ProviderError:
 
 
 @dataclass(frozen=True)
-class ProviderRequest:
-    provider: str
-    request_id: str | None = None
-    body: dict[str, Any] = field(default_factory=dict)
-    headers: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class ProviderToolSchema:
-    provider: str
-    schema: dict[str, Any]
-
-
-@dataclass(frozen=True)
 class ModelMessage:
     role: Literal["system", "user", "assistant", "tool"]
     content: str

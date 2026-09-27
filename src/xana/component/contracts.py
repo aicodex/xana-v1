@@ -42,21 +42,9 @@ class SourcePriorityRule:
 
 
 @dataclass(frozen=True)
-class SourcePriorityPolicy:
-    rules: tuple[SourcePriorityRule, ...]
-
-
-@dataclass(frozen=True)
 class LoadCacheKey:
     roots: tuple[Path, ...]
     config_hash: str
-
-
-@dataclass(frozen=True)
-class LoadCacheEntry:
-    key: LoadCacheKey
-    outcome_hash: str
-    created_at: float
 
 
 @dataclass(frozen=True)
@@ -74,13 +62,3 @@ class OverrideRecord:
     winner: ComponentSource
     loser: ComponentSource
     reason: str
-
-
-@dataclass(frozen=True)
-class LoadOutcome:
-    loaded: tuple[ComponentSpec, ...] = ()
-    disabled: tuple[ComponentSpec, ...] = ()
-    errors: tuple[LoadError, ...] = ()
-    roots: tuple[Path, ...] = ()
-    source_map: dict[str, Path] = field(default_factory=dict)
-    override_log: tuple[OverrideRecord, ...] = ()

@@ -12,21 +12,6 @@ class ConfigReader(ABC):
     async def read(self, source: ConfigSource) -> RawConfig: ...
 
 
-class ConfigMerger(ABC):
-    @abstractmethod
-    async def merge(self, configs: tuple[RawConfig, ...]) -> RuntimeConfig: ...
-
-
-class ConfigValidator(ABC):
-    @abstractmethod
-    async def validate(self, config: RuntimeConfig) -> None: ...
-
-
 class ConfigProvider(ABC):
     @abstractmethod
     async def load(self, project_root: Path) -> RuntimeConfig: ...
-
-
-class ConfigWatcher(ABC):
-    @abstractmethod
-    async def changed(self) -> bool: ...

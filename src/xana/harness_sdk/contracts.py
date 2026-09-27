@@ -11,7 +11,6 @@ from xana.policy.contracts import PermissionContext
 from xana.state.contracts import UsageSnapshot
 
 if TYPE_CHECKING:
-    from xana.hooks.interfaces import HookRunner
     from xana.llm_driver.interfaces import ModelRegistry
     from xana.memory.interfaces import (
         ActiveContextStore,
@@ -20,7 +19,6 @@ if TYPE_CHECKING:
         MemorySearchEngine,
         MemoryTree,
     )
-    from xana.observability.interfaces import TraceSink
     from xana.skills.interfaces import SkillRegistry
     from xana.state.interfaces import StateRepository
     from xana.tools.interfaces import ToolRegistry
@@ -141,8 +139,6 @@ class HarnessContext:
     tool_registry: "ToolRegistry | None" = None
     skill_registry: "SkillRegistry | None" = None
     model_registry: "ModelRegistry | None" = None
-    hook_runner: "HookRunner | None" = None
-    trace_sink: "TraceSink | None" = None
     progress_sink: "ProgressSink | None" = None
     abort: AbortSignal = field(default_factory=AbortSignal)
     async_mode: bool = False

@@ -2,49 +2,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator
 
-from xana.harness_sdk.contracts import HarnessContext
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import PermissionDecision, ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset
-
-
-class ToolValidator(ABC):
-    @abstractmethod
-    async def validate(self, invocation: ToolInvocation) -> None: ...
-
-
-class ToolPermissionPolicy(ABC):
-    @abstractmethod
-    async def decide(self, invocation: ToolInvocation, context: ToolContext) -> PermissionDecision: ...
-
-
-class ToolSandboxPolicy(ABC):
-    @abstractmethod
-    async def prepare(self, invocation: ToolInvocation, context: ToolContext) -> ToolContext: ...
-
-    @abstractmethod
-    async def cleanup(self, invocation: ToolInvocation, context: ToolContext) -> None: ...
-
-
-class ToolContextBuilder(ABC):
-    @abstractmethod
-    async def build(self, invocation: ToolInvocation, context: HarnessContext) -> ToolContext: ...
-
-
-class ToolExecutor(ABC):
-    @abstractmethod
-    async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult: ...
-
-
-class ToolProgressStream(ABC):
-    @abstractmethod
-    def stream(self, invocation_id: str) -> AsyncIterator[dict]: ...
-
-
-class ToolRenderer(ABC):
-    @abstractmethod
-    async def render(self, result: ToolResult) -> str: ...
+from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset
 
 
 class Tool(ABC):

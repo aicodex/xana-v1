@@ -87,14 +87,6 @@ class RunRecord:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class ResumeDecision:
-    run_id: str
-    action: ResumeAction
-    reason: str
-    checkpoint: Checkpoint | None = None
-
-
 RESUMABLE_EXIT_REASONS: frozenset[ExitReason] = frozenset({
     "user_cancel", "tool_kill_timeout",
     "shutdown_graceful", "shutdown_force",
