@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import secrets
 import socket
 import subprocess
@@ -93,6 +94,36 @@ def _ensure_serve_running() -> None:
     if _is_listening(unix, host, int(port_s)):
         return
     log = xana_home() / "logs" / "serve.log"
+    if not _serve_starting():   # 已有 serve 在启动中(boot 可能要一两分钟)就等它,不再另起一个
+        _spawn_serve(log)
+    deadline = time.monotonic() + _SERVE_START_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if _is_listening(unix, host, int(port_s)):
+            return
+        time.sleep(0.2)
+    try:
+        tail = log.read_text().splitlines()[-20:]
+        msg = "\n".join(tail)
+    except Exception:
+        msg = "(log unavailable)"
+    raise RuntimeError(
+        f"xana serve failed to come up within {_SERVE_START_TIMEOUT_S:.0f}s. log tail ({log}):\n{msg}")
+
+
+_SERVE_START_TIMEOUT_S = 120.0
+
+
+def _serve_starting() -> bool:
+    """pidfile 指向一个存活进程 = 有 serve 已在运行或启动中(serve 拿到单实例锁后才写 pidfile)。"""
+    try:
+        pid = int((xana_home() / "run" / "serve.pid").read_text(encoding="utf-8").strip())
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _spawn_serve(log: Path) -> None:
     log.parent.mkdir(parents=True, exist_ok=True)
     f = open(log, "a")
     xana_bin = xana_home() / "bin" / "xana"
@@ -104,18 +135,6 @@ def _ensure_serve_running() -> None:
         [xana_bin_str, "serve"],
         stdout=f, stderr=f, start_new_session=True,
     )
-    deadline = time.monotonic() + 20.0
-    while time.monotonic() < deadline:
-        if _is_listening(unix, host, int(port_s)):
-            return
-        time.sleep(0.2)
-    try:
-        tail = log.read_text().splitlines()[-20:]
-        msg = "\n".join(tail)
-    except Exception:
-        msg = "(log unavailable)"
-    raise RuntimeError(
-        f"xana serve failed to come up within 20s. log tail ({log}):\n{msg}")
 
 
 def _progress_from_wire(data: dict):

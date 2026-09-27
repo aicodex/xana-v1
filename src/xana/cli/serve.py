@@ -177,6 +177,21 @@ def _resolve_project_root(argv_project: Path | None) -> Path:
     return workspace.resolve()
 
 
+def _acquire_instance_lock(home: Path):
+    """单实例锁:进程一启动就对 <home>/run/serve.lock 加非阻塞排他 flock,持有到进程退出(OS 自动释放)。
+    启动中的 serve 同样持有,所以前后脚启动的第二个 serve 会立刻退出,不会与第一个同时 boot、同时轮询渠道。"""
+    import fcntl
+    path = home / "run" / "serve.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = open(path, "a+")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fd.close()
+        raise SystemExit("[xana serve] another serve is already running or starting (serve.lock held)") from None
+    return fd
+
+
 def _write_pidfile(home: Path) -> Path:
     """Record this process pid in <home>/run/serve.pid so `xana sync` can restart us."""
     pidfile = home / "run" / "serve.pid"
@@ -245,10 +260,15 @@ async def _start_daemon_in_process(
 
 async def _run(argv: argparse.Namespace) -> int:
     home = xana_home()
+    lock = _acquire_instance_lock(home)
+    # 拿到单实例锁即写 pidfile(启动中也能被 xana sync 找到并重启);拿不到锁的进程根本走不到这里,
+    # 不会覆盖或删掉存活实例的 pidfile。
+    _write_pidfile(home)
     try:
         return await _run_inner(argv)
     finally:
         _remove_pidfile(home)  # 只删记录着本进程 pid 的 pidfile
+        lock.close()
 
 
 async def _run_inner(argv: argparse.Namespace) -> int:
@@ -293,9 +313,6 @@ async def _run_inner(argv: argparse.Namespace) -> int:
             f" — another serve is already running ({e})"
         ) from None
     _preflight.close()
-    # 拿到单实例锁之后才写 pidfile:绑定失败的第二个 serve 不能覆盖(退出时再删掉)存活实例的
-    # pidfile,否则 xana sync 找不到它、跳过重启,旧代码继续跑。
-    _write_pidfile(xana_home())
 
     daemon_bridge = DaemonBridgeAdapter(
         session_resolver=boot_result.session_resolver,
