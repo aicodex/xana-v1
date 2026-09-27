@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Mapping
 
 from xana.agents.delegation import AGENT_RUN_TOOL, subagent_ceiling
-from xana.agents.interfaces import Agent
+from xana.agents.interfaces import Agent, AgentRegistry
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.extension_api.capabilities import AgentRunner
 from xana.policy.contracts import PermissionResult
@@ -55,9 +55,11 @@ _SPEC = ToolSpec(
 
 class AgentRunTool(Tool):
     def __init__(self, *, runner: AgentRunner, agents: Mapping[str, Agent], tool_registry: ToolRegistry,
+                 agent_registry: AgentRegistry | None = None,
                  default_agent: str = "chat", max_concurrent: int = MAX_CONCURRENT) -> None:
         self._runner = runner
-        self._agents = agents            # 活的映射:agent_define 新建的 agent 立即可委派
+        self._agents = agents            # 活的映射:增删改的 agent 立即反映
+        self._agent_registry = agent_registry
         self._tools = tool_registry
         self._default_agent = default_agent
         self._max_concurrent = max_concurrent
@@ -95,6 +97,8 @@ class AgentRunTool(Tool):
         else:
             name = str(invocation.input.get("subagent_type") or self._default_agent).strip()
             child = self._child_session(context.session_id, name)
+        if self._agent_registry is not None:
+            await self._agent_registry.refresh()
         if name not in self._agents:
             return _fail(f"没有名为 {name!r} 的 agent,可委派的 agent 见「可委派的 agent」列表")
         if self._running >= self._max_concurrent:

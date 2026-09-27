@@ -24,7 +24,7 @@ from xana.agent_adapter.interfaces import (
     CommandRouter,
 )
 from xana.agents.contracts import AgentEvent, DelegationPolicy, SubagentRequest, SubagentResult
-from xana.agents.interfaces import Agent, SubagentDispatcher
+from xana.agents.interfaces import Agent, AgentRegistry, SubagentDispatcher
 from xana.extension_api.capabilities import AgentSpawner
 from xana.harness_sdk.contracts import AbortSignal
 from xana.memory.contracts import MemoryMessage
@@ -41,9 +41,12 @@ class DefaultAgentGateway(AgentGateway):
         self,
         agents: dict[str, Agent],
         router: AgentRequestRouter,
+        agent_registry: AgentRegistry | None = None,
     ) -> None:
+        """agent_registry:文件 agent 的热加载来源(路由前刷新 agents 表);None = agents 表固定。"""
         self.agents = agents
         self.router = router
+        self._agent_registry = agent_registry
         self.adapters: dict[str, Adapter] = {}
         self.command_router: CommandRouter | None = None
         self.bindings: dict[str, SessionBinding] = {}
@@ -257,11 +260,13 @@ class DefaultAgentGateway(AgentGateway):
         request = await self.router.route(inbound)
         # spawn 携带 target_agent(agent_name);普通 inbound 走 router 默认路由。
         target = inbound.metadata.get("target_agent") or request.target_agent or ""
+        if self._agent_registry is not None:
+            await self._agent_registry.refresh()     # 热加载:增删改 AGENT.md 不需要重启
         agent = self.agents.get(target)
         if agent is None:
             yield RenderedMessage(
                 adapter_id=inbound.adapter_id, session_id=inbound.session_id,
-                text=f"[gateway] unknown agent={target!r}",
+                text=f"[gateway] agent {target!r} 不存在(可能已删除),用 /agent 选择其他 agent",
                 metadata={"event_kind": "error"},
             )
             return

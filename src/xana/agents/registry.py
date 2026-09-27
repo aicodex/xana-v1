@@ -1,31 +1,36 @@
-"""FileAgentRegistry —— AgentRegistry 首个实现(计划 §5.1)。
+"""FileAgentRegistry —— AgentRegistry 首个实现:从两级目录加载 AGENT.md,热加载
+(docs/design/agent-delegation-design.md §7)。
 
-从 {root}/*/AGENT.md 加载角色定义文档,生成 AgentSpec:
-- 正文即系统提示词模板 → spec.system_prompt(含 ${base_prompt} 则在默认提示词上扩展,不含则完全替换)
-- tools 工具选择表达式(不写 = 默认组合,[] = 零工具)/ disallowed_tools;skills 列表 → allowed_skills
-  (docs/design/agent-composition-design.md)
-- budget/stop_rules/output_contract 放入 component.metadata(阶段四消费)
-
-Agent 实例经注入的 agent_factory 构造(boot 用共享 harness/stores 的
-ChatAgent 工厂),加载后由 boot 注册进 gateway.agents。
+- 目录按优先级从低到高:用户级 {XANA_HOME}/agents、项目级 <project_root>/.xana/agents;同名时高优先级覆盖。
+- 直接维护 gateway 共用的 agent 表(table):refresh() 比对每个 AGENT.md 的 (路径, 修改时间, 大小),
+  新增 / 变更的重新加载,文件已不存在的移出表;内置 agent 名(reserved)不能被文件覆盖。
+- 文档 → AgentSpec 的字段映射见 agent_spec_from_doc:正文即系统提示词模板;tools 工具选择表达式
+  (不写 = 默认组合,[] = 零工具)/ disallowed_tools;skills → allowed_skills;
+  budget/stop_rules/output_contract 放入 component.metadata。
+Agent 实例经注入的 agent_factory 构造(boot 用共享 harness/stores 的 ChatAgent 工厂)。
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+import logging
+import time
+from collections.abc import Callable, Collection, MutableMapping, Sequence
 from pathlib import Path
 
 from xana.harness_sdk.contracts import PromptProfile, VerifyCheck
 from xana.agents.contracts import AgentSpec
 from xana.agents.interfaces import Agent, AgentRegistry
-from xana.component.contracts import ComponentSource, ComponentSpec
+from xana.component.contracts import ComponentScope, ComponentSource, ComponentSpec
 from xana.skills.contracts import SkillManifest
 from xana.skills.interfaces import SkillManifestParser
 from xana.skills.markdown_loader import SkillManifestError, split_frontmatter
 
+_logger = logging.getLogger(__name__)
 _AGENT_DOC_NAME = "AGENT.md"
 
 
-def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path) -> AgentSpec:
+def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path,
+                        scope: ComponentScope = "user") -> AgentSpec:
     """AGENT.md 的 manifest + 正文 → AgentSpec 字段映射。"""
     if manifest.metadata.get("kind") != "agent":
         raise SkillManifestError(
@@ -55,7 +60,7 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path) -> Ag
             name=manifest.name,
             qualified_name=f"user.{manifest.name}",
             description=manifest.description,
-            source=ComponentSource(source_type="user", scope="user", path=Path(path)),
+            source=ComponentSource(source_type=scope, scope=scope, path=Path(path)),
             metadata=component_metadata,
         ),
         prompt_id=f"agent.{manifest.name}",
@@ -70,45 +75,117 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path) -> Ag
 
 
 class FileAgentRegistry(AgentRegistry):
-    """从文件系统目录加载 AGENT.md 文档的 AgentRegistry。"""
+    """两级目录的 AGENT.md → gateway 共用的 agent 表,支持热加载与删除。"""
 
     def __init__(
         self,
         *,
-        root: Path,
+        roots: Sequence[tuple[ComponentScope, Path]],
         parser: SkillManifestParser,
         agent_factory: Callable[[AgentSpec], Agent],
+        table: MutableMapping[str, Agent] | None = None,
+        reserved: Collection[str] = (),
+        min_interval_s: float = 2.0,
     ) -> None:
-        self._root = Path(root)
+        """roots 按优先级从低到高;table 是调用方共用的 agent 表(缺省自建);reserved 是内置 agent 名。"""
+        self._roots = tuple((scope, Path(root)) for scope, root in roots)
         self._parser = parser
         self._agent_factory = agent_factory
-        self._agents: dict[str, Agent] = {}
+        self._table: MutableMapping[str, Agent] = table if table is not None else {}
+        self._reserved = frozenset(reserved)
+        self._min_interval_s = min_interval_s
+        # 文件版本 = (修改时间 ns, 大小):同一时间刻度内的连续修改靠大小区分
+        self._parsed: dict[Path, tuple[tuple[int, int], AgentSpec]] = {}   # 每个文件最近一次成功解析的版本
+        self._loaded: dict[str, tuple[Path, tuple[int, int]]] = {}         # 表中由本注册表维护的 agent → 来源版本
+        self._reported: set[tuple[Path, tuple[int, int]]] = set()          # 已告警过的 (路径, 版本)
+        self._last_scan = float("-inf")
+        self._lock = asyncio.Lock()
 
     async def load(self) -> tuple[SkillManifestError, ...]:
-        """扫描 {root}/*/AGENT.md。坏文档收集为错误返回,不中断扫描。"""
-        errors: list[SkillManifestError] = []
-        if not self._root.is_dir():
+        """立即扫描(boot 调用);坏文档收集为错误返回,不中断扫描。"""
+        return await self.refresh(force=True)
+
+    async def refresh(self, *, force: bool = False) -> tuple[SkillManifestError, ...]:
+        """按需同步 agent 表与磁盘;距上次扫描不足 min_interval_s 时直接返回(force 除外)。
+        返回本次新出现的解析错误(同一版本的坏文件只报一次)。"""
+        if not force and time.monotonic() - self._last_scan < self._min_interval_s:
             return ()
-        for path in sorted(self._root.glob(f"*/{_AGENT_DOC_NAME}")):
-            try:
-                await self.load_file(path)
-            except SkillManifestError as err:
-                errors.append(err)
+        async with self._lock:
+            self._last_scan = time.monotonic()
+            return await self._sync()
+
+    async def _sync(self) -> tuple[SkillManifestError, ...]:
+        errors: list[SkillManifestError] = []
+        chosen: dict[str, tuple[Path, tuple[int, int], AgentSpec]] = {}
+        seen: set[Path] = set()
+        for scope, root in self._roots:                     # 低 → 高,后写覆盖
+            if not root.is_dir():
+                continue
+            for path in sorted(root.glob(f"*/{_AGENT_DOC_NAME}")):
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                mtime = (st.st_mtime_ns, st.st_size)
+                seen.add(path)
+                cached = self._parsed.get(path)
+                if cached is None or cached[0] != mtime:
+                    try:
+                        self._parsed[path] = (mtime, await self._parse(path, scope))
+                    except SkillManifestError as err:
+                        if (path, mtime) not in self._reported:
+                            self._reported.add((path, mtime))
+                            errors.append(err)
+                        if cached is None:
+                            continue                        # 从未成功加载过:跳过
+                        # 改坏了:保留上一个可用版本,不静默删掉正在用的 agent
+                cur_mtime, spec = self._parsed[path]
+                name = spec.component.name
+                if name in self._reserved:
+                    if (path, cur_mtime) not in self._reported:
+                        self._reported.add((path, cur_mtime))
+                        errors.append(SkillManifestError(path=path, kind="agent", field="name",
+                                                         reason=f"{name} 是内置 agent,不能被文件覆盖"))
+                    continue
+                chosen[name] = (path, cur_mtime, spec)
+        for path in [p for p in self._parsed if p not in seen]:
+            del self._parsed[path]
+        for name, (path, mtime, spec) in chosen.items():
+            if self._loaded.get(name) != (path, mtime):
+                self._table[name] = self._agent_factory(spec)
+                self._loaded[name] = (path, mtime)
+        for name in [n for n in self._loaded if n not in chosen]:
+            self._table.pop(name, None)
+            del self._loaded[name]
+        for err in errors:
+            _logger.warning("AGENT.md 加载失败: %s", err)
         return tuple(errors)
 
-    async def load_file(self, path: Path) -> Agent:
-        """加载(或重新加载)单个 AGENT.md 并注册;文档不合法抛 SkillManifestError。"""
+    async def _parse(self, path: Path, scope: ComponentScope) -> AgentSpec:
         manifest = await self._parser.parse(path)
         _fm, body = split_frontmatter(path.read_text(encoding="utf-8"), path=path)
-        agent = self._agent_factory(agent_spec_from_doc(manifest, body=body, path=path))
-        await self.register(agent)
-        return agent
+        return agent_spec_from_doc(manifest, body=body, path=path, scope=scope)
+
+    async def remove(self, name: str) -> Path:
+        """删除文件 agent(删掉它当前生效的 AGENT.md)并立即刷新;内置或不存在的 agent 抛 LookupError。
+        删掉项目级的同名 agent 后,用户级同名 agent(若有)随即生效。"""
+        await self.refresh(force=True)
+        if name not in self._loaded:
+            raise LookupError(f"没有名为 {name!r} 的文件 agent(内置 agent 不能删除)")
+        path, _mtime = self._loaded[name]
+        path.unlink(missing_ok=True)
+        try:
+            path.parent.rmdir()                             # 目录空了才删
+        except OSError:
+            pass
+        await self.refresh(force=True)
+        return path
 
     async def register(self, agent: Agent) -> None:
-        self._agents[agent.spec().component.name] = agent
+        self._table[agent.spec().component.name] = agent
 
     async def get(self, name: str) -> Agent | None:
-        return self._agents.get(name)
+        return self._table.get(name) if name in self._loaded else None
 
     async def list_specs(self) -> tuple[AgentSpec, ...]:
-        return tuple(agent.spec() for agent in self._agents.values())
+        return tuple(self._table[n].spec() for n in sorted(self._loaded) if n in self._table)

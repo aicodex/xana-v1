@@ -111,3 +111,38 @@ date: 2026-09-27
 - 真正需要大量阅读、且可拆成独立部分的任务,没有引导时模型也会委派,但会先自己读一大圈(重复劳动,用时约 2.5–3.5 倍);有引导时一开始就委派。
 - 引导放在 note 与放在系统提示词效果相当,采用 note:只在 agent 可用 agent_run 时出现,不改静态系统提示词。
 - 单次运行,未做重复采样;数字只说明方向。
+
+## 7. agent 热加载、删除与两级目录(2026-09-27)
+
+### 7.1 目标
+
+- 增、改、删 AGENT.md 不需要重启 serve;
+- 以后"一个项目一个 xana 实例(各接一个飞书机器人)":项目自己的 agent 放在项目目录里,和用户级通用 agent 叠加。
+
+### 7.2 两级目录与优先级
+
+| 优先级(低 → 高) | 位置 | 说明 |
+|---|---|---|
+| 内置 | 代码(chat、researcher) | 不能被文件覆盖;同名文件跳过并告警 |
+| 用户级 | `{XANA_HOME}/agents/<name>/AGENT.md` | 所有项目通用 |
+| 项目级 | `<project_root>/.xana/agents/<name>/AGENT.md` | 本实例的项目目录(`xana serve --project`,缺省 `{XANA_HOME}/workspace`) |
+
+同名时项目级覆盖用户级(与 Claude Code / Kimi 一致)。两级目录都对 Write / Edit 保护,`agent_define` 是写入口。
+
+### 7.3 热加载
+
+- `FileAgentRegistry` 直接维护 gateway 共用的那份 agent 表(不再由 boot 一次性拷贝):`refresh()` 扫描两级目录,按每个 AGENT.md 的 (路径, 修改时间, 大小) 与已加载状态比对,新增 / 变更的重新加载,文件已不存在的从表中移除;最多每 2 秒真正扫描一次(`force=True` 立即扫描)。
+- 在要用 agent 表的时刻调用:gateway 路由消息前、`agent_run`、可委派列表(节流);`/agent` 与 `agent_define` 立即扫描。不开后台监听线程,手动编辑、其他程序写入、`agent_define` 写入都能被发现。
+- 文件改坏(解析失败):保留上一个可用版本并记 warning(每个 (路径, 修改时间) 只记一次),不静默删掉正在用的 agent。
+- `AgentRegistry` ABC 增加 `refresh()` 与 `remove(name)`(修改现有 ABC,非新增)。
+
+### 7.4 删除与修改
+
+- `agent_define` 增加 `delete` 动作(删除该 agent 所在目录的 AGENT.md 并立即刷新);`create` 增加 `scope`(`project` 缺省 / `user`)。内置 agent 不能删。
+- 已有会话:
+  - 绑定的 agent 被删除:下一条消息明确报错"agent X 不存在(可能已删除),用 /agent 选择其他 agent",不静默改用 chat;
+  - 绑定的 agent 被修改:新会话完全按新定义;已有会话的系统提示词在会话内固定(既有规则,保护缓存),工具等其他字段从下一条消息起按新定义生效。
+
+### 7.5 下一阶段(本次不做):一个项目一个实例
+
+每个项目一个 serve、一个飞书机器人,需要把"实例级"与"用户级"数据分开:实例级 = 配置(机器人凭据、端口)、会话、运行记录、日志、单实例锁、项目级 agent / skill;用户级(多实例共享)= 模型登录凭据(Kimi OAuth 的 refresh_token 每次刷新都会轮换,各实例各自复制凭据会互相作废,必须共享同一份并加锁)、用户级 agent / skill、代码安装。`xana sync` 需要能重启所有实例。到时单独设计。

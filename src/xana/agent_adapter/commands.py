@@ -53,9 +53,11 @@ class DefaultCommandRouter(CommandRouter):
         write_queue: Any = None,
         context_sdk: Any = None,
         default_agent: str = "chat",
+        agent_registry: Any = None,   # AgentRegistry | None — /agent 前刷新(热加载)
     ) -> None:
         self.session_config_store = session_config_store
         self.default_agent = default_agent
+        self.agent_registry = agent_registry
         self.active_context_store = active_context_store
         self.gateway = gateway
         self.available_models = available_models
@@ -189,6 +191,8 @@ class DefaultCommandRouter(CommandRouter):
     async def _cmd_agent(self, inbound: InboundMessage, args: str) -> CommandResult:
         """/agent:列出可用 agent;/agent <名字>:换新会话 id 并绑定该 agent(会话创建时绑定、之后不切换,
         docs/design/agent-delegation-design.md §3.1)。旧会话原样保留。"""
+        if self.agent_registry is not None:
+            await self.agent_registry.refresh(force=True)   # 用户主动查看:立即扫描,不受节流影响
         agents = dict(getattr(self.gateway, "agents", {}) or {}) if self.gateway is not None else {}
         name = args.strip()
         if not name:

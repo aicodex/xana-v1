@@ -24,6 +24,7 @@ from xana.agent_adapter.gateway import DefaultAgentGateway
 from xana.agent_adapter.progress import AdapterProgressSink
 from xana.agent_adapter.router import DefaultAgentRequestRouter
 from xana.agents.chat_agent import ChatAgent, build_chat_agent_spec
+from xana.agents.researcher import RESEARCHER_AGENT
 from xana.agents.interfaces import Agent
 from xana.config.loader import (
     DefaultConfigProvider,
@@ -111,6 +112,7 @@ from xana.tools.toolsets import BUILTIN_TOOLSETS, unknown_names
 _INJECTOR_TOP_K = 3
 _INJECTOR_BUDGET_CHARS = 2000
 _FAKE_PROVIDER = "fake"
+BUILTIN_AGENT_NAMES = ("chat", RESEARCHER_AGENT)   # 内置 agent:不能被 AGENT.md 覆盖或删除
 _logger = logging.getLogger(__name__)
 
 
@@ -210,10 +212,21 @@ async def boot(
     # agent 表与工具目录先建空容器(后面逐个注册):默认扩展(可委派 agent 列表)持有的是活的引用。
     agents: dict[str, Agent] = {}
     tools = InMemoryToolRegistry()
+    # 文件 agent:两级目录(用户级 < 项目级),热加载,直接维护共用的 agents 表(agent-delegation-design §7)。
+    # 工厂在下文定义、首次 load 时才调用。
+    from xana.agents.registry import FileAgentRegistry
+    agent_registry = FileAgentRegistry(
+        roots=(("user", xana_home() / "agents"), ("project", project_root / ".xana" / "agents")),
+        parser=_doc_parser,
+        agent_factory=lambda spec: _doc_agent_factory(spec),
+        table=agents,
+        reserved=BUILTIN_AGENT_NAMES,
+    )
     if extension_registry is None:
         extension_registry = (ExtensionRegistryBuilder()
                               .add(SkillsListingContributor(skills=bundled_skills))
-                              .add(AgentListingContributor(agents=agents, tool_registry=tools))
+                              .add(AgentListingContributor(agents=agents, agent_registry=agent_registry,
+                                                           tool_registry=tools))
                               .build())
 
     # 扩展注册表须在构造 harness 之前组装完毕(harness 构造时即持有它)。
@@ -275,9 +288,9 @@ async def boot(
     # (protected_dir 多目录,§6.3);root 内 .md 写后走 post_tool_use 增量
     # reindex(memory_tree)。
     l2_root = project_root / "L2"
-    agents_root = xana_home() / "agents"
-    await _register(EditTool(memory_tree=tree, protected_dir=(l2_root, agents_root)))
-    await _register(WriteTool(memory_tree=tree, protected_dir=(l2_root, agents_root)))
+    agent_dirs = (xana_home() / "agents", project_root / ".xana" / "agents")   # 只能经 agent_define 写
+    await _register(EditTool(memory_tree=tree, protected_dir=(l2_root, *agent_dirs)))
+    await _register(WriteTool(memory_tree=tree, protected_dir=(l2_root, *agent_dirs)))
     await _register(GlobTool())
     await _register(GrepTool())
     await _register(BashTool())
@@ -348,6 +361,7 @@ async def boot(
     gateway = DefaultAgentGateway(
         agents=agents,
         router=DefaultAgentRequestRouter(default_agent="chat", session_config_store=session_config_store),
+        agent_registry=agent_registry,
     )
     # P5: wire RunStore + RunJsonlWriter so /resume + cancel_all have backing.
     gateway.run_store = run_store
@@ -439,7 +453,6 @@ async def boot(
     # (共享 harness/stores,spec 来自文档:正文=系统提示词模板,tools 为工具选择表达式,
     # skills 映射进现有字段)。builtin.chat 保持默认不变;坏文档记 warning。
     from xana.agents.contracts import AgentSpec
-    from xana.agents.registry import FileAgentRegistry
 
     def _doc_agent_factory(spec: AgentSpec, *, progress: bool = True) -> Agent:
         return ChatAgent(
@@ -468,36 +481,23 @@ async def boot(
             episode_runner=episode_runner,
         )
 
-    agent_registry = FileAgentRegistry(
-        root=xana_home() / "agents",
-        parser=_doc_parser,
-        agent_factory=_doc_agent_factory,
-    )
-    for _err in await agent_registry.load():
-        _logger.warning("AGENT.md 加载失败: %s", _err)
-    for _spec in await agent_registry.list_specs():
-        _doc_agent = await agent_registry.get(_spec.component.name)
-        if _doc_agent is not None:
-            gateway.agents[_spec.component.name] = _doc_agent
+    await agent_registry.load()   # 坏文档记 warning 不阻塞 boot;之后按需热加载
 
     # 子 agent 运行器:agent_run 委派与 deep_research 共用(同步跑完子 run 取回最终文本,不触碰渠道)。
     agent_runner = GatewayAgentRunner(agents=gateway.agents, session_store=state.sessions())
 
-    # agent 委派与创建(docs/design/agent-delegation-design.md):agent_run 同步委派;agent_define 写 AGENT.md
-    # 后经 FileAgentRegistry 同一路径加载并注册进 gateway,立即可用。
-    async def _install_agent(path: Path) -> Agent:
-        agent = await agent_registry.load_file(path)
-        gateway.agents[agent.spec().component.name] = agent
-        return agent
-
-    await _register(AgentRunTool(runner=agent_runner, agents=gateway.agents, tool_registry=tools))
-    await _register(AgentDefineTool(agents_root=xana_home() / "agents", agents=gateway.agents,
-                                    tool_registry=tools, install=_install_agent))
+    # agent 委派与创建(docs/design/agent-delegation-design.md):agent_run 同步委派;agent_define 写 / 删 AGENT.md
+    # 后刷新注册表,立即生效。
+    await _register(AgentRunTool(runner=agent_runner, agents=gateway.agents, agent_registry=agent_registry,
+                                 tool_registry=tools))
+    await _register(AgentDefineTool(
+        roots={"user": xana_home() / "agents", "project": project_root / ".xana" / "agents"},
+        agents=gateway.agents, agent_registry=agent_registry, tool_registry=tools))
 
     # deep_research(docs/design/lead-research-design.md):主模型当研究负责人,并行派出内置子研究员
     # (researcher:只有 web 组与 Read)。子研究员不接进度汇报(不触碰渠道)。
     if system_cfg.web_search.xana_search_url:
-        from xana.agents.researcher import RESEARCHER_AGENT, build_researcher_agent_spec
+        from xana.agents.researcher import build_researcher_agent_spec
         from xana.tools.builtin.lead_research import LeadResearchTool
         gateway.agents[RESEARCHER_AGENT] = _doc_agent_factory(build_researcher_agent_spec(), progress=False)
         await _register(LeadResearchTool(
@@ -547,6 +547,7 @@ async def boot(
     # command router so /compact reaches the same buffer.
     command_router = DefaultCommandRouter(
         session_config_store=session_config_store,
+        agent_registry=agent_registry,
         active_context_store=active_ctx,
         gateway=gateway,
         context_sdk=context_sdk,

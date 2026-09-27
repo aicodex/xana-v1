@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from xana.agents.delegation import AGENT_RUN_TOOL, agent_listing, subagent_ceiling
-from xana.agents.interfaces import Agent
+from xana.agents.interfaces import Agent, AgentRegistry
 from xana.extension_api.contracts import ContextFragment, ExtensionData, TurnInputContext
 from xana.extension_api.interfaces import TurnInputContributor
 from xana.tools.interfaces import ToolRegistry
@@ -26,8 +26,10 @@ DELEGATION_GUIDE = (
 
 
 class AgentListingContributor(TurnInputContributor):
-    def __init__(self, *, agents: Mapping[str, Agent], tool_registry: ToolRegistry) -> None:
-        self._agents = agents            # 活的映射:新建的 agent 下一条消息起出现在列表里
+    def __init__(self, *, agents: Mapping[str, Agent], agent_registry: AgentRegistry | None,
+                 tool_registry: ToolRegistry) -> None:
+        self._agents = agents            # 活的映射:增删改的 agent 下一条消息起反映在列表里
+        self._agent_registry = agent_registry
         self._tools = tool_registry
 
     async def contribute_turn_input(
@@ -38,6 +40,8 @@ class AgentListingContributor(TurnInputContributor):
     ) -> list[ContextFragment]:
         if ctx.available_tools is not None and AGENT_RUN_TOOL not in ctx.available_tools:
             return []
+        if self._agent_registry is not None:
+            await self._agent_registry.refresh()
         if not self._agents:
             return []
         specs = await self._tools.list_specs()
