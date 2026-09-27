@@ -245,11 +245,10 @@ async def _start_daemon_in_process(
 
 async def _run(argv: argparse.Namespace) -> int:
     home = xana_home()
-    _write_pidfile(home)
     try:
         return await _run_inner(argv)
     finally:
-        _remove_pidfile(home)
+        _remove_pidfile(home)  # 只删记录着本进程 pid 的 pidfile
 
 
 async def _run_inner(argv: argparse.Namespace) -> int:
@@ -294,6 +293,9 @@ async def _run_inner(argv: argparse.Namespace) -> int:
             f" — another serve is already running ({e})"
         ) from None
     _preflight.close()
+    # 拿到单实例锁之后才写 pidfile:绑定失败的第二个 serve 不能覆盖(退出时再删掉)存活实例的
+    # pidfile,否则 xana sync 找不到它、跳过重启,旧代码继续跑。
+    _write_pidfile(xana_home())
 
     daemon_bridge = DaemonBridgeAdapter(
         session_resolver=boot_result.session_resolver,
