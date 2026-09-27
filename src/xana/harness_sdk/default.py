@@ -1230,7 +1230,7 @@ class DefaultHarness(Harness):
                     return
 
             # ---- per-turn tools_schema + system prompt(deferred 揭示后下轮生效)----
-            revealed = _revealed_tools(history_msgs)
+            revealed = revealed_tools_from_messages(history_msgs)  # 揭示状态存在历史里(CC 同款)
             if not _can_use(available, TOOL_SEARCH_TOOL_NAME):
                 revealed = {sp.component.name for sp in specs}  # 没有 tool_search 就不隐藏任何工具
             schemas, deferred_names = _split_tool_schemas(specs, revealed)
@@ -1729,8 +1729,6 @@ def _split_tool_schemas(
     return schemas, deferred
 
 
-# 揭示状态存在历史里(CC 同款思路);实现移到 compact.py 与 /compact 共用,留别名保持旧 import。
-_revealed_tools = revealed_tools_from_messages
 
 
 class _ForkedActiveContextStore(ActiveContextStore):

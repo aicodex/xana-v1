@@ -444,6 +444,12 @@ def build_help_menu(
     )
 
 
+def build_notice_card(*, card_id: str, text: str) -> "UnifiedCardState":
+    """一次性提示卡(如"尚未配对"):只有正文,无按钮、无脚标。"""
+    return UnifiedCardState(card_id=card_id, menu=MenuSection(body_md=text),
+                            footer=FooterText(state="menu"), terminal=True)
+
+
 def build_attach_menu(
     *, card_id: str, candidates: tuple[tuple[str, str], ...]
 ) -> "UnifiedCardState":

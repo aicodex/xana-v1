@@ -88,16 +88,6 @@ def placeholder_to_sdk(ph: Placeholder, *, transcript_path: str = "") -> Regular
     )
 
 
-def to_sdk_item(
-    item: MemoryMessage | Placeholder, *, transcript_path: str = ""
-) -> Message | None:
-    if isinstance(item, Placeholder):
-        return placeholder_to_sdk(item, transcript_path=transcript_path)
-    if isinstance(item, MemoryMessage):
-        return memory_message_to_sdk(item)
-    return None
-
-
 def _parse_assistant_tool_calls(metadata: dict) -> tuple[_ToolCallInternal, ...]:
     """Reconstruct ``_ToolCallInternal`` tuples from legacy assistant
     metadata.

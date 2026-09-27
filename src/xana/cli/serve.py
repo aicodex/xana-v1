@@ -92,11 +92,6 @@ def build_adapters(
     return adapters
 
 
-def build_adapters_from_env(*, bindings_root: Path, env: dict[str, str]) -> list[Adapter]:
-    """Backward-compat shim: delegates to build_adapters with an empty SystemConfig."""
-    return build_adapters(bindings_root=bindings_root, env=env, system=SystemConfig())
-
-
 def _make_scheduler_dispatch(gateway, meta_service=None):
     """SchedulerRunner 的 dispatch 回调:把到点任务的 prompt 注入 gateway。
 

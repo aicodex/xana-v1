@@ -65,14 +65,12 @@ class XanacApp(App):
     def __init__(
         self,
         *,
-        daemon_client: Any = None,
+        daemon_client: Any,
         session_id: str = "default",
         adapter_id: str = "cli",
-        gateway: Any = None,   # legacy fallback (tests)
     ) -> None:
         super().__init__()
         self.daemon_client = daemon_client
-        self.gateway = gateway
         self.session_id = session_id
         self.adapter_id = adapter_id
         self._fg_run_id: str | None = None
@@ -234,34 +232,12 @@ class XanacApp(App):
         if not text:
             return
         self.query_one("#input", Input).value = ""
-
-        if self.daemon_client is not None:
-            asyncio.create_task(
-                self.daemon_client.submit(self.session_id, text)
-            )
-            return
-
-        # Legacy gateway path (kept for any remaining in-process tests)
-        from xana.agent_adapter.contracts import InboundMessage
-        inbound = InboundMessage(
-            adapter_id=self.adapter_id,
-            session_id=self.session_id,
-            text=text,
-        )
-
-        async def _drain() -> None:
-            try:
-                async for _ in self.gateway.submit(inbound):
-                    pass
-            except Exception:
-                log.exception("xanac submit drain crashed")
-
-        asyncio.create_task(_drain())
+        asyncio.create_task(self.daemon_client.submit(self.session_id, text))
 
     async def on_button_pressed(self, event) -> None:  # type: ignore[no-untyped-def]
         btn = event.button
         spec = getattr(btn, "spec", None)
-        if spec is None or self.daemon_client is None:
+        if spec is None:
             return
         sid = self.session_id
         if spec.send:
@@ -292,10 +268,7 @@ class XanacApp(App):
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
         if isinstance(item, _TabItem):
-            if self.daemon_client is not None:
-                await self.daemon_client.attach(self.session_id, item.run_id)
-            elif hasattr(self.gateway, "attach"):
-                await self.gateway.attach(self.session_id, item.run_id)
+            await self.daemon_client.attach(self.session_id, item.run_id)
             self.set_focus(self.query_one("#input", Input))
 
 

@@ -244,7 +244,7 @@ class DefaultAgentGateway(AgentGateway):
         # the harness's tool-abort poll sees it on the currently-running turn.
         abort_signal = AbortSignal()
         self._abort_signals[new_run.run_id] = abort_signal
-        # gateway 的 run_id 必须传给 harness,否则 adapter 端 _render_states 用
+        # gateway 的 run_id 必须传给 harness,否则 adapter 端卡片状态用
         # gateway run_id 建 key,但 render() 收到的事件 run_id 是 harness 自产的
         # uuid 形式,frozen 检查永远 miss → detach 后旧卡还在刷流。
         inbound = replace(
@@ -266,7 +266,7 @@ class DefaultAgentGateway(AgentGateway):
             )
             return
         # PH 状态机依赖 run_started 才能在 adapter 端初始化 RunRenderState;
-        # 不发的话 _render_states 永远空,detach/freeze/switch 全部失效。
+        # 不发的话 adapter 端卡片状态永远空,detach/freeze/switch 全部失效。
         note = getattr(adapter, "note_progress", None)
         if note is not None:
             note({

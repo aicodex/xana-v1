@@ -1,6 +1,6 @@
 """飞书 renderer: UnifiedCardState -> 飞书 interactive card schema dict。
 
-独立模块,不导入 feishu_card.py;输出可直接喂 lark send_message / patch_message。
+输出可直接喂 lark send_message / patch_message。
 Section 顺序固定:top buttons -> compact -> answer -> menu -> bottom buttons -> footer。
 
 飞书卡内容上限约 30KB,本 renderer 给每 tool body 限 800 字,避免超限。

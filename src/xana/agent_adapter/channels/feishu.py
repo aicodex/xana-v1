@@ -14,16 +14,15 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, AsyncIterator
 
 from xana.agent_adapter.channels._bindings import BindingStore
-from xana.agent_adapter.channels._draft import TurnDraft
 from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels.card import Card
-from xana.agent_adapter.channels.feishu_card import build_card
 from xana.agent_adapter.channels.feishu_events import parse_message_event
 from xana.agent_adapter.channels.process_view import DEFAULT_IM_VIEW_MODE as DEFAULT_VIEW_MODE
 from xana.agent_adapter.channels.unified_card import (
     UnifiedCardState,
     build_attach_menu,
     build_help_menu,
+    build_notice_card,
 )
 from xana.agent_adapter.channels.unified_card_feishu import render as render_unified
 from xana.agent_adapter.contracts import (
@@ -211,58 +210,20 @@ class FeishuAdapter(Adapter):
                 "您尚未配对。请管理员运行: "
                 f"`xana pair approve feishu {user_id}`"
             )
-            card = build_card(TurnDraft(run_id="?", content=hint), finalize=True)
+            card = render_unified(build_notice_card(card_id="pairing", text=hint))
             await self._api_sender.send_card(receive_id=chat_id, card=card)
         return False
 
     async def _on_card_action(self, event: dict[str, Any]) -> None:
         value = (event.get("action") or {}).get("value", {}) or {}
         chat_id = str((event.get("context") or {}).get("open_chat_id", "") or "")
-        action = str(value.get("action", "") or "")
-        send_field = str(value.get("send", "") or "")
-        if action in ("switch_foreground", "attach_run"):
-            target_run_id = str(value.get("run_id", "") or "")
-            if not target_run_id or not chat_id or self._gateway is None:
-                return
-            session_id = self._allocate_sid(chat_id)
-            try:
-                await self._gateway.attach(session_id, target_run_id)
-            except Exception:
-                pass
-            return
-        # Unified card top buttons emit value={"send": "/cancel <run_id>"} or
-        # value={} for the "back to background" button. Adapter-local detach.
-        if send_field.startswith("/cancel "):
-            if not chat_id or self._gateway is None:
-                return
-            session_id = self._allocate_sid(chat_id)
-            rid = send_field.split(" ", 1)[1].strip()
-            if rid:
-                try:
-                    await self._gateway.cancel(session_id, rid)
-                except Exception:
-                    pass
-            return
-        # Legacy/back-compat action names from earlier card builders.
-        if action == "stop_foreground":
-            if not chat_id or self._gateway is None:
-                return
-            session_id = self._allocate_sid(chat_id)
-            runs = getattr(self._gateway, "_inflight", {}).get(session_id, [])
-            fg = next((ir for ir in runs if getattr(ir, "is_attached", False)), None)
-            if fg is None:
-                return
-            try:
-                await self._gateway.cancel(session_id, fg.run_id)
-            except Exception:
-                pass
-            return
+        # 回调 value 只有三种(unified_card_feishu._btn):send_text / load_tools / detach。
         # 加载剩余工具:adapter 本地动作,不走 router,只刷卡。
         load_card = value.get("load_tools")
         if load_card:
             await self._handle_load_tools(chat_id, str(load_card))
             return
-        if action == "detach_foreground" or value.get("detach"):
+        if "detach" in value:  # 值可能为空串(无 ph_run_id),按键判断
             if not chat_id or self._gateway is None:
                 return
             session_id = self._allocate_sid(chat_id)
@@ -271,7 +232,7 @@ class FeishuAdapter(Adapter):
             except Exception:
                 pass
             return
-        send_text = str(value.get("send_text", "") or send_field or "")
+        send_text = str(value.get("send_text", "") or "")
         open_id = str((event.get("operator") or {}).get("open_id", "") or "")
         if not send_text or not chat_id:
             return

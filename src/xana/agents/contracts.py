@@ -72,7 +72,6 @@ class SubagentRequest:
     task: str
     new_session_id: str
     mode: DelegationMode = "isolated"
-    allowed_tools: tuple[str, ...] | None = None
     fork_context_messages: bool = False
     inherit_cwd: bool = True
     isolation: IsolationMode = "none"

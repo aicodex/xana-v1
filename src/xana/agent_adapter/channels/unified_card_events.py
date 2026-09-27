@@ -589,10 +589,3 @@ def _make_tool_header(name: str, summary: str,
     if status:
         head += f" · {status}"
     return head
-
-
-def _tool_header(name: str, args: dict[str, Any]) -> str:  # noqa: F841
-    """请求态标题(已废弃,现走 _make_tool_header(name, summary, None))。"""
-    return _make_tool_header(name, _tool_summary(args), None)
-
-

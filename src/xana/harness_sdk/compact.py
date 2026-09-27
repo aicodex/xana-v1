@@ -76,12 +76,6 @@ def summary_progress(text: str) -> tuple[str, str]:
     return bar, current
 
 
-def summary_progress_bar(text: str) -> str:
-    """兼容入口:进度条 + 状态合并为一段文本(harness 侧/旧测试仍用)。"""
-    body, current = summary_progress(text)
-    return f"{body} · {current}"
-
-
 async def generate_summary(
     client, *, provider: str, model: str, messages: Sequence[MemoryMessage],
     on_progress: Callable[[str], Awaitable[None]] | None = None,
