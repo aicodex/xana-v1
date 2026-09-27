@@ -101,7 +101,7 @@ verdict 规则：canary 失败，或 Δ ≤ 0（有评估时）→ `rolled_back`
 - **assemble_prompt()** 固定四段 + 收尾指令：
   1. L3 当前计划（`TodoStore.load("evolution-meta")`，带状态图标渲染）；
   2. 账本近期 N 条（默认 `recent_n=10`，episode_id / verdict / delta / closure_tokens）；
-  3. 当前 Agent 文档（优先 `~/.xana/agents/{agent}/AGENT.md` 全文；缺失则退回 gateway 里该 agent 的 `spec().identity`）；
+  3. 当前 Agent 文档（优先 `~/.xana/agents/{agent}/AGENT.md` 全文；缺失则退回 gateway 里该 agent 的 `spec().system_prompt`，为 None 时写"xana 默认系统提示词"）；
   4. 上轮评估结果（`last_eval.json` + evalset，**只渲染 visible 集，held-out 分数不回流**）。
   收尾固定指令：按 episode 闭环提案（变更单假设→diff→证据 → 冻结 → 评估 → 判决），不要直接改 Agent 文档（被 policy 拦截）。
 - **fire()**：到点唤醒——install_cron（幂等）→ `declare` 新 episode（`goal="迭代 agent {name}"`，`budget=DEFAULT_META_BUDGET={"max_tokens": 100_000}`，doc_path 指向当前 AGENT.md）→ `start()` → `assemble_prompt()` 经首个已注册 adapter 的 `gateway.submit(InboundMessage)` 注入。**每次 fire 用全新 session_id**（`evolution-{uuid8}`，不继承任何 worker 上下文），metadata 带 `target_agent` / `source="evolution_meta"` / `episode_id`；drain 任务吞异常。

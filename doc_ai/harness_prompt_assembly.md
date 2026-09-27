@@ -36,13 +36,12 @@ status: active
 
 ### system 拼装（`build_system_prompt()`，会话内固定）
 
-段序：INTRO、(identity)、SYSTEM、DOING_TASKS、ACTIONS、env、tools、extension_sections、USING_TOOLS、TONE、COMMUNICATING、OUTPUT、profile_tail。规则：
+默认提示词段序：INTRO、SYSTEM、DOING_TASKS、ACTIONS、env、tools、extension_sections、USING_TOOLS、TONE、COMMUNICATING、OUTPUT，最后是 profile_tail。规则：
 
 - **profile_tail**（`profile_sections(PromptProfile)`）：会话级开关文本，固定在最末，顺序为进度核查 → 广泛查看 → 时间 → 已答视为完成 → 自主运行段（`mode=unattended` 时）→ 长期指令。交互默认为空（照 CC：交互不额外干预）；原则是少干预、重验证，完成判定交给 verify 与目标评估器。
 
 - **会话内固定**：`DefaultHarness._session_system` 按 (session, agent) 缓存首轮生成的 system，之后每次请求原样复用。会话内换模型不改 system，改为追加 `model_switch` note（Codex 同款）。依据与缓存实测见 [turn-control-design](../docs/design/turn-control-design.md) §1–§2。
-- `override`（`config_snapshot["agent_system_prompt"]`）非空 → 跳过全部静态段，只保留 env / tools / extension_sections。
-- identity（`config_snapshot["agent_identity"]`）插在 INTRO 与 SYSTEM 之间，仅 override 为空时生效。
+- **agent 模板**（`config_snapshot["agent_system_prompt"]`，即 AgentSpec.system_prompt）非空时它就是 system：`${base_prompt}` 替换为上面的完整默认提示词（不含 profile_tail），`${env}` 替换为环境段，`${extensions}` 替换为扩展片段，未知占位符原样保留；不含占位符 = 完全替换，除 profile_tail 外不追加任何内容（设计见 [agent-composition-design](../docs/design/agent-composition-design.md) §3.4）。
 - env 段（`env_section()`）：cwd、是否 git 仓库、平台、shell、OS、模型名（取会话建立时的模型）。
 - tools 段（`tools_section()`）恒为空字符串——完整 schema 走 `ModelRequest.tools_schema`（CC 同款）。
 - extension_sections：extension `PromptAssembler`（`ext.context`）的输出。契约要求 **ContextContributor 输出会话内稳定**；因 system 按会话缓存，首轮输出即本会话版本。
@@ -58,10 +57,10 @@ status: active
 
 | kind | 何时追加 |
 |---|---|
-| `memory_recall` | 每条新用户消息之后，有未注入过的命中时。按文件路径去重，跳过模型已 Read 的文件；单次 ≤5 个文件、每个 ≤4KB / 200 行；会话累计 60KB 后停止；检索词少于 2 个不召回（中文不以空格判断） |
-| `turn_input` | 技能 prompt blocks + extension `contribute_turn_input` 片段，内容变化时 |
-| `deferred_tools` | 未揭示的 defer 工具名单（名字: 描述）变化时；名单清空且曾列出过时追加"均已加载" |
-| `todo_reminder` | 距上次 TodoWrite 与距上次提醒都满 10 个 assistant 轮次时，附当前清单（CC `TODO_REMINDER_CONFIG`） |
+| `memory_recall` | agent 可用 memory 组工具时，每条新用户消息之后，有未注入过的命中时。截断提示"用 Read 查看"仅在可用 Read 时出现。按文件路径去重，跳过模型已 Read 的文件；单次 ≤5 个文件、每个 ≤4KB / 200 行；会话累计 60KB 后停止；检索词少于 2 个不召回（中文不以空格判断） |
+| `turn_input` | 技能 prompt blocks + extension `contribute_turn_input` 片段，内容变化时。贡献者经 `TurnInputContext.available_tools` 得知本 agent 的可用工具（技能列表仅在可用 `skill_load` 时列出） |
+| `deferred_tools` | 未揭示的 defer 工具名单（名字: 描述）变化时；名单清空且曾列出过时追加"均已加载"。agent 不可用 `tool_search` 时不隐藏任何工具（全部给完整 schema），也就没有这条 |
+| `todo_reminder` | agent 可用 TodoWrite 时，距上次 TodoWrite 与距上次提醒都满 10 个 assistant 轮次，附当前清单（CC `TODO_REMINDER_CONFIG`） |
 | `model_switch` | 会话内切换模型后 |
 
 compact 摘要覆盖其前的 note；去重集合与累计量都靠扫描历史得出，compact 后自然重置并重新注入。

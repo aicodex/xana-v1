@@ -36,7 +36,7 @@ status: active
 
 - `run_id` 取 `request.metadata["gateway_run_id"]`；没有则回退 `{session_id}-{uuid8}`（单测/直调场景）。这保证 adapter 端按 gateway run_id 建的渲染状态和 harness 事件对得上。
 - 模型/effort/async_mode 以 `SessionConfigStore` 的会话配置覆盖默认值；`context_window` / `force_compact` 可被 `model_thresholds[model]` 按模型覆盖。
-- `config_snapshot` 携带 `provider`、`agent_identity`、`agent_system_prompt`、async/streaming/thinking/search_provider 等；后三者来自会话配置。
+- `config_snapshot` 携带 `provider`、`agent_system_prompt`（AgentSpec.system_prompt 模板）、`tools` / `disallowed_tools`（AgentSpec 的工具选择表达式，harness 解析）、async/streaming/thinking/search_provider 等；后三者来自会话配置。
 - `abort` 取 `request.metadata["abort_signal"]`（gateway 预注册的可变信号），否则新建实例。
 - `metadata` 装配 `main_writer` / `run_jsonl_writer` / `write_queue` / `runs_dir`，供 harness 异步写回与 per-run JSONL 落盘。
 - `permission` 目前恒为 `PermissionContext(mode="default", ...)`。

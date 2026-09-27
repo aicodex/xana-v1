@@ -14,7 +14,9 @@ status: active
 
 - [contracts.py](../src/xana/agents/contracts.py) — `AgentSpec` 及相关枚举
 - [registry.py](../src/xana/agents/registry.py) — `agent_spec_from_doc()`：AGENT.md manifest+正文 → `AgentSpec` 字段映射
-- [system_prompt.py](../src/xana/harness_sdk/system_prompt.py) — `build_system_prompt`，identity/override 的实际消费方
+- [system_prompt.py](../src/xana/harness_sdk/system_prompt.py) — `build_system_prompt`，`system_prompt` 模板的实际消费方
+- [toolsets.py](../src/xana/tools/toolsets.py) — 内置工具组表与 `resolve_tools`（`tools` 表达式的解析方）
+- 设计：[agent-composition-design](../docs/design/agent-composition-design.md)
 
 ## 职责
 
@@ -25,15 +27,16 @@ status: active
 - `component: ComponentSpec` — agent 身份载体（kind/name/qualified_name/source），`name` 是 gateway 路由和 harness `agent_name` 的实际值。
 - `prompt_id: str` — prompt 模板标识（如 builtin chat 用 `"chat-default"`）；v1 未做模板查表，实际 prompt 由 harness 13 段拼装。
 - `when_to_use: str` — 描述该 agent 适用场景，供未来 registry/委派选择使用。
-- `allowed_tools` / `disallowed_tools` / `allowed_skills` / `hooks: tuple[str, ...]` — 工具/技能/钩子名白名单或黑名单。`allowed_tools` / `disallowed_tools` 已生效：`ChatAgent` 放进 `config_snapshot`，harness 在 tools schema 与执行两处过滤（空白名单 = 不限制，builtin chat 即如此）；`allowed_skills` / `hooks` 仍仅声明。
+- `tools: tuple[str, ...] = ("default",)` — 工具选择表达式，元素为 `default`（所有默认组的工具）、组名（见 [tools_spec](tools_spec.md) 的工具组）、工具名或 `*`（工具目录全部）；`()` = 零工具。builtin chat 用默认值。
+- `disallowed_tools: tuple[str, ...]` — 在 `tools` 结果上再减，同样接受组名。两者由 `ChatAgent` 放进 `config_snapshot`（键 `tools` / `disallowed_tools`），harness 每次 run 用 `resolve_tools` 解析一次，tools schema、执行前校验与各项注入都以结果为准（见 [harness_tool_dispatch](harness_tool_dispatch.md)）。写错的组名 / 工具名 boot 记 warning。
+- `allowed_skills` / `hooks: tuple[str, ...]` — 技能 / 钩子名单，仍仅声明。
 - `model: str | None` / `effort: str | int | None` — 默认模型与推理强度；运行时以 `SessionConfigStore` 的会话配置优先（见 [agents_request_mapping](agents_request_mapping.md)）。
 - `permission_policy: str | None` / `sandbox_policy: SandboxPolicySpec | None` — 指向 [policy](policy.md) 模块的合约，v1 未执行。
 - `memory_scope: MemoryScope | None` — `user / project / agent / session` 之一。
 - `isolation: IsolationMode`（`none / worktree / process / remote`）、`background: bool` — 声明执行形态，v1 未执行。
 - `parent_agent: str | None` — 父 agent 名，供 subagent 委派链使用（见 [agents_subagents](agents_subagents.md)）。
 - `max_turns: int | None` — 单次 run 的工具轮上限，经 `config_snapshot["max_turns"]` 传入 harness；`None` 用缺省 25。
-- `system_prompt: str | None` — `None` → 完整默认 13 段系统提示；非空 → 替换全部静态段（`build_system_prompt(override=...)`），环境段照常保留；记忆、技能等每轮变化的上下文以 ContextNote 追加进历史（见 [harness_prompt_assembly](harness_prompt_assembly.md)）。
-- `identity: str` — Agent 身份段，追加在 INTRO 之后、SYSTEM 之前；仅 `system_prompt=None` 时生效。
+- `system_prompt: str | None` — `None` → xana 默认系统提示词；字符串 → 系统提示词模板：`${base_prompt}` 嵌入完整默认提示词（在默认上扩展），`${env}` 环境段，`${extensions}` 扩展片段，未知占位符原样保留；不含占位符 = 完全替换（见 [harness_prompt_assembly](harness_prompt_assembly.md)）。
 - `prompt_profile: PromptProfile | None` — 会话级提示词开关（`harness_sdk/contracts.py`）。`None` = 交互默认。会话首次使用时由 ChatAgent 固化进 `SessionConfig.prompt_profile`，之后改 AGENT.md 不影响已有会话。两种模式默认值（照 Claude Code，少干预）：
   - `interactive`：所有开关关闭，system 不额外加任何文本；
   - `unattended`：只加 CC 自主运行段（随模式）+ `goal_mode=True`（目标评估器）；
@@ -48,19 +51,20 @@ status: active
 |---|---|---|
 | `kind: agent`（必填） | — | 区分文档 kind；缺省视为 skill |
 | `name`（必填） | `component.name` | 同名校验非空 |
-| `goal`（必填） | `component.description` + identity 第二行 | goal 映射到 manifest.description |
-| `tools`（必填，非空字符串列表） | `allowed_tools` | 工具白名单 |
+| `goal`（必填） | `component.description` | goal 映射到 manifest.description |
+| `tools`（可选，字符串列表） | `tools` | 工具选择表达式；不写 = `("default",)`，`[]` = 零工具 |
+| `disallowed_tools`（可选，字符串列表） | `disallowed_tools` | 在 `tools` 结果上再减，接受组名 |
 | `skills`（可选） | `allowed_skills` | 技能白名单 |
 | `budget`（可选，mapping） | `component.metadata["budget"]` | AgentSpec 无对应字段 |
 | `stop_rules`（可选，字符串列表） | `component.metadata["stop_rules"]` | 阶段四消费 |
 | `output_contract`（可选，字符串） | `component.metadata["output_contract"]` | 阶段四消费 |
-| 正文（frontmatter 之后） | `identity` 第三段起 | 工作流步骤等内容 |
+| 正文（frontmatter 之后） | `system_prompt` | 系统提示词模板；空正文 = `None`（默认提示词） |
 
-identity 渲染为 `"# {name}\n\n目标:{goal}\n\n{正文}"`，插在 INTRO 之后、SYSTEM 之前；`system_prompt=None` 保留默认 13 段系统提示（不用 override）。生成的其他字段：`qualified_name="user.{name}"`、`prompt_id="agent.{name}"`、`ComponentSource(source_type="user", scope="user", path=AGENT.md 路径)`。
+正文含 `${base_prompt}` 时在默认提示词上扩展，不含则完全替换。生成的其他字段：`qualified_name="user.{name}"`、`prompt_id="agent.{name}"`、`ComponentSource(source_type="user", scope="user", path=AGENT.md 路径)`。
 
-`tools`（→ `allowed_tools`）由 harness 强制执行（schema 只含名单内工具，名单外调用返回 policy_forbidden）；`allowed_skills` 仍无消费者。
+`tools` / `disallowed_tools` 由 harness 强制执行（schema 只含解析结果内的工具，范围外调用返回 policy_forbidden）；`allowed_skills` 仍无消费者。
 
 ## 不变量
 
 - Spec 为 frozen 值对象，运行期不可变；会话级覆盖走 `SessionConfigStore`，不改 spec。
-- `identity` / `system_prompt` 经 `DefaultAgentRequestMapper` 放入 `HarnessContext.config_snapshot`（键 `agent_identity` / `agent_system_prompt`），由 harness 拼 prompt 时消费，adapter 不可绕过。
+- `system_prompt` / `tools` / `disallowed_tools` 经 `DefaultAgentRequestMapper` 放入 `HarnessContext.config_snapshot`（键 `agent_system_prompt` / `tools` / `disallowed_tools`），由 harness 消费，adapter 不可绕过。

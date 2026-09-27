@@ -38,9 +38,30 @@ status: active
 | `user_facing_name` | str \| None | UI 展示名 |
 | `defer` | bool | 隐藏工具标记（见下） |
 | `display` | `ToolDisplay` \| None | 默认显示配置（见下）；None = 渲染层兜底 |
+| `yields_to_native` | bool | provider 有等价原生服务端能力时让位（如 deepseek 原生联网搜索）：harness 从 schema 剔除本工具、由 provider 注入原生能力；仅当本工具在该 agent 可用范围内时触发。目前只有旧版 web_search 声明 |
+| `toolset` | str | 所属工具组（见下）；`""` = 未分组，只能按工具名或 `*` 选中 |
 
 `concurrency` 已被 harness 消费：同一轮里连续的 `"parallel"` 调用成批并发执行（上限 10），其余独占执行，结果按模型发出顺序写回（`harness_sdk/tool_batches.py`，见 [harness_tool_dispatch](harness_tool_dispatch.md)）。当前声明 parallel 的：read / glob / grep / memory_search / web_search / web_open_url / web_fetch / deep_research / background_research。
 注意：`interrupt_behavior` / `permission_policy` / `sandbox_policy` / `timeout_s` 目前主要是声明与合约位，harness 的分发循环（`DefaultHarness._dispatch_tool`）尚未消费它们；实际超时/取消行为由各工具自己在 `execute`/`cancel` 内实现（如 Bash 的 timeout 与 SIGTERM/SIGKILL）。
+
+## toolset：工具组
+
+`Toolset(name, description, default)`（`tools/contracts.py`）登记在工具目录里：`ToolRegistry.register_toolset()` / `list_toolsets()`。agent 的 `tools` 表达式按组选工具（`default` = 所有 `default=True` 组的工具，见 [agents_spec](agents_spec.md)）。内置组的权威表是 `tools/toolsets.py` 的 `BUILTIN_TOOLSETS`，由 `boot()` 登记；附加项注册工具时同时登记自己的组并决定是否默认——专用工具登记为非默认组，只有显式写了该组的 agent 才拿得到。
+
+| 组 | 工具 | 默认 |
+|---|---|---|
+| fs | Read / Write / Edit / Glob / Grep | ✓ |
+| exec | Bash | ✓ |
+| web | web_search / web_open_url / web_fetch | ✓ |
+| memory | memory_search / memory_write | ✓ |
+| session | TodoWrite / EnterPlanMode / EnterWorktree / report_goal | ✓ |
+| meta | tool_search / skill_load | ✓ |
+| research | deep_research / background_research | ✓ |
+| schedule | CronCreate / CronList / CronDelete | ✓ |
+
+`tools/toolsets.py` 另有 `resolve_tools(selection, disallowed, specs, toolsets)`（表达式 → 工具名集合，纯函数，harness 每次 invoke 调一次）与 `unknown_names()`（boot 据此对 agent 里写错的组名 / 工具名记 warning）。
+
+系统级禁用：`system.json` 的 `tools.disabled`（组名或工具名），`boot()` 统一经一个注册函数注册，被禁用的工具不进入工具目录，对所有 agent 都不存在。设计见 [agent-composition-design](../docs/design/agent-composition-design.md)。
 
 ## display：工具的默认显示配置
 

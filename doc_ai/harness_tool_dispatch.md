@@ -22,7 +22,7 @@ status: active
 
 ## 事件 → 调度的形状
 
-`client.stream()` 的 `tool_call` 事件在流内只缓冲（tool_name / input / call_id），**中途不分发**——否则模型看不到工具结果（与 CC query loop 同款）。流出 done 后：无 tool_calls → turn 结束；有则按 `tool_batches.partition` 分批（连续的 `ToolSpec.concurrency == "parallel"` 调用成一批，`run_batch` 并发执行、上限 10；其余独占），完成事件与历史写回按模型发出顺序交付；每次调用走 `_dispatch_tool`（先按 `config_snapshot` 的 `allowed_tools` / `disallowed_tools` 校验，不在范围内返回 `policy_forbidden`；`tool_started` payload 带工具的 `display` 与会话 `view_mode`；工具经 `ToolContext.report_progress` 上报的进度在执行期间以 `tool_progress` 事件发出，dispatch 作为 task 运行，事件流被上游关闭时一并取消），结果写成 role="tool" 的 `MemoryMessage`（metadata 含 tool_use_id / tool_name / ok，以及可选的 `revealed_tools`、`display_text`），loop 回下一轮。
+`client.stream()` 的 `tool_call` 事件在流内只缓冲（tool_name / input / call_id），**中途不分发**——否则模型看不到工具结果（与 CC query loop 同款）。流出 done 后：无 tool_calls → turn 结束；有则按 `tool_batches.partition` 分批（连续的 `ToolSpec.concurrency == "parallel"` 调用成一批，`run_batch` 并发执行、上限 10；其余独占），完成事件与历史写回按模型发出顺序交付；每次调用走 `_dispatch_tool`（先校验是否在本 run 的可用工具集合内——每次 invoke 开始时用 `resolve_tools` 把 `config_snapshot` 的 `tools` / `disallowed_tools` 表达式对工具目录 + 扩展工具解析一次，tools schema 过滤也用同一结果；snapshot 无 `tools` 键时不过滤——不在范围内返回 `policy_forbidden`；`tool_started` payload 带工具的 `display` 与会话 `view_mode`；工具经 `ToolContext.report_progress` 上报的进度在执行期间以 `tool_progress` 事件发出，dispatch 作为 task 运行，事件流被上游关闭时一并取消），结果写成 role="tool" 的 `MemoryMessage`（metadata 含 tool_use_id / tool_name / ok，以及可选的 `revealed_tools`、`display_text`），loop 回下一轮。
 
 ## 单工具管线（`_dispatch_tool`）
 
