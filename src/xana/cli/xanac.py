@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import secrets
 import socket
@@ -24,7 +23,8 @@ from pathlib import Path
 from typing import TextIO
 
 from xana.agent_adapter.channels.daemon_bridge import agent_event_from_wire
-from xana.config.paths import xana_home
+from xana.config.paths import project_home, project_id, xana_home
+from xana.config.project_config import daemon_socket, load_system_config
 from xana.agent_adapter.channels.unified_card import UnifiedCardState
 from xana.agent_adapter.channels.unified_card_events import apply_event
 from xana.agent_adapter.channels.unified_card_cli import render as render_card
@@ -38,23 +38,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--session", default="default")
     p.add_argument("--random-session", action="store_true")
     p.add_argument("-i", "--interactive", action="store_true")
+    p.add_argument("--project", default=None, help="连接哪个项目的 serve(缺省 default)")
     return p.parse_args(argv)
 
 
 def _resolve_endpoint() -> tuple[str, str, str | None]:
-    """Returns (base_url, token, unix_socket_path or None)."""
-    home = xana_home()
-    sys_json = home / "config" / "system.json"
-    cfg = SystemConfig()
-    if sys_json.exists():
-        try:
-            cfg = SystemConfig.model_validate(
-                json.loads(sys_json.read_text() or "{}"))
-        except Exception:
-            cfg = SystemConfig()
+    """Returns (base_url, token, unix_socket_path or None) for the current project (XANA_PROJECT)."""
+    try:
+        cfg = load_system_config()
+    except (OSError, ValueError):
+        cfg = SystemConfig()
     d = cfg.daemon
-    unix = Path(d.unix_socket).expanduser() if d.unix_socket else None
-    if unix and unix.exists():
+    unix = daemon_socket(d)
+    if unix.exists():
         return ("http://unix", "", str(unix))
     if d.bind:
         return (f"http://{d.bind}:{d.port}", d.token, None)
@@ -93,7 +89,7 @@ def _ensure_serve_running() -> None:
         host, port_s = "127.0.0.1", "17777"
     if _is_listening(unix, host, int(port_s)):
         return
-    log = xana_home() / "logs" / "serve.log"
+    log = project_home() / "logs" / "serve.log"
     if not _serve_starting():   # 已有 serve 在启动中(boot 可能要一两分钟)就等它,不再另起一个
         _spawn_serve(log)
     deadline = time.monotonic() + _SERVE_START_TIMEOUT_S
@@ -116,7 +112,7 @@ _SERVE_START_TIMEOUT_S = 120.0
 def _serve_starting() -> bool:
     """pidfile 指向一个存活进程 = 有 serve 已在运行或启动中(serve 拿到单实例锁后才写 pidfile)。"""
     try:
-        pid = int((xana_home() / "run" / "serve.pid").read_text(encoding="utf-8").strip())
+        pid = int((project_home() / "run" / "serve.pid").read_text(encoding="utf-8").strip())
         os.kill(pid, 0)
         return True
     except (OSError, ValueError):
@@ -132,7 +128,7 @@ def _spawn_serve(log: Path) -> None:
     else:
         xana_bin_str = str(xana_bin)
     subprocess.Popen(
-        [xana_bin_str, "serve"],
+        [xana_bin_str, "serve", "--project", project_id()],
         stdout=f, stderr=f, start_new_session=True,
     )
 
@@ -269,6 +265,8 @@ async def _resolve_session_id(
 
 async def _async_main(argv: list[str]) -> int:
     args = _parse_args(argv)
+    if args.project:
+        os.environ["XANA_PROJECT"] = args.project
     text = " ".join(args.text).strip()
     if args.interactive or (not text and sys.stdin.isatty()):
         _ensure_serve_running()

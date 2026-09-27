@@ -12,12 +12,12 @@ import argparse
 from pathlib import Path
 from typing import TextIO
 
-from xana.config.paths import xana_home
+from xana.config.paths import project_home
 from xana.agent_adapter.channels._pairing import PairingStore
 
 
 def pairings_path() -> Path:
-    return xana_home() / "channels" / "pairings.json"
+    return project_home() / "channels" / "pairings.json"
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:

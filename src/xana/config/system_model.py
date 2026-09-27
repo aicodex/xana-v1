@@ -130,7 +130,7 @@ class PolicyConfig(BaseModel):
 class DaemonConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    unix_socket: str = "~/.xana/run/serve.sock"
+    unix_socket: str = ""               # 空 = 每个项目各自的 projects/<id>/run/serve.sock(project_config.daemon_socket)
     # Always bind a TCP port — this is the OS-level single-instance lock.
     # A second `xana serve` will fail with EADDRINUSE before it can take over
     # the unix socket (UnixSite silently unlinks the old one, defeating that
@@ -149,7 +149,8 @@ class DaemonConfig(BaseModel):
 
 
 class SystemConfig(BaseModel):
-    """System-level config persisted at ~/.xana/config/system.json.
+    """合并后的配置:用户级 ~/.xana/config/system.json + 项目级 projects/<id>/config.json
+    (channels / daemon / sessions / tools 由项目覆盖,见 config/project_config.py)。
 
     ``sessions`` is the unified (adapter_id, thread_id) -> session_id map
     used by SessionResolver. Key format: ``f"{adapter_id}:{thread_id}"``

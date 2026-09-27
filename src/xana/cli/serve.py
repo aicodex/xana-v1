@@ -24,7 +24,8 @@ import asyncio
 import os
 from pathlib import Path
 
-from xana.config.paths import xana_home
+from xana.config.paths import project_home, project_id, project_root
+from xana.config.project_config import daemon_socket
 from xana.agent_adapter.channels._bindings import BindingStore
 from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels.daemon_bridge import DaemonBridgeAdapter
@@ -158,23 +159,18 @@ _WORKSPACE_SEED = """# xana 助手
 """
 
 
-def _resolve_project_root(argv_project: Path | None) -> Path:
-    """Resolve the memory/project root for serve.
-
-    Explicit --project wins unchanged. Without it, default to
-    <xana_home>/workspace (NOT cwd — running serve from the xana source repo
-    must not mount the dev repo's README_ai.md as the bot's memory). The
-    workspace dir is created on demand and seeded with a minimal
-    README_ai.md if absent (never overwritten).
-    """
-    if argv_project is not None:
-        return Path(argv_project).resolve()
-    workspace = xana_home() / "workspace"
-    workspace.mkdir(parents=True, exist_ok=True)
-    readme = workspace / "README_ai.md"
+def _resolve_project_root() -> Path:
+    """当前项目(XANA_PROJECT,缺省 default)的项目目录,来自 projects/<id>/project.json
+    (docs/design/project-design.md §3)。项目未注册即退出并提示;目录缺 README_ai.md 时补一个最小的。"""
+    try:
+        root = project_root()
+    except LookupError as exc:
+        raise SystemExit(f"[xana serve] {exc}") from None
+    root.mkdir(parents=True, exist_ok=True)
+    readme = root / "README_ai.md"
     if not readme.exists():
         readme.write_text(_WORKSPACE_SEED, encoding="utf-8")
-    return workspace.resolve()
+    return root.resolve()
 
 
 def _acquire_instance_lock(home: Path):
@@ -241,7 +237,7 @@ async def _start_daemon_in_process(
     """
     boot_result = await boot(
         project_root=project_root,
-        history_root=xana_home() / "sessions",
+        history_root=project_home() / "sessions",
     )
     bridge = DaemonBridgeAdapter()
     await bridge.start()
@@ -259,7 +255,7 @@ async def _start_daemon_in_process(
 
 
 async def _run(argv: argparse.Namespace) -> int:
-    home = xana_home()
+    home = project_home()      # 锁、pid、socket 都按项目(一个项目一个 serve)
     lock = _acquire_instance_lock(home)
     # 拿到单实例锁即写 pidfile(启动中也能被 xana sync 找到并重启);拿不到锁的进程根本走不到这里,
     # 不会覆盖或删掉存活实例的 pidfile。
@@ -272,14 +268,14 @@ async def _run(argv: argparse.Namespace) -> int:
 
 
 async def _run_inner(argv: argparse.Namespace) -> int:
-    project_root = _resolve_project_root(argv.project)
-    print(f"[xana serve] workspace {project_root}")
+    project_root = _resolve_project_root()
+    print(f"[xana serve] project {project_id()} · workspace {project_root}")
     from xana.cli.commands.pair import pairings_path
     cp = DefaultConfigProvider()
     boot_result = await boot(
         project_root=project_root,
         config_provider=cp,
-        history_root=xana_home() / "sessions",
+        history_root=project_home() / "sessions",
     )
     system = cp.load_system_config()  # boot() already called cp.load()
     bindings_root = pairings_path().parent
@@ -321,16 +317,16 @@ async def _run_inner(argv: argparse.Namespace) -> int:
     await boot_result.gateway.register_adapter("cli", daemon_bridge)
     on_daemon_action = _make_daemon_on_action(boot_result.gateway)
     daemon_tasks: list[asyncio.Task] = []
-    if daemon_cfg.unix_socket:
-        unix_path = Path(daemon_cfg.unix_socket).expanduser()
-        unix_path.parent.mkdir(parents=True, exist_ok=True)
-        unix_app = build_daemon_app(
-            bridge=daemon_bridge, token="", on_action=on_daemon_action,
-        )
-        daemon_tasks.append(
-            asyncio.create_task(run_unix_socket(unix_app, str(unix_path)))
-        )
-        print(f"[daemon] unix socket {unix_path}")
+    # 每个项目一个 unix socket(未配置时取 projects/<id>/run/serve.sock)
+    unix_path = daemon_socket(daemon_cfg)
+    unix_path.parent.mkdir(parents=True, exist_ok=True)
+    unix_app = build_daemon_app(
+        bridge=daemon_bridge, token="", on_action=on_daemon_action,
+    )
+    daemon_tasks.append(
+        asyncio.create_task(run_unix_socket(unix_app, str(unix_path)))
+    )
+    print(f"[daemon] unix socket {unix_path}")
     tcp_app = build_daemon_app(
         bridge=daemon_bridge, token=daemon_cfg.token, on_action=on_daemon_action,
     )
@@ -458,6 +454,8 @@ async def _run_inner(argv: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="xana serve")
-    p.add_argument("--project", type=Path, default=None)
+    p.add_argument("--project", default=None, help="项目 id(缺省 default;见 xana project list)")
     args = p.parse_args(argv)
+    if args.project:
+        os.environ["XANA_PROJECT"] = args.project   # 本进程内所有项目路径由此解析
     return asyncio.run(_run(args))

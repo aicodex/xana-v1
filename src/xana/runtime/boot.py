@@ -18,7 +18,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from xana.config.paths import xana_home
+from xana.config.paths import project_home, xana_home
+from xana.config.project_config import write_project_sessions
 from xana.agent_adapter.commands import DefaultCommandRouter
 from xana.agent_adapter.gateway import DefaultAgentGateway
 from xana.agent_adapter.progress import AdapterProgressSink
@@ -28,7 +29,6 @@ from xana.agents.researcher import RESEARCHER_AGENT
 from xana.agents.interfaces import Agent
 from xana.config.loader import (
     DefaultConfigProvider,
-    default_system_json_source,
     derive_compact_thresholds,
 )
 from xana.extension_api.builtin.agent_listing import AgentListingContributor
@@ -158,13 +158,13 @@ class _CompositeStateRepository(StateRepository):
 
 
 def _search_db_path(project_root: Path) -> Path:
-    """L1: 持久索引文件 ~/.xana/sessions/search-{project_hash}.db。
+    """L1: 持久索引文件 projects/<id>/sessions/search-{project_hash}.db。
 
     文件库让索引跨重启保留(connect 时按行水合),运行期靠 Write/Edit 的
     reindex 钩子增量更新,boot 的 rebuild_from_tree 只做幂等校准。
     """
     digest = hashlib.sha256(str(project_root).encode("utf-8")).hexdigest()[:16]
-    sessions = xana_home() / "sessions"
+    sessions = project_home() / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
     return sessions / f"search-{digest}.db"
 
@@ -297,14 +297,15 @@ async def boot(
     await _register(ToolSearchTool(tool_registry=tools))
     await _register(ReportGoalTool())  # 仅目标模式会话可见(harness 按 PromptProfile 过滤)
     scheduler = FileSchedulerService(
-        path=xana_home() / "scheduled_tasks.json", session_id="default")
+        path=project_home() / "scheduled_tasks.json", session_id="default")
     await _register(CronCreateTool(scheduler))
     await _register(CronListTool(scheduler))
     await _register(CronDeleteTool(scheduler))
 
-    todo_root = xana_home() / "sessions"
-    worktree_root = xana_home() / "worktrees"
-    session_config_root = xana_home() / "sessions"
+    # 会话级数据都属于当前项目(docs/design/project-design.md §3)
+    todo_root = project_home() / "sessions"
+    worktree_root = project_home() / "worktrees"
+    session_config_root = project_home() / "sessions"
     session_config_store: SessionConfigStore = FileSessionConfigStore(root=session_config_root)
     todo_store = TodoStore(root=todo_root)
     await _register(TodoWriteTool(todo_store))
@@ -315,12 +316,11 @@ async def boot(
     model_thresholds = {e.name: derive_compact_thresholds(e) for e in system_cfg.models}
     # SessionResolver — single source of truth for (adapter_id, thread_id) -> sid.
     # Seeded from system_cfg.sessions (read-once at boot per I16); mirror-writes
-    # back to the same system.json path.
-    _sys_json_path = default_system_json_source().path
-    assert _sys_json_path is not None
+    # the map back to this project's config.json (project-design §4).
     session_resolver = SessionResolver(
         system_config=system_cfg,
-        system_json_path=_sys_json_path,
+        system_json_path=cp.project_config_path,
+        writer=write_project_sessions,
     )
     # 联网:配置了 xana-search 服务时用 web_search(只返回搜索摘要)/ web_open_url(读全文 + 按目标提炼)
     # / background_research(服务端后台研究,本地模型);deep_research(主模型 + 子研究员)在 agent 注册后接入。

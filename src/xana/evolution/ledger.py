@@ -12,15 +12,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from xana.config.paths import xana_home
+from xana.config.paths import project_home
 from xana.evolution.contracts import LedgerEntry, LintViolation
 
 _VERDICTS = ("kept", "rolled_back", "abandoned")
 
 
 def default_evolution_home() -> Path:
-    """{XANA_HOME}/evolution(缺省 ~/.xana/evolution)。"""
-    return xana_home() / "evolution"
+    """当前项目的 projects/<id>/evolution(进化记录属于项目)。"""
+    return project_home() / "evolution"
 
 
 class Ledger:

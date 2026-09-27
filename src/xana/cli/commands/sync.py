@@ -61,6 +61,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def run(args: argparse.Namespace, *, out: TextIO) -> int:
     home = xana_home()
+    restart = not getattr(args, "no_restart", False)
+    # 先停掉所有在运行的项目 serve(之后可能要迁移数据,不能有进程在写),同步完再逐个拉起
+    stopped = _stop_running_serves(home, out) if restart else []
     code_target = home / _CODE_SUBDIR / "xana"
     mem_target = home / _MEM_SUBDIR
     sidecar = home / _SOURCE_SIDECAR
@@ -94,13 +97,61 @@ def run(args: argparse.Namespace, *, out: TextIO) -> int:
     home.mkdir(parents=True, exist_ok=True)
     sidecar.write_text(str(code_source) + "\n", encoding="utf-8")
 
-    if not getattr(args, "no_restart", False):
-        _restart_serve_if_running(home, out)
+    if restart or not _any_serve_running(home):
+        from xana.cli.commands.project import MigrationError, ensure_default_project
+        try:
+            ensure_default_project(out=out)
+        except MigrationError as exc:
+            print(f"[xana sync] 迁移失败,未启动 serve:{exc}", file=out)
+            return 1
+    else:
+        print("[xana sync] serve 仍在运行(--no-restart),跳过项目初始化 / 迁移", file=out)
+    for pid in stopped:
+        _start_serve(home, pid, out)
     return 0
 
 
-def serve_pid_path(home: Path) -> Path:
-    return home / "run" / "serve.pid"
+def serve_pid_paths(home: Path) -> dict[str, Path]:
+    """各项目 serve 的 pidfile;旧布局(迁移前)的 ~/.xana/run/serve.pid 记为默认项目。"""
+    paths = {}
+    base = home / "projects"
+    if base.is_dir():
+        for d in sorted(base.iterdir()):
+            if (d / "run" / "serve.pid").exists():
+                paths[d.name] = d / "run" / "serve.pid"
+    legacy = home / "run" / "serve.pid"
+    if legacy.exists():
+        paths.setdefault("default", legacy)
+    return paths
+
+
+def _live_pid(pidfile: Path) -> int | None:
+    try:
+        pid = int(pidfile.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return pid if _pid_alive(pid) and _cmdline_looks_like_serve(pid) else None
+
+
+def _any_serve_running(home: Path) -> bool:
+    return any(_live_pid(p) for p in serve_pid_paths(home).values())
+
+
+def _stop_running_serves(home: Path, out: TextIO) -> list[str]:
+    """停止所有在运行的项目 serve,返回它们的项目 id(同步后按原样重启)。"""
+    stopped = []
+    for project, pidfile in serve_pid_paths(home).items():
+        pid = _live_pid(pidfile)
+        if pid is None:
+            pidfile.unlink(missing_ok=True)
+            continue
+        _terminate(pid)
+        pidfile.unlink(missing_ok=True)
+        stopped.append(project)
+        print(f"[xana sync] stopped serve of project {project} (pid {pid})", file=out)
+    if not stopped:
+        print("[xana sync] serve not running — nothing to restart", file=out)
+    return stopped
 
 
 def _pid_alive(pid: int) -> bool:
@@ -141,34 +192,17 @@ def _terminate(pid: int, *, timeout: float = 5.0, poll: float = 0.2) -> None:
         pass
 
 
-def _restart_serve_if_running(xana_home: Path, out: TextIO) -> None:
-    """After a sync, restart `xana serve` if a live one is recorded in the pidfile."""
-    pidfile = serve_pid_path(xana_home)
-    if not pidfile.exists():
-        return
-    try:
-        pid = int(pidfile.read_text(encoding="utf-8").strip())
-    except ValueError:
-        pidfile.unlink(missing_ok=True)
-        return
-    if not _pid_alive(pid) or not _cmdline_looks_like_serve(pid):
-        pidfile.unlink(missing_ok=True)
-        print("[xana sync] serve not running — skipped restart", file=out)
-        return
-
-    _terminate(pid)
-    pidfile.unlink(missing_ok=True)
-
-    log_path = xana_home / "logs" / "serve.log"
+def _start_serve(home: Path, project: str, out: TextIO) -> None:
+    log_path = home / "projects" / project / "logs" / "serve.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "ab") as logfile:
         proc = subprocess.Popen(
-            [str(xana_home / "bin" / "xana"), "serve"],
+            [str(home / "bin" / "xana"), "serve", "--project", project],
             stdout=logfile,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-    print(f"[xana sync] serve restarted (pid {proc.pid}, log {log_path})", file=out)
+    print(f"[xana sync] serve of project {project} restarted (pid {proc.pid}, log {log_path})", file=out)
 
 
 def _resolve_code_source(

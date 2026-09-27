@@ -9,7 +9,9 @@ Three pieces:
     ``system.json`` from a ``ConfigSource`` and validates it through the
     pydantic ``SystemConfig`` schema; raises on shape errors.
   * ``DefaultConfigProvider`` — concrete ``ConfigProvider`` that loads
-    the system file and assembles a ``RuntimeConfig`` for the harness.
+    the user system file, overlays the project config (channels / daemon /
+    sessions / tools; docs/design/project-design.md §4) and assembles a
+    ``RuntimeConfig`` for the harness.
     When no default model is configured (fresh setup, empty models[]),
     it falls back to ``provider="fake"`` so boot can still run.
 
@@ -25,6 +27,7 @@ from importlib import resources
 from pathlib import Path
 
 from xana.config.paths import xana_home
+from xana.config.project_config import merge_system_config, project_config_path, read_project_config
 from xana.config.contracts import ConfigSource, ModelConfig, RawConfig, RuntimeConfig
 from xana.config.interfaces import ConfigProvider, ConfigReader
 from xana.config.system_model import ModelEntry, SystemConfig
@@ -119,18 +122,25 @@ class DefaultConfigProvider(ConfigProvider):
     re-reading.
     """
 
-    def __init__(self, reader: ConfigReader | None = None, source: ConfigSource | None = None) -> None:
+    def __init__(self, reader: ConfigReader | None = None, source: ConfigSource | None = None,
+                 project_config: Path | None = None) -> None:
+        """project_config:本项目的配置文件(缺省 projects/<当前项目>/config.json),覆盖用户配置的项目键。"""
         self._reader = reader or JsonSystemConfigReader()
         self._source = source or default_system_json_source()
+        self._project_config = project_config
         self._system: SystemConfig | None = None
         self._raw: RawConfig | None = None
+
+    @property
+    def project_config_path(self) -> Path:
+        return self._project_config if self._project_config is not None else project_config_path()
 
     async def load(self, project_root: Path) -> RuntimeConfig:
         assert self._source.path is not None
         ensure_user_system_json(self._source.path)
         raw = await self._reader.read(self._source)
         self._raw = raw
-        self._system = SystemConfig(**raw.values)
+        self._system = merge_system_config(raw.values, read_project_config(self.project_config_path))
         default_model = _resolve_default_model(self._system)
         return RuntimeConfig(
             project_root=project_root,

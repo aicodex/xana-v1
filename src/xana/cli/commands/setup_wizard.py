@@ -18,6 +18,15 @@ from pathlib import Path
 from typing import Callable, Optional, TextIO
 
 from xana.config.loader import ensure_user_system_json, user_config_dir
+from xana.config.paths import project_id
+from xana.config.project_config import (
+    PROJECT_KEYS,
+    daemon_socket,
+    load_system_config,
+    project_config_path,
+    read_project_config,
+    update_project_config,
+)
 from xana.config.system_model import SystemConfig
 
 AskFn = Callable[[str], str]
@@ -25,20 +34,27 @@ FeishuRegisterFn = Callable[[], Optional[dict]]
 
 
 def _load_raw() -> dict:
+    """用户级 system.json 与当前项目配置合并后的原始 dict(向导同时改模型与渠道)。"""
     path = ensure_user_system_json()
-    return json.loads(path.read_text(encoding="utf-8"))
+    user = json.loads(path.read_text(encoding="utf-8"))
+    return {**user, **read_project_config(project_config_path())}
 
 
 def _save_raw(data: dict) -> Path:
+    """校验后拆开写回:渠道(机器人)写当前项目的 config.json,其余写用户级 system.json。"""
     SystemConfig(**data)  # validate before write; raises on shape errors
+    project_part = {k: data[k] for k in ("channels",) if k in data}
+    user_part = {k: v for k, v in data.items() if k not in PROJECT_KEYS}
     path = user_config_dir() / "system.json"
     tmp = path.parent / (path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(user_part, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, path)
     try:
         path.chmod(0o600)
     except OSError:
         pass
+    if project_part:
+        update_project_config(project_config_path(), **project_part)
     return path
 
 
@@ -80,24 +96,23 @@ def run_wizard(
     else:
         print("[xana setup] 模型与渠道均已配置,无需更改。", file=out)
 
-    # daemon: ensure token exists in system.json, then surface endpoint hint.
-    sys_json = user_config_dir() / "system.json"
-    ensure_daemon_token(sys_json)
+    # daemon: ensure token exists in the project config, then surface endpoint hint.
+    project_json = project_config_path()
+    ensure_daemon_token(project_json)
     try:
-        cfg = SystemConfig(**json.loads(sys_json.read_text(encoding="utf-8")))
-        d = cfg.daemon
+        d = load_system_config().daemon
     except Exception:
         d = None
     if d is not None:
         print("", file=out)
-        print("[xana setup] daemon HTTP+SSE 已配置:", file=out)
-        print(f"    unix socket {Path(d.unix_socket).expanduser()}", file=out)
+        print(f"[xana setup] 项目 {project_id()} 的 daemon HTTP+SSE 已配置:", file=out)
+        print(f"    unix socket {daemon_socket(d)}", file=out)
         print(
             f"    TCP 端口    {d.port}"
-            f"(默认仅 unix;system.json 里把 daemon.bind 改成 '0.0.0.0' 暴露到 LAN — 慎重)",
+            f"(默认仅 unix;项目配置里把 daemon.bind 改成 '0.0.0.0' 暴露到 LAN — 慎重)",
             file=out,
         )
-        print(f"    token       已写入 {sys_json}(chmod 0600)", file=out)
+        print(f"    token       已写入 {project_json}(chmod 0600)", file=out)
     return 0
 
 
@@ -232,21 +247,9 @@ def _do_telegram(data: dict, *, ask: AskFn, out: TextIO) -> tuple[int, bool]:
     return 0, True
 
 
-def ensure_daemon_token(system_json: Path) -> None:
-    """If daemon.token is empty -> generate 32 bytes (64 hex chars) and write
-    back; chmod 0600. Idempotent: existing token preserved."""
-    data: dict = {}
-    if system_json.exists():
-        try:
-            data = json.loads(system_json.read_text() or "{}")
-        except json.JSONDecodeError:
-            data = {}
-    daemon = data.setdefault("daemon", {})
+def ensure_daemon_token(project_json: Path) -> None:
+    """项目配置的 daemon.token 为空时生成 32 字节(64 位十六进制)写回;已有则保留。"""
+    daemon = dict(read_project_config(project_json).get("daemon") or {})
     if not daemon.get("token"):
         daemon["token"] = secrets.token_hex(32)
-    system_json.parent.mkdir(parents=True, exist_ok=True)
-    system_json.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    os.chmod(system_json, 0o600)
+        update_project_config(project_json, daemon=daemon)

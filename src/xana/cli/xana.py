@@ -4,6 +4,7 @@ Subcommands:
   setup    First-time install: system.json + sync + launchers + PATH.
   sync     Refresh ~/.xana/code/ + ~/.xana/mem/ from the xana source.
   pair     Manage channel user pairing (list/approve/reject/revoke).
+  project  Manage projects: create / list (one serve and one bot per project).
   login    Kimi OAuth device-flow login (registers k3 / kimi-for-coding).
   logout   Remove stored Kimi credentials.
 
@@ -18,6 +19,7 @@ from typing import TextIO
 
 from xana.cli.commands import login as login_cmd
 from xana.cli.commands import pair as pair_cmd
+from xana.cli.commands import project as project_cmd
 from xana.cli.commands import setup as setup_cmd
 from xana.cli.commands import sync as sync_cmd
 
@@ -41,7 +43,7 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_parser = subparsers.add_parser(
         "serve", help="boot channel adapters from env and attach to gateway"
     )
-    serve_parser.add_argument("--project", type=__import__("pathlib").Path, default=None)
+    serve_parser.add_argument("--project", default=None, help="项目 id(缺省 default)")
     serve_parser.set_defaults(func=_run_serve)
 
     pair_parser = subparsers.add_parser(
@@ -49,6 +51,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pair_cmd.add_arguments(pair_parser)
     pair_parser.set_defaults(func=pair_cmd.run)
+
+    project_parser = subparsers.add_parser(
+        "project", help="manage projects (one serve and one bot per project)"
+    )
+    project_cmd.add_arguments(project_parser)
+    project_parser.set_defaults(func=project_cmd.run)
 
     login_parser = subparsers.add_parser(
         "login", help="kimi OAuth device-flow login (k3 / kimi-for-coding, 1M ctx)"
@@ -66,7 +74,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _run_serve(args: argparse.Namespace, *, out=None) -> int:  # noqa: ARG001
     from xana.cli.serve import main as serve_main
-    return serve_main(["--project", str(args.project)] if args.project else [])
+    return serve_main(["--project", args.project] if args.project else [])
 
 
 def main(argv: list[str] | None = None, *, out: TextIO | None = None) -> int:

@@ -17,6 +17,7 @@ import asyncio
 import dataclasses
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
 
+from xana.config.paths import project_id, project_root
 from xana.agent_adapter.contracts import CommandResult, CommandSpec, InboundMessage
 from xana.agent_adapter.interfaces import CommandRouter
 
@@ -85,7 +86,7 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/async",    description="异步模式开关 on/off(无参数切换)"),
             CommandSpec(name="/attach",   description="切回某个后台运行"),
             CommandSpec(name="/cancel",   description="取消当前 turn"),
-            CommandSpec(name="/project",  description="项目管理"),
+            CommandSpec(name="/project",  description="显示当前项目"),
             CommandSpec(name="/search_provider", description="搜索引擎切换"),
             CommandSpec(name="/view",    description="工具过程显示模式:详细 / 分组 / 摘要(无参列出可选)"),
             CommandSpec(name="/resume",  description="列出可恢复的后台 run,或 /resume <run_id> 续跑"),
@@ -672,13 +673,13 @@ class DefaultCommandRouter(CommandRouter):
                              payload={"triggers_turn": False})
 
     async def _cmd_project(self, inbound: InboundMessage, args: str) -> CommandResult:
-        target = args.strip()
-        if not target:
-            if self.session_config_store is None:
-                return CommandResult(ok=True, message="未配置 project_root")
-            cur = await self.session_config_store.get(inbound.session_id)
-            return CommandResult(ok=True, message=f"当前 project_root: {cur.project_root or '(未设置)'}")
-        if self.session_config_store is None:
-            return CommandResult(ok=False, message="session_config_store 未配置")
-        new = await self._persist_with(inbound.session_id, project_root=target)
-        return CommandResult(ok=True, message=f"project_root 切换为 {new.project_root}")
+        """/project:显示当前项目(只读)。一个 serve 就是一个项目,会话不能换项目
+        (docs/design/project-design.md §5);新建项目用 `xana project create`。"""
+        if args.strip():
+            return CommandResult(ok=False, message="会话不能切换项目:每个项目是一个独立的 serve。"
+                                                   "新建项目用 `xana project create <id> --root <目录>`")
+        try:
+            root = str(project_root())
+        except LookupError as exc:
+            root = f"(未注册:{exc})"
+        return CommandResult(ok=True, message=f"当前项目: {project_id()}\n项目目录: {root}")

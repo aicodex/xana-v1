@@ -19,7 +19,6 @@ class SessionConfig:
     streaming: bool = True
     thinking: bool = True  # DS API 默认 thinking enabled,与之对齐(2026-06-13 授权)
     search_provider: str | None = None
-    project_root: str | None = None
     async_mode: bool = True  # P3 完成,默认 async
     # 工具过程显示模式(detailed / grouped / summary);None = 渠道默认(飞书、TG grouped,CLI detailed)
     view_mode: str | None = None
