@@ -26,7 +26,7 @@ status: active
 
 - `component: ComponentSpec` — agent 身份载体（kind/name/qualified_name/source），`name` 是 gateway 路由和 harness `agent_name` 的实际值。
 - `prompt_id: str` — prompt 模板标识（如 builtin chat 用 `"chat-default"`）；v1 未做模板查表，实际 prompt 由 harness 13 段拼装。
-- `when_to_use: str` — 描述该 agent 适用场景，供未来 registry/委派选择使用。
+- `when_to_use: str` — 描述该 agent 适用场景；AGENT.md 同名字段映射而来，拼进 `agent_run` 的可委派 agent 列表供模型挑选。
 - `tools: tuple[str, ...] = ("default",)` — 工具选择表达式，元素为 `default`（所有默认组的工具）、组名（见 [tools_spec](tools_spec.md) 的工具组）、工具名或 `*`（工具目录全部）；`()` = 零工具。builtin chat 用默认值。
 - `disallowed_tools: tuple[str, ...]` — 在 `tools` 结果上再减，同样接受组名。两者由 `ChatAgent` 放进 `config_snapshot`（键 `tools` / `disallowed_tools`），harness 每次 run 用 `resolve_tools` 解析一次，tools schema、执行前校验与各项注入都以结果为准（见 [harness_tool_dispatch](harness_tool_dispatch.md)）。写错的组名 / 工具名 boot 记 warning。
 - `allowed_skills` / `hooks: tuple[str, ...]` — 技能 / 钩子名单，仍仅声明。
@@ -52,6 +52,7 @@ status: active
 | `kind: agent`（必填） | — | 区分文档 kind；缺省视为 skill |
 | `name`（必填） | `component.name` | 同名校验非空 |
 | `goal`（必填） | `component.description` | goal 映射到 manifest.description |
+| `when_to_use`（可选，字符串） | `when_to_use` | 何时用它；进可委派 agent 列表（见 [agents_subagents](agents_subagents.md)） |
 | `tools`（可选，字符串列表） | `tools` | 工具选择表达式；不写 = `("default",)`，`[]` = 零工具 |
 | `disallowed_tools`（可选，字符串列表） | `disallowed_tools` | 在 `tools` 结果上再减，接受组名 |
 | `skills`（可选） | `allowed_skills` | 技能白名单 |

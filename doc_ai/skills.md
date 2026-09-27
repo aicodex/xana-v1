@@ -14,7 +14,7 @@ status: active
 
 - [skills_package](skills_package.md) — `SkillSpec` / `SkillPackage` / `SkillManifest` / `SkillResource` / `SkillScript` 数据合约
 - [skills_activation](skills_activation.md) — `SkillActivation` / `SkillContext` / `SkillContribution` 激活合约
-- [skills_runtime](skills_runtime.md) — `Skill` / `SkillRegistry` / `InMemorySkillRegistry` 与 bundled 三 skill 的运行时
+- [skills_runtime](skills_runtime.md) — `Skill` / `SkillRegistry` / `InMemorySkillRegistry` 与 bundled skill 的运行时（loop / schedule / skill_creator / agent_creator；agent_creator 引导用 `agent_define` 创建 agent，见 [agents](agents.md)）
 - [skills_package](skills_package.md) 的「实现现状」一节 — `MarkdownDocParser` / `FileSkillLoader` / `scan_skill_docs()` 文件 SKILL.md 加载
 
 ## 全局合约

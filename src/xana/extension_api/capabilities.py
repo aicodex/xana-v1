@@ -47,7 +47,7 @@ class AgentSpawner(ABC):
 class AgentRunner(ABC):
     """同步运行一个子 agent 直到结束并取回最终文本(AgentSpawner 是发射后不管)。
 
-    用于主 agent 派出子 agent 并等待结果的场景(如 deep_research 的并行子研究员)。
+    用于主 agent 派出子 agent 并等待结果的场景(agent_run 委派、deep_research 的并行子研究员)。
     实现不得触碰渠道(不发卡片、不切换前台);取消等待中的任务即中止子 run。
     """
 

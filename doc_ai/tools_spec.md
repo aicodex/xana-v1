@@ -58,6 +58,7 @@ status: active
 | meta | tool_search / skill_load | ✓ |
 | research | deep_research / background_research | ✓ |
 | schedule | CronCreate / CronList / CronDelete | ✓ |
+| agents | agent_run / agent_define | ✓ |
 
 `tools/toolsets.py` 另有 `resolve_tools(selection, disallowed, specs, toolsets)`（表达式 → 工具名集合，纯函数，harness 每次 invoke 调一次）与 `unknown_names()`（boot 据此对 agent 里写错的组名 / 工具名记 warning）。
 
@@ -81,7 +82,7 @@ harness 在 `tool_started` 事件 payload 里带上 `display.to_payload(args)`�
 ## ToolInvocation / ToolContext
 
 - `ToolInvocation`：harness 每次调用构造，含 `tool_name`、`input`、`call_id`、`session_id`、`run_id?`。`call_id` 是取消寻址键（`Tool.cancel(call_id)`）。
-- `ToolContext`：会话环境快照，含 `cwd`（相对路径解析基准）、`permission`（`PermissionContext`）、`metadata`（供工具间传递，如 worktree 路径）、`report_progress`（执行中上报一句进度，如"正在阅读 5/12 个网页"；harness 转成 `tool_progress` 事件给渠道显示，不进模型上下文；None = 不接收）。
+- `ToolContext`：会话环境快照，含 `cwd`（相对路径解析基准）、`permission`（`PermissionContext`）、`metadata`（供工具间传递，如 worktree 路径）、`report_progress`（执行中上报一句进度，如"正在阅读 5/12 个网页"；harness 转成 `tool_progress` 事件给渠道显示，不进模型上下文；None = 不接收）、`available_tools`（本 run 可用的工具名，即 agent 工具选择解析结果 ∩ `tool_ceiling`；None = 不限；`agent_run` / `agent_define` 据此收窄子 agent / 新 agent 的工具）。
 
 ## defer 与按需工具（tool_search 两阶段）
 
