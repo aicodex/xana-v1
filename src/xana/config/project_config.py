@@ -15,6 +15,8 @@ from xana.config.paths import project_home, xana_home
 from xana.config.system_model import DaemonConfig, SystemConfig
 
 PROJECT_KEYS = ("channels", "daemon", "sessions", "tools", "agent_defaults")
+USER_AND_PROJECT_KEYS = ("tools",)   # 用户级也可以有(全局禁用),项目再覆盖
+PROJECT_ONLY_KEYS = tuple(k for k in PROJECT_KEYS if k not in USER_AND_PROJECT_KEYS)
 PROJECT_CONFIG_NAME = "config.json"
 
 

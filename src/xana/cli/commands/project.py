@@ -19,7 +19,7 @@ from typing import TextIO
 from xana.config.paths import DEFAULT_PROJECT, PROJECT_FILE, project_home, xana_home
 from xana.runtime.projects import all_projects, create_project, register
 from xana.config.project_config import (
-    PROJECT_KEYS,
+    PROJECT_ONLY_KEYS,
     load_system_config,
     project_config_path,
     update_project_config,
@@ -31,7 +31,6 @@ from xana.config.system_model import SystemConfig
 LEGACY_ITEMS = ("workspace", "sessions", "runs", "run", "channels", "scheduled_tasks.json", "evolution", "worktrees")
 LEGACY_LOGS = ("serve.log", "serve_stderr.log", "xana_debug_actctx.log", "xana_debug_compact.log")
 LEGACY_UNIX_SOCKET = "~/.xana/run/serve.sock"
-USER_KEYS_KEPT = ("tools",)   # tools 在用户级也可以有(全局禁用),不从 system.json 挪走
 
 
 class MigrationError(RuntimeError):
@@ -80,7 +79,7 @@ def _split_system_json(out: TextIO) -> None:
     if not path.exists():
         return
     data = json.loads(path.read_text(encoding="utf-8") or "{}")
-    moving = {k: data[k] for k in PROJECT_KEYS if k in data and k not in USER_KEYS_KEPT}
+    moving = {k: data[k] for k in PROJECT_ONLY_KEYS if k in data}
     if not moving:
         return
     daemon = moving.get("daemon")

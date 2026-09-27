@@ -21,6 +21,7 @@ from xana.config.loader import ensure_user_system_json, user_config_dir
 from xana.config.paths import project_id
 from xana.config.project_config import (
     PROJECT_KEYS,
+    PROJECT_ONLY_KEYS,
     daemon_socket,
     load_system_config,
     project_config_path,
@@ -41,11 +42,14 @@ def _load_raw() -> dict:
 
 
 def _save_raw(data: dict) -> Path:
-    """校验后拆开写回:渠道(机器人)写当前项目的 config.json,其余写用户级 system.json。"""
+    """校验后拆开写回:渠道(机器人)写当前项目的 config.json;其余只把非项目键写回用户级 system.json,
+    用户文件里原有的 tools 等项目可覆盖的键保持原样(data 是合并视图,不能拿项目值覆盖用户值)。"""
     SystemConfig(**data)  # validate before write; raises on shape errors
     project_part = {k: data[k] for k in ("channels",) if k in data}
-    user_part = {k: v for k, v in data.items() if k not in PROJECT_KEYS}
     path = user_config_dir() / "system.json"
+    user_part = json.loads(path.read_text(encoding="utf-8") or "{}") if path.exists() else {}
+    user_part = {k: v for k, v in user_part.items() if k not in PROJECT_ONLY_KEYS}
+    user_part.update({k: v for k, v in data.items() if k not in PROJECT_KEYS})
     tmp = path.parent / (path.name + ".tmp")
     tmp.write_text(json.dumps(user_part, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, path)

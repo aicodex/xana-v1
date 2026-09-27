@@ -382,7 +382,7 @@ async def boot(
         active_context_store=active_ctx,
     )
     # §6.1/§6.2: 进化账本 + episode 状态机(boot 组装的 concrete helper,
-    # 不抽 ABC)。Ledger 落 {XANA_HOME}/evolution/ledger.jsonl。
+    # 不抽 ABC)。Ledger 落当前项目的 projects/<id>/evolution/ledger.jsonl。
     from xana.evolution.episode import EpisodeGatedSpawner, EpisodeRunner
     from xana.evolution.ledger import Ledger
     ledger = Ledger()

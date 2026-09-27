@@ -9,6 +9,7 @@ approve.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import TextIO
 
@@ -21,6 +22,7 @@ def pairings_path() -> Path:
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project", default=None, help="哪个项目的配对(缺省 default)")
     sub = parser.add_subparsers(dest="action", required=True)
 
     sub.add_parser("list", help="show allowed + pending users").add_argument(
@@ -36,6 +38,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace, *, out: TextIO) -> int:
+    if getattr(args, "project", None):
+        os.environ["XANA_PROJECT"] = args.project
     store = PairingStore(path=pairings_path())
 
     if args.action == "list":

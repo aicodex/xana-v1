@@ -5,17 +5,6 @@
     "agent": null
   },
   "limits": {},
-  "channels": {
-    "telegram": {
-      "bot_token": "",
-      "allowed_user_ids": []
-    },
-    "feishu": {
-      "app_id": "",
-      "app_secret_key": "",
-      "domain": "feishu"
-    }
-  },
   "web_search": {
     "brave_search_key": "",
     "tavily_api_key": "",
@@ -27,7 +16,9 @@
   },
   "policy": {
     "default_mode": "workspace_gated",
-    "egress_tools": ["web_browser"],
+    "egress_tools": [
+      "web_browser"
+    ],
     "secret_markers": [
       "api_key",
       "api-key",
