@@ -98,9 +98,6 @@ class WebFetchTool(Tool):
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="只读网页抓取")
 
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         url = str(invocation.input.get("url", "")).strip()
         if not (url.startswith("http://") or url.startswith("https://")):
@@ -167,12 +164,3 @@ class WebFetchTool(Tool):
         except Exception:
             body = r.content.decode("utf-8", errors="replace")
         return str(r.url), r.status_code, r.headers.get("content-type", ""), body
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None

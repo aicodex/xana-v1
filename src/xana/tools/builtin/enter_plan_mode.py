@@ -40,14 +40,8 @@ class EnterPlanModeTool(Tool):
     def spec(self) -> ToolSpec:
         return _SPEC
 
-    async def validate(self, invocation: ToolInvocation) -> None:
-        return None
-
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="plan-mode toggle allowed")
-
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         if self.session_config_store is not None:
@@ -61,12 +55,3 @@ class EnterPlanModeTool(Tool):
             rendered="[EnterPlanMode] 已进入 plan 模式。后续不要执行修改性工具，专注于探索和设计。",
             metadata={"mode": "plan"},
         )
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None

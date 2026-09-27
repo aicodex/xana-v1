@@ -61,9 +61,6 @@ class ToolSearchTool(Tool):
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="tool_search is read-only")
 
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         query = str(invocation.input.get("query", "")).strip()
         max_results = max(1, int(invocation.input.get("max_results", 5) or 5))
@@ -107,12 +104,3 @@ class ToolSearchTool(Tool):
                                             "total_deferred_tools": len(specs)},
                           rendered=rendered,
                           metadata={"revealed_tools": revealed, "display_text": display})
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None

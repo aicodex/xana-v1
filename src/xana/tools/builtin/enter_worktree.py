@@ -64,9 +64,6 @@ class EnterWorktreeTool(Tool):
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="worktree creation allowed")
 
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         name = invocation.input.get("name") or f"wt-{secrets.token_hex(4)}"
         sid = context.session_id
@@ -111,12 +108,3 @@ class EnterWorktreeTool(Tool):
             rendered=f"[EnterWorktree ok] {target}",
             metadata={"worktree_path": str(target)},
         )
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None

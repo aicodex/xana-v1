@@ -88,19 +88,6 @@ class LeadResearchTool(Tool):
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="只读联网研究")
 
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext,
-                            result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None
-
     async def _complete(self, system: str, user: str) -> str:
         client = await self.model_registry.get(self.provider)
         request = ModelRequest(provider=self.provider, model=self.model,

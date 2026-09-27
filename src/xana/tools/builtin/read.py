@@ -53,9 +53,6 @@ class ReadTool(Tool):
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="read-only file access")
 
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         path = resolve_path(invocation.input["file_path"], context.cwd)
         if not path.exists():
@@ -77,12 +74,3 @@ class ReadTool(Tool):
         chunk = lines[offset : offset + limit]
         rendered = "\n".join(f"{offset + i + 1:>5}\t{line}" for i, line in enumerate(chunk))
         return ToolResult(ok=True, content=text, rendered=rendered)
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None

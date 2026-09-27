@@ -45,21 +45,9 @@ class ReportGoalTool(Tool):
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow")
 
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         status = str(invocation.input["status"])
         reason = str(invocation.input.get("reason", ""))
         return ToolResult(ok=True, content={"status": status, "reason": reason},
                           rendered=f"已记录目标状态:{status}({reason})",
                           metadata={"goal_status": status, "goal_reason": reason})
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None

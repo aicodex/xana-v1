@@ -85,9 +85,6 @@ class BashTool(Tool):
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="bash allowed in v1; gating delegated to caller")
 
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         command = invocation.input["command"]
         timeout = min(_resolve_timeout_s(invocation.input), _MAX_TIMEOUT_S)
@@ -144,12 +141,6 @@ class BashTool(Tool):
             failure_kind=None if exit_code == 0 else "execution",
             rendered=rendered,
         )
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
 
     async def cancel(self, call_id: str) -> None:
         """SIGTERM → 等 grace → SIGKILL。子进程退出后 execute 的 wait_for/

@@ -46,14 +46,8 @@ class SkillLoadTool(Tool):
     def spec(self) -> ToolSpec:
         return _SPEC
 
-    async def validate(self, invocation: ToolInvocation) -> None:
-        return None
-
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="skill_load 只读")
-
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         name = str(invocation.input.get("name", "")).strip()
@@ -80,12 +74,3 @@ class SkillLoadTool(Tool):
         contribution = await skill.activate(activation)
         rendered = "\n\n".join(contribution.prompt_blocks)
         return ToolResult(ok=True, content={"name": name}, rendered=rendered)
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None

@@ -59,9 +59,6 @@ class GrepTool(Tool):
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="read-only grep")
 
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         flags = re.IGNORECASE if invocation.input.get("case_insensitive") else 0
         try:
@@ -91,15 +88,6 @@ class GrepTool(Tool):
         if output_mode == "files_with_matches":
             return _search_files_with_matches(files, regex)
         return _search_content(files, regex, line_numbers)
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None
 
 
 def _search_files_with_matches(files, regex: re.Pattern) -> ToolResult:

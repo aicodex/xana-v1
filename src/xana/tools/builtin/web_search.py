@@ -56,14 +56,8 @@ class WebSearchTool(Tool):
     def spec(self) -> ToolSpec:
         return _SPEC
 
-    async def validate(self, invocation: ToolInvocation) -> None:
-        return None
-
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="只读联网搜索")
-
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         query = str(invocation.input.get("query", "")).strip()
@@ -129,12 +123,3 @@ class WebSearchTool(Tool):
                  "url": it.get("href", it.get("url", "")),
                  "snippet": it.get("body", it.get("snippet", ""))}
                 for it in items[:max_results]]
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None

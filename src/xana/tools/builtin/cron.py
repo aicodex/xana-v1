@@ -81,23 +81,9 @@ _DELETE_SPEC = ToolSpec(
 
 
 class _CronToolBase(Tool):
-    async def validate(self, invocation: ToolInvocation) -> None:
-        return None
 
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="本地定时任务管理")
-
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None
 
 
 class CronCreateTool(_CronToolBase):

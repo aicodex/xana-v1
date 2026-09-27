@@ -8,29 +8,33 @@ from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSp
 
 
 class Tool(ABC):
+    """工具。必须实现 spec / check_permission / execute;其余钩子给默认实现(无额外校验、原样透传),
+    需要时覆盖。check_permission 保持抽象:每个工具都要明确表态。"""
+
     @abstractmethod
     def spec(self) -> ToolSpec: ...
 
-    @abstractmethod
-    async def validate(self, invocation: ToolInvocation) -> None: ...
+    async def validate(self, invocation: ToolInvocation) -> None:
+        """输入 schema 之外的业务校验;失败抛 ValueError。"""
+        return None
 
     @abstractmethod
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult: ...
 
-    @abstractmethod
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation: ...
+    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
+        return invocation
 
     @abstractmethod
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult: ...
 
-    @abstractmethod
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult: ...
+    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
+        return result
 
-    @abstractmethod
-    async def render_result(self, result: ToolResult) -> str: ...
+    async def render_result(self, result: ToolResult) -> str:
+        return result.rendered or ""
 
-    @abstractmethod
-    async def cancel(self, call_id: str) -> None: ...
+    async def cancel(self, call_id: str) -> None:
+        return None
 
 
 class ToolRegistry(ABC):

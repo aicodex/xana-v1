@@ -70,9 +70,6 @@ class TodoWriteTool(Tool):
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="todo write allowed")
 
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         items = tuple(
             TodoItem(content=t["content"], active_form=t["active_form"], status=t["status"])
@@ -87,12 +84,3 @@ class TodoWriteTool(Tool):
             f"{counts['completed']} completed"
         )
         return ToolResult(ok=True, content=[dict(c=i.content, s=i.status) for i in items], rendered=rendered)
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None

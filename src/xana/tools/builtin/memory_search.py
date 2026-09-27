@@ -47,9 +47,6 @@ class MemorySearchTool(Tool):
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="read-only memory query")
 
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         query_text = str(invocation.input.get("query", ""))
         top_k = int(invocation.input.get("top_k", 5))
@@ -61,12 +58,3 @@ class MemorySearchTool(Tool):
             content=[{"node_path": h.node_path, "score": h.score, "matched_spans": list(h.matched_spans)} for h in hits],
             rendered=rendered,
         )
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext, result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None

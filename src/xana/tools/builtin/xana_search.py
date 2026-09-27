@@ -172,19 +172,6 @@ class _Base(Tool):
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="只读联网搜索")
 
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
-    async def post_tool_use(self, invocation: ToolInvocation, context: ToolContext,
-                            result: ToolResult) -> ToolResult:
-        return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None
-
 
 class XanaWebSearchTool(_Base):
     _spec = _SEARCH_SPEC

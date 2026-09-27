@@ -90,9 +90,6 @@ class EditTool(Tool):
             )
         return PermissionResult(decision="allow", reason="file edit allowed")
 
-    async def pre_tool_use(self, invocation: ToolInvocation, context: ToolContext) -> ToolInvocation:
-        return invocation
-
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         path = resolve_path(invocation.input["file_path"], context.cwd)
         if not path.exists():
@@ -147,9 +144,3 @@ class EditTool(Tool):
                 self._memory_tree, invocation.input["file_path"], context.cwd
             )
         return result
-
-    async def render_result(self, result: ToolResult) -> str:
-        return result.rendered or ""
-
-    async def cancel(self, call_id: str) -> None:
-        return None
