@@ -29,11 +29,13 @@ NAME_RE = re.compile(r"[a-z][a-z0-9-]{1,39}")
 MIN_PROMPT_CHARS = 20
 
 _DESCRIPTION = (
-    "创建 agent,或查看创建 agent 时可选的工具。先按 agent_creator 技能的流程和用户确认草稿,再调用 create。\n"
+    "创建 agent,或查看创建 agent 时可选的工具。创建前先用 skill_load 加载 agent_creator 技能,按其流程和用户确认草稿,"
+    "再调用 create。\n"
     "- action=catalog:返回工具组目录(组名、说明、是否默认、包含的工具)、未分组工具和已有 agent。\n"
     "- action=create:写入 ~/.xana/agents/<name>/AGENT.md 并立即生效(可用 /agent <name> 开会话,或 agent_run 委派)。\n"
     "tools 是工具选择:default(默认组合)、组名、工具名或 *;[] 表示不给任何工具;不填 = default。"
-    "system_prompt 是该 agent 的系统提示词:以 ${base_prompt} 开头表示在 xana 默认提示词基础上扩展,不含则完全替换。"
+    "system_prompt 是该 agent 的系统提示词,通常以 ${base_prompt} 开头(保留 xana 默认提示词与环境信息,在其后写角色说明);"
+    "不含 ${base_prompt} 则完全替换,连工作目录等环境信息也没有,只在用户明确要求完全自定义时这样做。"
 )
 
 _SPEC = ToolSpec(
