@@ -122,6 +122,16 @@ def deferred_tools_note(
     return changed_note("deferred_tools", text, history)
 
 
+def date_note(today: str, history: Sequence[MemoryMessage]) -> MemoryMessage | None:
+    """当前日期(译自 Claude Code 2.1.281:会话开始给一次,跨天再追加;只给日期 YYYY-MM-DD,不给时间)。
+    与上次注入的日期相同则不注入。"""
+    notes = _notes(history, "date")
+    if notes and today in str(notes[-1].get("note_text") or ""):
+        return None
+    return _note("date", f"日期已变更,今天是 {today}。不必特地告诉用户,用户自己的时钟看得到。" if notes
+                 else f"今天是 {today}。")
+
+
 def model_switch_text(model: str) -> str:
     return f"本会话此后由模型 {model} 继续(模型 ID 为 {model})。"
 

@@ -25,9 +25,10 @@ import contextlib
 import json
 import logging
 import time
+from datetime import date
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, AsyncGenerator, AsyncIterator, Callable
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, Sequence
 
 from xana.extension_api.assembler import PromptAssembler as ExtensionPromptAssembler
 from xana.extension_api.contracts import (
@@ -72,13 +73,14 @@ from xana.harness_sdk.context_notes import (
     NO_PROGRESS_REMINDER,
     changed_note,
     continuation_note,
+    date_note,
     deferred_tools_note,
     memory_recall_note,
     model_switch_text,
     stop_hook_text,
     todo_reminder_note,
 )
-from xana.harness_sdk.system_prompt import build_system_prompt, env_section, profile_sections
+from xana.harness_sdk.system_prompt import BASE_PROMPT_VAR, ENV_VAR, build_system_prompt, env_section, profile_sections
 from xana.harness_sdk.verify import failure_text, passed_text, run_checks
 from xana.harness_sdk.usage import DefaultUsageAccumulator
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
@@ -147,6 +149,17 @@ def _available_tools(
     return resolved & frozenset(ceiling) if ceiling is not None else resolved  # 委派时不超出调用方给的上限
 
 
+def _has_answer(produced: Sequence[MemoryMessage]) -> bool:
+    """run 是否产出了模型的回答或工具结果(只有 note 不算)。"""
+    return any(m.role in ("assistant", "tool") for m in produced)
+
+
+def _has_env(context: HarnessContext) -> bool:
+    """本 agent 的系统提示词是否含环境信息:默认提示词,或模板里放了 ${env} / ${base_prompt}。"""
+    template = context.config_snapshot.get("agent_system_prompt")
+    return not template or BASE_PROMPT_VAR in template or ENV_VAR in template
+
+
 def _visible_skills(context: HarnessContext) -> frozenset[str] | None:
     """agent 可见的技能名(config_snapshot["skills"]);None / 缺省 = 全部。"""
     skills = context.config_snapshot.get("skills")
@@ -158,7 +171,10 @@ def _can_use(available: frozenset[str] | None, name: str) -> bool:
 
 
 class DefaultHarness(Harness):
-    def __init__(self, extension_registry: "ExtensionRegistry | None" = None) -> None:
+    def __init__(self, extension_registry: "ExtensionRegistry | None" = None,
+                 today: Callable[[], str] | None = None) -> None:
+        """today:返回本地日期 YYYY-MM-DD(缺省系统时钟;测试可替换)。"""
+        self._today = today or (lambda: date.today().isoformat())
         self.last_assembled_messages: tuple[ModelMessage, ...] | None = None
         self.usage_accumulator = DefaultUsageAccumulator()
         self._extensions = extension_registry
@@ -816,16 +832,18 @@ class DefaultHarness(Harness):
                 finally:
                     await event_queue.put(_SENTINEL)
                     produced = fork_store.produced_messages()
-                    if not produced and status != "completed":
-                        produced = (MemoryMessage(
+                    if status != "completed" and not _has_answer(produced):
+                        # 只产出了 note(日期、记忆召回等)也算没有回答:追加失败说明,别让失败悄悄消失
+                        failure = MemoryMessage(
                             role="system",
                             content=f"此回答未完成（status={status}）。",
-                        ),)
+                        )
+                        produced = (*produced, failure)
                         try:
                             await jsonl_mirror.append(HistoryRow(
                                 row_id=f"{run_id}:bg:fail",
                                 session_id=session_id, agent_name=agent_name,
-                                kind="system", payload=produced[0], ts=time.time(),
+                                kind="system", payload=failure, ts=time.time(),
                             ))
                         except Exception:
                             _logger.exception("run_jsonl fail-row write failed")
@@ -878,11 +896,11 @@ class DefaultHarness(Harness):
             raise
         finally:
             produced = fork_store.produced_messages()
-            if not produced and status != "completed":
-                produced = (MemoryMessage(
+            if status != "completed" and not _has_answer(produced):
+                produced = (*produced, MemoryMessage(
                     role="system",
                     content=f"此回答未完成（status={status}）。",
-                ),)
+                ))
             await _finalize_writeback(produced, status)
 
     async def _run_query_loop(
@@ -981,6 +999,10 @@ class DefaultHarness(Harness):
         _snap = await context.active_context_store.get(session_id, agent_name)
         _hist: tuple[MemoryMessage, ...] = _snap.messages if _snap is not None else ()
         pending_notes: list[MemoryMessage] = []
+        if _has_env(context):   # 日期随环境信息:完全替换提示词且不放 ${env} 的 agent 不注入
+            today = date_note(self._today(), _hist)
+            if today is not None:
+                pending_notes.append(today)
         if context.memory_injector_registry is not None and (
                 available is None or available & memory_tools):  # 记忆召回随 memory 组
             blocks = await context.memory_injector_registry.collect(
