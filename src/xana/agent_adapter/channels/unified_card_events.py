@@ -37,6 +37,7 @@ def _parse_menu_label(text: str) -> str:
     return txt[:20] if txt else ""
 
 from xana.agent_adapter.channels.unified_card import (
+    add_activity,
     set_progress,
     AnswerSection,
     Button,
@@ -124,7 +125,11 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
         if state.answer is not None:
             text = str(payload.get("text", "") or "")
             set_progress(state.answer, text)
-            _set_tool_live(state.answer, str(payload.get("call_id", "") or ""), text)
+            call_id = str(payload.get("call_id", "") or "")
+            _set_tool_live(state.answer, call_id, text)
+            act = payload.get("activity")
+            if isinstance(act, dict):
+                _add_tool_activity(state.answer, call_id, act)
         return
     if kind == "tool_started":
         if state.answer is None:
@@ -484,6 +489,19 @@ def _set_tool_live(sec: AnswerSection, call_id: str, text: str) -> None:
         for i, t in enumerate(items):
             if t.call_id == call_id and t.status == "running":
                 items[i] = replace(t, live=text)
+                setattr(sec, coll, tuple(items))
+                return
+
+
+def _add_tool_activity(sec: AnswerSection, call_id: str, act: dict) -> None:
+    """结构化活动累积进该调用的时间线(按分道)。"""
+    for coll in ("tools", "_pending_tools_buf"):
+        items = list(getattr(sec, coll))
+        for i, t in enumerate(items):
+            if t.call_id == call_id:
+                items[i] = replace(t, activity=add_activity(
+                    t.activity, lane=str(act.get("lane") or ""), title=str(act.get("lane_title") or ""),
+                    kind=str(act.get("kind") or "note"), text=str(act.get("text") or "")))
                 setattr(sec, coll, tuple(items))
                 return
 

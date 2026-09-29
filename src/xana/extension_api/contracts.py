@@ -152,6 +152,16 @@ class ApprovalReviewInput:
 
 
 @dataclass(frozen=True)
+class SubagentStep:
+    """子 agent 运行中的一步(AgentRunner.run 的 on_step 回调):
+    thinking = 一段思考结束(text 为开头摘录);tool = 调用工具(tool_name + 参数摘要);answer = 最终回答。"""
+    kind: Literal["thinking", "tool", "answer"]
+    text: str = ""
+    tool_name: str = ""
+    category: str = ""          # tool:工具显示配置的类别(web_search / web_open / read …),供选图标
+
+
+@dataclass(frozen=True)
 class AgentRunOutcome:
     """AgentRunner.run 的结果:子 agent 跑完后的最终文本与统计。"""
     run_id: str

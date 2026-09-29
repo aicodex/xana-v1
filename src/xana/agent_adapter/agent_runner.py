@@ -15,7 +15,7 @@ from typing import Callable, Mapping
 from xana.agents.contracts import AgentRequest
 from xana.agents.interfaces import Agent
 from xana.extension_api.capabilities import AgentRunner
-from xana.extension_api.contracts import AgentRunOutcome
+from xana.extension_api.contracts import AgentRunOutcome, SubagentStep
 from xana.harness_sdk.contracts import AbortSignal
 from xana.state.contracts import SessionRecord
 
@@ -36,7 +36,7 @@ class GatewayAgentRunner(AgentRunner):
         parent_run_id: str | None = None,
         parent_session_id: str | None = None,
         tool_ceiling: frozenset[str] | None = None,
-        on_tool: Callable[[str], None] | None = None,
+        on_step: Callable[[SubagentStep], None] | None = None,
     ) -> AgentRunOutcome:
         agent = self._agents.get(agent_name)
         if agent is None:
@@ -53,6 +53,14 @@ class GatewayAgentRunner(AgentRunner):
             tool_ceiling=tool_ceiling)
         text, status, error = "", "error", "子 agent 没有产出最终回答"
         counts: dict[str, int] = {}
+        thinking: list[str] = []
+        emit = on_step or (lambda _step: None)
+
+        def flush_thinking() -> None:
+            if thinking:
+                emit(SubagentStep(kind="thinking", text=_clip("".join(thinking), THINKING_CLIP)))
+                thinking.clear()
+
         try:
             # 读到流结束(不在 final 处 break):子 run 在 final 之后还要收尾(写 RunRecord、回合结束钩子);
             # 中途被取消时 aclosing 保证生成器就地关闭,不留给 GC 在别的事件循环里收尾。
@@ -61,13 +69,21 @@ class GatewayAgentRunner(AgentRunner):
                     he = event.harness_event
                     kind = he.kind if he is not None else event.kind
                     payload = (he.payload if he is not None else event.payload) or {}
-                    if kind == "tool_started":
+                    if kind == "model_delta":
+                        if payload.get("channel") == "thinking":
+                            thinking.append(str(payload.get("text") or ""))
+                        elif str(payload.get("text") or "").strip():
+                            flush_thinking()        # 思考段结束,开始写可见文字
+                    elif kind == "tool_started":
+                        flush_thinking()
                         name = str(payload.get("tool_name") or "")
                         counts[name] = counts.get(name, 0) + 1
-                        if on_tool is not None:
-                            on_tool(name)
+                        emit(SubagentStep(kind="tool", tool_name=name, text=_args_summary(payload),
+                                          category=str((payload.get("display") or {}).get("category") or "")))
                     elif kind == "final" and status != "completed":
+                        flush_thinking()
                         text, status, error = str(payload.get("text") or ""), "completed", ""
+                        emit(SubagentStep(kind="answer", text=text))
                     elif kind == "error" and status != "completed":
                         error = str(payload.get("error") or payload.get("text") or "error")
                     elif kind == "cancelled":
@@ -76,3 +92,26 @@ class GatewayAgentRunner(AgentRunner):
             abort.trigger("parent_cancelled")   # 父任务被取消:连同后台子 run 一起中止
             raise
         return AgentRunOutcome(run_id=run_id, status=status, text=text, tool_counts=counts, error=error)
+
+
+THINKING_CLIP = 160       # 思考摘录的长度(显示用,完整思考留在子会话里)
+ARGS_CLIP = 120
+
+
+def _clip(text: str, n: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _args_summary(payload: dict) -> str:
+    """按工具显示配置的 summary_args 取参数摘要(如搜索词、网址);没有配置时为空。"""
+    args = payload.get("input") or {}
+    keys = (payload.get("display") or {}).get("summary_args") or ()
+    parts: list[str] = []
+    for key in keys:
+        value = args.get(key)
+        if isinstance(value, (list, tuple)):
+            parts.extend(str(v) for v in value if str(v).strip())
+        elif value not in (None, ""):
+            parts.append(str(value))
+    return _clip(" | ".join(parts), ARGS_CLIP)

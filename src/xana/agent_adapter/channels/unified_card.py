@@ -6,7 +6,7 @@ Task 1 scope: 平台无关数据模型 dataclasses + 默认值。
 from __future__ import annotations
 
 from xana.harness_sdk.compact import SUMMARY_SECTIONS as COMPACT_SUMMARY_SECTIONS
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 
@@ -39,6 +39,31 @@ def _fmt_short_time(secs: float) -> str:
     return f"{h}h {m}m {r}s"
 
 
+ACTIVITY_LANE_KEEP = 40        # 每个分道最多保留的活动行(更早的只计数),防止长任务把卡片状态撑大
+
+
+@dataclass(frozen=True)
+class ActivityLane:
+    """工具调用内的一个活动分道(如 deep_research 的规划 / 各子研究员 / 汇总)。lines 为 (kind, text)。"""
+    key: str
+    title: str = ""
+    lines: tuple[tuple[str, str], ...] = ()
+    dropped: int = 0             # 超出 ACTIVITY_LANE_KEEP 被丢弃的更早行数
+
+
+def add_activity(activity: tuple[ActivityLane, ...], *, lane: str, title: str, kind: str,
+                 text: str) -> tuple[ActivityLane, ...]:
+    """把一条活动追加到对应分道(分道按首次出现的顺序排列)。"""
+    lanes = list(activity)
+    for i, cur in enumerate(lanes):
+        if cur.key == lane:
+            lines = cur.lines + ((kind, text),)
+            drop = max(0, len(lines) - ACTIVITY_LANE_KEEP)
+            lanes[i] = replace(cur, title=cur.title or title, lines=lines[drop:], dropped=cur.dropped + drop)
+            return tuple(lanes)
+    return tuple(lanes) + (ActivityLane(key=lane, title=title, lines=((kind, text),)),)
+
+
 @dataclass
 class ToolBlock:
     name: str
@@ -56,6 +81,7 @@ class ToolBlock:
     status: str = "running"      # running / ok / fail / cancel
     elapsed_s: float | None = None
     live: str = ""               # 执行中的进度(tool_progress),如"正在阅读 5/12 个网页"
+    activity: tuple[ActivityLane, ...] = ()   # 结构化活动时间线(tool_progress 带 activity 时累积)
 
 
 @dataclass

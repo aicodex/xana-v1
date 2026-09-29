@@ -10,7 +10,7 @@ XanacApp (kept under a different module name to avoid clashing).
 """
 from __future__ import annotations
 
-from xana.agent_adapter.channels.process_view import build_view, policy_for
+from xana.agent_adapter.channels.process_view import build_view, policy_for, tool_panel_body
 from xana.agent_adapter.channels.unified_card import (
     progress_line,
     AnswerSection,
@@ -61,7 +61,7 @@ def _render_answer(sec: AnswerSection, view_mode: str = "detailed") -> str:
         parts.extend(view.failed)
     visible_n = min(_VISIBLE_TOOLS, len(sec.tools)) if policy.unit == "call" else 0
     for t in sec.tools[:visible_n]:
-        body = _trunc(t.body_md or "", _BUDGET_TOOL_BODY).rstrip()
+        body = tool_panel_body(t, _BUDGET_TOOL_BODY).rstrip()
         if body:
             parts.append(f"{t.header}\n{body}")
         else:
@@ -196,7 +196,7 @@ def render_widgets(state: UnifiedCardState):  # type: ignore[no-untyped-def]
                 out.append(Static(f"[red]{rich_escape(fl)}[/red]", markup=True))
         visible_n = min(_VISIBLE_TOOLS, len(sec.tools)) if policy.unit == "call" else 0
         for t in sec.tools[:visible_n]:
-            body = _w_trunc(t.body_md or " ", _BUDGET_TOOL_BODY).rstrip() or "(空)"
+            body = tool_panel_body(t, _BUDGET_TOOL_BODY).rstrip() or "(空)"
             out.append(Collapsible(Static(body), title=t.header, collapsed=True))
         hidden = ((len(sec.tools) - visible_n) + sec.tools_pending) if policy.unit == "call" else 0
         if hidden > 0:

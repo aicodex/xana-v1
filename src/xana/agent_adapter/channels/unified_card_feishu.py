@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from xana.agent_adapter.channels.process_view import build_view, policy_for
+from xana.agent_adapter.channels.process_view import build_view, policy_for, tool_panel_body
 from xana.agent_adapter.channels.unified_card import (
     progress_line,
     AnswerSection,
@@ -152,10 +152,7 @@ def _render_answer(
     # tools — 全渲染。单 tool body 截 800 字符:飞书卡总大小有上限(230025),
     # 多 tool 全 body 会超限 → patch_card 400 → UI 卡住。
     for t in (sec.tools if policy.unit == "call" else ()):
-        body = t.body_md or " "
-        if len(body) > 800:
-            body = body[:800].rstrip() + "\n…(已截断)"
-        out.append(_panel(t.header, body, folded=True))
+        out.append(_panel(t.header, tool_panel_body(t, 800), folded=True))   # 活动时间线 + 结果
     # tools overflow 槽位:
     #   detached: 不可点的静态文字(detach 期间不接受交互)
     #   streaming / terminal: 可点按钮 → reveal 当前 buf

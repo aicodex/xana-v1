@@ -19,7 +19,7 @@ import re
 
 import telegramify_markdown as _tg_md
 
-from xana.agent_adapter.channels.process_view import build_view, policy_for
+from xana.agent_adapter.channels.process_view import build_view, policy_for, tool_panel_body
 from xana.agent_adapter.channels.unified_card import (
     progress_line,
     AnswerSection,
@@ -182,7 +182,7 @@ def _render_default_answer(
     tools_truncated = False
     for t in sec.tools[:visible_n]:
         body, truncated = _trunc_rendered(
-            t.body_md or " ", _BUDGET_DEFAULT_TOOL_BODY, md=False)
+            tool_panel_body(t, _BUDGET_DEFAULT_TOOL_BODY), _BUDGET_DEFAULT_TOOL_BODY, md=False)
         if truncated:
             tools_truncated = True
         # 工具 body 不走 markdown(文件内容含 `*`/`>`/`#` 会被误解析)
@@ -311,7 +311,7 @@ def _render_expand_tools(
         return title + "\n" + _esc("(无工具调用)")
     panels = []
     for t in chunk:
-        body, _ = _trunc(t.body_md or " ", _BUDGET_EXPAND_TOOL_BODY)
+        body, _ = _trunc(tool_panel_body(t, _BUDGET_EXPAND_TOOL_BODY), _BUDGET_EXPAND_TOOL_BODY)
         panels.append(_fold(t.header, body, md=False))
     return title + "\n" + "\n".join(panels)
 

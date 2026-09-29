@@ -88,7 +88,7 @@ from xana.memory.interfaces import ActiveContextStore, HistoryMirror
 from xana.policy.contracts import PermissionContext, PermissionResult
 from xana.skills.contracts import SkillActivation
 from xana.state.contracts import RunRecord, UsageSnapshot
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset
+from xana.tools.contracts import ToolActivity, ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset
 from xana.tools.interfaces import Tool
 from xana.tools.toolsets import resolve_tools
 from xana.config.paths import project_home
@@ -490,7 +490,7 @@ class DefaultHarness(Harness):
         ext: "ExtensionRegistry | None",
         thread_store: ExtensionData | None,
         turn_store: ExtensionData | None,
-        progress: Callable[[str], None] | None = None,
+        progress: Callable[[str | ToolActivity], None] | None = None,
     ) -> tuple[ToolResult, str]:
         """Run one tool through the validate→permission→pre→execute→post
         pipeline, wrapped by extension tool-lifecycle hooks.
@@ -579,6 +579,7 @@ class DefaultHarness(Harness):
             permission=context.permission or _default_permission(session_id),
             run_id=run_id,
             report_progress=progress,
+            report_activity=progress,
             available_tools=available,
             visible_skills=_visible_skills(context),
         )
@@ -1525,7 +1526,7 @@ class DefaultHarness(Harness):
                         },
                     )
 
-                def _dispatch(tc: dict[str, Any], progress: Callable[[str], None]):
+                def _dispatch(tc: dict[str, Any], progress: Callable[[str | ToolActivity], None]):
                     return self._dispatch_tool(
                         tc, context, session_id, agent_name, run_id,
                         ext_tools=ext_tools, available=available, ext=ext,
@@ -1537,9 +1538,16 @@ class DefaultHarness(Harness):
                     tc = calls[item.index]
                     if isinstance(item, Progress):
                         # 工具执行中的进度(report_progress)边执行边以 tool_progress 事件发出
+                        update = item.update
+                        progress_payload: dict[str, Any] = {"call_id": tc["call_id"], "tool_name": tc["tool_name"]}
+                        if isinstance(update, ToolActivity):   # 结构化活动:渠道按分道累积成时间线
+                            progress_payload.update(text=update.text, activity={
+                                "lane": update.lane, "lane_title": update.lane_title,
+                                "kind": update.kind, "text": update.text})
+                        else:
+                            progress_payload["text"] = update
                         yield HarnessEvent(kind="tool_progress", session_id=session_id, run_id=run_id,
-                                           payload={"call_id": tc["call_id"], "tool_name": tc["tool_name"],
-                                                    "text": item.text})
+                                           payload=progress_payload)
                         continue
                     call_idx = batch[item.index]
                     result, rendered, _tool_elapsed_ms = item.result, item.rendered, item.elapsed_ms

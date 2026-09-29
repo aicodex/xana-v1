@@ -1,7 +1,7 @@
 """同一轮多个工具调用的并行执行(照 Claude Code:连续的并发安全调用成批并行,其余独占;默认上限 10)。
 
 - 是否可并行由工具声明的 ``ToolSpec.concurrency == "parallel"`` 决定。
-- 执行中的进度(report_progress)边执行边转发。
+- 执行中的进度(report_progress / report_activity)边执行边转发。
 - **完成事件按模型发出调用的顺序交付**:后发的调用即使先完成,也等前面的都完成再交付。
   调用方据此按原顺序写回历史(前缀缓存稳定、tool_use/tool_result 顺序与模型发出时一致)。
 """
@@ -12,9 +12,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, Sequence
 
+from xana.tools.contracts import ToolActivity
+
 MAX_PARALLEL_TOOLS = 10
 
-Dispatch = Callable[[dict[str, Any], Callable[[str], None]], Awaitable[tuple[Any, str]]]
+Dispatch = Callable[[dict[str, Any], Callable[[str | ToolActivity], None]], Awaitable[tuple[Any, str]]]
 
 
 def partition(parallel: Sequence[bool]) -> list[list[int]]:
@@ -31,7 +33,7 @@ def partition(parallel: Sequence[bool]) -> list[list[int]]:
 @dataclass(frozen=True)
 class Progress:
     index: int
-    text: str
+    update: str | ToolActivity        # 一行进度(report_progress)或结构化活动(report_activity)
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,7 @@ async def run_batch(calls: Sequence[dict[str, Any]], dispatch: Dispatch, *,
     async def one(i: int) -> tuple[Any, str, int]:
         async with sem:
             t0 = time.monotonic()
-            result, rendered = await dispatch(calls[i], lambda text, i=i: queue.put_nowait(Progress(i, text)))
+            result, rendered = await dispatch(calls[i], lambda update, i=i: queue.put_nowait(Progress(i, update)))
             return result, rendered, int((time.monotonic() - t0) * 1000)
 
     tasks = [asyncio.create_task(one(i)) for i in range(len(calls))]

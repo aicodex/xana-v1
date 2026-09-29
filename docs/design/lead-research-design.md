@@ -61,3 +61,15 @@ B 明显更好,形态同 Anthropic 多智能体研究系统(lead + subagents)。
 - `tools/builtin/lead_research.py` `LeadResearchTool`;子研究员原始发现写到工作区 `research/<日期>/`
 - `tools/builtin/xana_search.py` 服务端研究改名 `background_research`
 - 测试:`tests/test_lead_research.py`、`tests/test_parallel_tools.py`
+
+## 进度展示:中间思考与检索汇总(2026-09-29)
+
+deep_research 从搜索服务挪到框架自身后,子研究员的每一步都在本进程里发生,进度可以细到"谁在想什么、搜了什么、读了什么"。
+
+- **结构化进度**:工具除了一行 `report_progress(text)`,还可以 `report_activity(ToolActivity)`:`lane`(分道,如 `plan` / `r1` / `synth`)、`lane_title`(分道标题)、`kind`(thinking / search / open / tool / done / error / note)、`text`。harness 以 `tool_progress` 事件发出(payload 带 `activity`),卡片把同一工具调用的活动按分道累积。
+- **子 agent 步骤**:`AgentRunner.run` 的回调从"只报工具名"改为报 `SubagentStep`:thinking(一段思考结束时,截取开头)、tool(工具名 + 按工具显示配置取的参数摘要,如搜索词、网址)、answer(最终回答)。deep_research 与 agent_run 共用。
+- **deep_research 的分道**:
+  - 规划:负责人的思考摘要 + 拆出的各子课题(标题 — 任务要点);
+  - 每个子研究员一个分道:💭 思考摘要、🔍 搜索词、📄 打开的网页、✅ 完成时的统计与发现首句;
+  - 汇总:负责人的思考摘要、撰写报告、完成。
+- **展示**:进行中的一行状态显示最新一条活动;展开面板里是完整时间线(detailed 模式在该工具的面板里,grouped / summary 模式追加一个"过程"面板)。时间线按分道裁剪(每道保留最近若干行,总长受限),避免飞书卡片超出大小上限。回答结束后时间线保留,可随时展开回看。

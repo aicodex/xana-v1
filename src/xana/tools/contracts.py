@@ -129,10 +129,25 @@ class ToolContext:
     # 执行中上报进度(一句给人看的话,如"正在阅读 18/40 个网页");harness 转成 tool_progress 事件
     # 由渠道显示,不进入模型上下文。None = 调用方不接收进度。
     report_progress: Callable[[str], None] | None = None
+    # 结构化活动(比 report_progress 细:分道、类型),渠道显示为可展开的时间线;None = 调用方不接收
+    report_activity: Callable[[ToolActivity], None] | None = None
     # 本 run 可用的工具名(agent 工具选择解析结果);None = 不限。委派 / 创建 agent 时据此收窄权限
     available_tools: frozenset[str] | None = None
     # 本 run 可见的技能名;None = 全部(skill_load 据此拒绝不可见技能)
     visible_skills: frozenset[str] | None = None
+
+
+ActivityKind = Literal["thinking", "search", "open", "tool", "done", "error", "note"]
+
+
+@dataclass(frozen=True)
+class ToolActivity:
+    """工具执行中的一条结构化活动(docs/design/lead-research-design.md「进度展示」):
+    同一调用的活动按 lane(分道,如 plan / r1 / synth)累积成时间线显示;text 同时作为最新一行状态。"""
+    lane: str
+    text: str
+    kind: ActivityKind = "note"
+    lane_title: str = ""        # 分道标题(首次出现时给出即可)
 
 
 @dataclass(frozen=True)

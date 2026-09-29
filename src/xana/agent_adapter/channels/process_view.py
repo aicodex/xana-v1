@@ -163,6 +163,45 @@ def member_line(t: ToolBlock) -> str:
     return _clip(line, 120)
 
 
+ACTIVITY_LANE_LINES = 8          # 时间线里每个分道显示最近几行
+ACTIVITY_MAX_CHARS = 3000        # 一个工具的时间线总长上限(飞书卡片有大小上限)
+_ACTIVITY_ICON = {"thinking": "💭", "search": "🔍", "open": "📄", "tool": "🛠", "done": "✓", "error": "✗", "note": "·"}
+
+
+def activity_text(t: ToolBlock) -> str:
+    """工具调用的活动时间线(docs/design/lead-research-design.md「进度展示」):按分道列出,
+    每道显示最近 ACTIVITY_LANE_LINES 行,更早的计数;总长超过 ACTIVITY_MAX_CHARS 截断。无活动返回空串。"""
+    parts: list[str] = []
+    for lane in t.activity:
+        shown = lane.lines[-ACTIVITY_LANE_LINES:]
+        hidden = lane.dropped + len(lane.lines) - len(shown)
+        rows = [f"【{lane.title or lane.key}】"]
+        if hidden:
+            rows.append(f"…(更早 {hidden} 条)")
+        rows += [f"{_ACTIVITY_ICON.get(kind, '·')} {_clip(text, 160)}" for kind, text in shown]
+        parts.append("\n".join(rows))
+    text = "\n\n".join(parts)
+    return text if len(text) <= ACTIVITY_MAX_CHARS else text[:ACTIVITY_MAX_CHARS].rstrip() + "\n…(已截断)"
+
+
+def tool_panel_body(t: ToolBlock, result_limit: int) -> str:
+    """单个工具面板的正文:活动时间线(若有)+ 结果(截到 result_limit 字)。"""
+    result = t.body_md or ""
+    if len(result) > result_limit:
+        result = result[:result_limit].rstrip() + "\n…(已截断)"
+    timeline = activity_text(t)
+    if timeline and result.strip():
+        return f"{timeline}\n\n——— 结果 ———\n{result}"
+    return timeline or result or " "
+
+
+def _activity_blocks(members: list[ToolBlock]) -> list[Block]:
+    """带活动时间线的调用各自一个"过程"面板(分组 / 摘要模式下可展开查看)。"""
+    return [Block(title=_clip(f"{t.verb or t.name}过程" + (f" · {t.summary}" if t.summary else ""), TITLE_MAX),
+                  body=activity_text(t), failed=t.status == "fail")
+            for t in members if t.activity]
+
+
 def _failed_lines(members: list[ToolBlock]) -> tuple[str, ...]:
     return tuple(member_line(t) for t in members if t.status == "fail")
 
@@ -200,6 +239,7 @@ def build_view(sec: AnswerSection, mode: str, *, alive: bool) -> ProcessView:
             head = ([g.caption] if g.caption else []) + [counts]
             body = "\n".join(head + [""] + [member_line(t) for t in g.members])
             blocks.append(Block(title=title, body=body, failed=any(t.status == "fail" for t in g.members)))
+            blocks.extend(_activity_blocks(g.members))
         run = _running(members) if (alive and policy.live_detail) else None
         line = _clip(running_text(run)) if run is not None else ""
         return ProcessView(blocks=tuple(blocks), line=line, failed=failed)
@@ -209,10 +249,12 @@ def build_view(sec: AnswerSection, mode: str, *, alive: bool) -> ProcessView:
         run = _running(members)
         line = running_text(run) if run is not None else (total or "处理中")
         steps = len(members)
-        return ProcessView(line=_clip(f"{line} · {steps} 步" if steps else line), failed=failed)
+        return ProcessView(blocks=tuple(_activity_blocks(members)),
+                           line=_clip(f"{line} · {steps} 步" if steps else line), failed=failed)
     body = "\n\n".join(
         (f"【{_clip(g.caption, 40)}】\n" if g.caption else "")
         + "\n".join(member_line(t) for t in g.members) for g in groups if g.members) or " "
     recap = total + (f"({len(failed)} 次失败)" if failed else "")
-    return ProcessView(blocks=(Block(title=_clip(recap, TITLE_MAX), body=recap + "\n\n" + body),),
+    return ProcessView(blocks=(Block(title=_clip(recap, TITLE_MAX), body=recap + "\n\n" + body),
+                               *_activity_blocks(members)),
                        line=recap, failed=failed)

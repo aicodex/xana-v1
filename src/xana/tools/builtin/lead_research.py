@@ -16,11 +16,11 @@ from typing import Any
 
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.extension_api.capabilities import AgentRunner
-from xana.extension_api.contracts import AgentRunOutcome
+from xana.extension_api.contracts import AgentRunOutcome, SubagentStep
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
 from xana.llm_driver.interfaces import ModelRegistry
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import ToolContext, ToolDisplay, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolActivity, ToolContext, ToolDisplay, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 SUBAGENTS = {"low": 3, "medium": 4, "high": 6}
@@ -88,31 +88,41 @@ class LeadResearchTool(Tool):
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="只读联网研究")
 
-    async def _complete(self, system: str, user: str) -> str:
+    async def _complete(self, system: str, user: str) -> tuple[str, str]:
+        """一次不带工具的模型调用,返回 (回答, 思考)。"""
         client = await self.model_registry.get(self.provider)
         request = ModelRequest(provider=self.provider, model=self.model,
                                messages=(ModelMessage(role="system", content=system),
                                          ModelMessage(role="user", content=user)))
         parts: list[str] = []
+        thinking: list[str] = []
         async for event in client.stream(request):
-            if event.kind == "text_delta" and event.payload.get("channel") != "thinking":
-                parts.append(event.payload.get("text", ""))
+            if event.kind == "text_delta":
+                (thinking if event.payload.get("channel") == "thinking" else parts).append(
+                    event.payload.get("text", ""))
             elif event.kind == "error" and event.error is not None:
                 raise RuntimeError(event.error.message)
-        return "".join(parts)
+        return "".join(parts), "".join(thinking)
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         question = str(invocation.input["question"]).strip()
         n = SUBAGENTS.get(str(invocation.input.get("effort") or "medium"), SUBAGENTS["medium"])
         progress = context.report_progress or (lambda _text: None)
+        activity = context.report_activity or (lambda _a: None)
         t0 = time.monotonic()
         progress("规划子课题")
+        activity(ToolActivity(lane="plan", lane_title="规划", kind="note", text=f"把问题拆成 {n} 个子课题"))
         try:
-            plan = _parse_plan(await self._complete(_PLAN_SYSTEM.format(n=n), f"研究问题:{question}"),
-                               question, n)
+            plan_text, plan_thinking = await self._complete(_PLAN_SYSTEM.format(n=n), f"研究问题:{question}")
         except RuntimeError as exc:
+            activity(ToolActivity(lane="plan", kind="error", text=f"规划失败:{exc}"))
             return ToolResult(ok=False, content=None, failure_kind="execution", error=str(exc),
                               rendered=f"[deep_research] 规划失败:{exc}", retryable=True)
+        plan = _parse_plan(plan_text, question, n)
+        if plan_thinking.strip():
+            activity(ToolActivity(lane="plan", kind="thinking", text=_clip(plan_thinking, THINKING_CLIP)))
+        for i, sub in enumerate(plan, 1):
+            activity(ToolActivity(lane="plan", kind="done", text=f"{i}. {sub['title']} — {_clip(sub['brief'], 60)}"))
 
         counts = {"web_search": 0, "web_open_url": 0, "done": 0}
 
@@ -120,21 +130,37 @@ class LeadResearchTool(Tool):
             progress(f"子研究员 {counts['done']}/{len(plan)} 完成 · 搜索 {counts['web_search']} 次 · "
                      f"打开 {counts['web_open_url']} 次网页")
 
-        def on_tool(name: str) -> None:
-            if name in counts:
-                counts[name] += 1
-                report()
-
         tag = uuid.uuid4().hex[:6]
 
         async def one(i: int, sub: dict[str, str]) -> AgentRunOutcome:
+            lane = f"r{i + 1}"
+            activity(ToolActivity(lane=lane, lane_title=f"子研究员 {i + 1}:{sub['title']}", kind="note",
+                                  text="开始"))
+
+            def on_step(step: SubagentStep) -> None:
+                if step.kind == "thinking":
+                    activity(ToolActivity(lane=lane, kind="thinking", text=step.text))
+                elif step.kind == "tool":
+                    if step.tool_name in counts:
+                        counts[step.tool_name] += 1
+                        report()
+                    kind = {"web_search": "search", "web_open": "open"}.get(step.category, "tool")
+                    label = {"search": "搜索", "open": "打开"}.get(kind, step.tool_name)
+                    activity(ToolActivity(lane=lane, kind=kind, text=f"{label}:{step.text}" if step.text else label))
+
             outcome = await self.runner.run(
                 agent_name=self.researcher_agent,
                 prompt=f"总研究问题:{question}\n\n你的子课题:{sub['title']}\n{sub['brief']}",
                 session_id=f"{context.session_id}-research-{tag}-{i + 1}",
-                parent_run_id=context.run_id, parent_session_id=context.session_id, on_tool=on_tool)
+                parent_run_id=context.run_id, parent_session_id=context.session_id, on_step=on_step)
             counts["done"] += 1
             report()
+            if outcome.status == "completed":
+                calls = sum(outcome.tool_counts.values())
+                activity(ToolActivity(lane=lane, kind="done",
+                                      text=f"完成 · 工具 {calls} 次 · 发现:{_first_line(outcome.text)}"))
+            else:
+                activity(ToolActivity(lane=lane, kind="error", text=f"未完成:{outcome.error or outcome.status}"))
             return outcome
 
         report()
@@ -146,10 +172,16 @@ class LeadResearchTool(Tool):
         findings = "\n\n".join(sections)
         path = self._save(question, plan, findings)
         progress("汇总报告")
+        activity(ToolActivity(lane="synth", lane_title="汇总", kind="note", text="根据子研究员的发现撰写报告"))
         try:
-            report_text = await self._complete(_SYNTH_SYSTEM, f"研究问题:{question}\n\n子研究员的发现:\n{findings}")
+            report_text, synth_thinking = await self._complete(
+                _SYNTH_SYSTEM, f"研究问题:{question}\n\n子研究员的发现:\n{findings}")
+            if synth_thinking.strip():
+                activity(ToolActivity(lane="synth", kind="thinking", text=_clip(synth_thinking, THINKING_CLIP)))
+            activity(ToolActivity(lane="synth", kind="done", text=f"报告完成 · {len(report_text)} 字"))
         except RuntimeError as exc:
             report_text = f"(汇总失败:{exc};以下为子研究员的原始发现)\n\n{findings}"
+            activity(ToolActivity(lane="synth", kind="error", text=f"汇总失败:{exc}"))
         stats: dict[str, Any] = {
             "subagents": len(plan), "completed": sum(o.status == "completed" for o in outcomes),
             "web_search": sum(o.tool_counts.get("web_search", 0) for o in outcomes),
@@ -170,3 +202,20 @@ class LeadResearchTool(Tool):
         plan_md = "\n".join(f"{i}. {s['title']}:{s['brief']}" for i, s in enumerate(plan, 1))
         path.write_text(f"# {question}\n\n## 子课题\n\n{plan_md}\n\n{findings}\n", encoding="utf-8")
         return path
+
+
+THINKING_CLIP = 160
+
+
+def _clip(text: str, n: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _first_line(text: str) -> str:
+    """发现的首句(跳过标题行),用于时间线里的一行摘要。"""
+    for line in text.splitlines():
+        line = line.strip().lstrip("#-*> ").strip()
+        if line:
+            return _clip(line, 80)
+    return "(无)"

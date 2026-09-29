@@ -14,8 +14,9 @@ from xana.agents.delegation import AGENT_RUN_TOOL, subagent_ceiling
 from xana.agents.interfaces import Agent, AgentRegistry
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.extension_api.capabilities import AgentRunner
+from xana.extension_api.contracts import SubagentStep
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import ToolContext, ToolDisplay, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolActivity, ToolContext, ToolDisplay, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool, ToolRegistry
 
 MAX_CONCURRENT = 6
@@ -107,21 +108,34 @@ class AgentRunTool(Tool):
         ceiling = subagent_ceiling(context.available_tools, await self._tools.list_specs(),
                                    await self._tools.list_toolsets())
         progress = context.report_progress or (lambda _text: None)
+        activity = context.report_activity or (lambda _a: None)
+        lane_title = f"{name}:{str(invocation.input.get('description') or '').strip() or '子任务'}"
         calls = [0]
 
-        def on_tool(_tool: str) -> None:
-            calls[0] += 1
-            progress(f"{name} 运行中 · 已调用工具 {calls[0]} 次")
+        def on_step(step: SubagentStep) -> None:
+            if step.kind == "thinking":
+                activity(ToolActivity(lane="sub", lane_title=lane_title, kind="thinking", text=step.text))
+            elif step.kind == "tool":
+                calls[0] += 1
+                progress(f"{name} 运行中 · 已调用工具 {calls[0]} 次")
+                kind = {"web_search": "search", "web_open": "open"}.get(step.category, "tool")
+                label = {"search": "搜索", "open": "打开"}.get(kind, step.tool_name)
+                activity(ToolActivity(lane="sub", lane_title=lane_title, kind=kind,
+                                      text=f"{label}:{step.text}" if step.text else label))
 
         self._running += 1
         t0 = time.monotonic()
         try:
             progress(f"{name} 开始")
+            activity(ToolActivity(lane="sub", lane_title=lane_title, kind="note", text="开始"))
             outcome = await self._runner.run(
                 agent_name=name, prompt=prompt, session_id=child, parent_run_id=context.run_id,
-                parent_session_id=context.session_id, tool_ceiling=ceiling, on_tool=on_tool)
+                parent_session_id=context.session_id, tool_ceiling=ceiling, on_step=on_step)
         finally:
             self._running -= 1
+        activity(ToolActivity(lane="sub", lane_title=lane_title,
+                              kind="done" if outcome.status == "completed" else "error",
+                              text=f"{'完成' if outcome.status == 'completed' else '未完成'} · 工具 {calls[0]} 次"))
         elapsed = time.monotonic() - t0
         tools = sum(outcome.tool_counts.values())
         head = (f"[agent_run] {name} · agent_id={child} · 状态 {outcome.status} · 用时 {elapsed:.0f} 秒 · "
