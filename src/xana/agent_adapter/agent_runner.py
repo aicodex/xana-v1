@@ -21,6 +21,13 @@ from xana.state.contracts import SessionRecord
 
 logger = logging.getLogger(__name__)
 
+# 译自 Kimi Code 子 agent 提示(agent-core-v2 profile/explore-overlay.md):只在子会话的第一条任务前加一次
+SUBAGENT_PREAMBLE = (
+    "你现在作为子 agent 运行。所有 user 消息都由主 agent 发来。主 agent 看不到你的上下文,"
+    "只能在你完成任务时看到你的最后一条消息。把主 agent 当作你的调用方,不要直接向最终用户提问;"
+    "有不清楚的地方,在最后给主 agent 的总结里说明。"
+)
+
 
 class GatewayAgentRunner(AgentRunner):
     def __init__(self, *, agents: Mapping[str, Agent], session_store=None) -> None:
@@ -41,7 +48,10 @@ class GatewayAgentRunner(AgentRunner):
         agent = self._agents.get(agent_name)
         if agent is None:
             raise LookupError(f"unknown agent {agent_name!r}")
-        if self._session_store is not None and await self._session_store.get(session_id) is None:
+        fresh = self._session_store is None or await self._session_store.get(session_id) is None
+        if fresh:
+            prompt = f"{SUBAGENT_PREAMBLE}\n\n{prompt}"
+        if self._session_store is not None and fresh:
             await self._session_store.upsert(SessionRecord(
                 session_id=session_id, current_agent=agent_name, parent_session_id=parent_session_id,
                 parent_run_id=parent_run_id, depth=1))

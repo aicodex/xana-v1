@@ -1,6 +1,6 @@
 """tool_search: 揭示隐藏工具(deferred tools)的完整 schema(CC ToolSearchTool 同款)。
 
-deferred 工具只在 system prompt 的「# 按需工具」段以名字出现;模型经本工具
+deferred 工具只在对话里的按需工具 note(context_notes.deferred_tools_note)中以名字与描述出现;模型经本工具
 查询(select:精确 / 关键词评分 / +必须词)后,匹配工具的完整 JSONSchema 以
 <functions> 块返回,且名字写入 ToolResult.metadata["revealed_tools"] —— harness
 将其透传进 MemoryMessage metadata,后续 turn 据此恢复完整 schema。
@@ -17,7 +17,7 @@ from xana.tools.interfaces import Tool
 
 _DESCRIPTION = (
     "获取隐藏工具(deferred tools)的完整 schema 定义,使其可被调用。\n"
-    "隐藏工具只在「# 按需工具」段以名字出现——在获取前没有参数 schema,无法调用。"
+    "隐藏工具只在「schema 尚未加载」的提示里列出名字和描述——在获取前没有参数 schema,无法调用。"
     "本工具接收一个查询,与隐藏工具列表匹配,在 <functions> 块内返回匹配工具的完整 "
     "JSONSchema 定义。一旦某工具的 schema 出现在结果中,它就和提示顶部定义的工具一样可直接调用。\n"
     "查询形式:\n"

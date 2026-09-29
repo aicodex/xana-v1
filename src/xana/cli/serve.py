@@ -34,6 +34,7 @@ from xana.agent_adapter.channels.telegram import TelegramAdapter, TelegramConfig
 from xana.agent_adapter.interfaces import Adapter
 from xana.config.loader import DefaultConfigProvider
 from xana.config.system_model import SystemConfig
+from xana.runtime.projects import WORKSPACE_SEED
 from xana.runtime.boot import boot
 from xana.runtime.daemon_http import build_daemon_app, run_tcp, run_unix_socket
 
@@ -153,12 +154,6 @@ async def _run_inbound_pump(adapter: Adapter, gateway) -> None:
         t.add_done_callback(tasks.discard)
 
 
-_WORKSPACE_SEED = """# xana 助手
-
-你是 xana,一个通过聊天渠道服务用户的个人助手。
-"""
-
-
 def _resolve_project_root() -> Path:
     """当前项目(XANA_PROJECT,缺省 default)的项目目录,来自 projects/<id>/project.json
     (docs/design/project-design.md §3)。项目未注册即退出并提示;目录缺 README_ai.md 时补一个最小的。"""
@@ -169,7 +164,7 @@ def _resolve_project_root() -> Path:
     root.mkdir(parents=True, exist_ok=True)
     readme = root / "README_ai.md"
     if not readme.exists():
-        readme.write_text(_WORKSPACE_SEED, encoding="utf-8")
+        readme.write_text(WORKSPACE_SEED, encoding="utf-8")
     return root.resolve()
 
 

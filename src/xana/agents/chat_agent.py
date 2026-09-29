@@ -47,7 +47,7 @@ def build_chat_agent_spec(defaults: AgentDefaults | None = None) -> AgentSpec:
             kind="agent",
             name="chat",
             qualified_name="builtin.chat",
-            description="Default chat agent.",
+            description="默认聊天助手",
             source=ComponentSource(source_type="builtin", scope="system"),
         ),
         prompt_id="chat-default",

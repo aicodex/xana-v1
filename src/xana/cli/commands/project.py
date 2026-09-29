@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TextIO
 
 from xana.config.paths import DEFAULT_PROJECT, PROJECT_FILE, project_home, xana_home
-from xana.runtime.projects import all_projects, create_project, register
+from xana.runtime.projects import DEFAULT_INSTRUCTIONS, all_projects, create_project, register, write_instructions
 from xana.config.project_config import (
     PROJECT_ONLY_KEYS,
     load_system_config,
@@ -65,6 +65,7 @@ def ensure_default_project(*, out: TextIO) -> None:
     if moved:
         print(f"[xana project] 旧布局已迁移进默认项目 {dp}:{', '.join(moved)}", file=out)
     root = dp / "workspace"
+    write_instructions(root, DEFAULT_INSTRUCTIONS)
     register(DEFAULT_PROJECT, root)
     cfg = load_system_config(DEFAULT_PROJECT)
     if not cfg.daemon.token:

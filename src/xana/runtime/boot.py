@@ -25,6 +25,7 @@ from xana.agent_adapter.gateway import DefaultAgentGateway
 from xana.agent_adapter.progress import AdapterProgressSink
 from xana.agent_adapter.router import DefaultAgentRequestRouter
 from xana.agents.chat_agent import ChatAgent, build_chat_agent_spec
+from xana.agents.coder import CODER_AGENT, build_coder_agent_spec
 from xana.agents.researcher import RESEARCHER_AGENT
 from xana.agents.interfaces import Agent
 from xana.config.loader import (
@@ -114,7 +115,7 @@ from xana.tools.toolsets import BUILTIN_TOOLSETS, unknown_names
 _INJECTOR_TOP_K = 3
 _INJECTOR_BUDGET_CHARS = 600   # 召回只给标题 + 描述(每条约 200 字),全文按需 Read
 _FAKE_PROVIDER = "fake"
-BUILTIN_AGENT_NAMES = ("chat", RESEARCHER_AGENT)   # 内置 agent:不能被 AGENT.md 覆盖或删除
+BUILTIN_AGENT_NAMES = ("chat", CODER_AGENT, RESEARCHER_AGENT)   # 内置 agent:不能被 AGENT.md 覆盖或删除
 _logger = logging.getLogger(__name__)
 
 
@@ -488,6 +489,9 @@ async def boot(
             episode_runner=episode_runner,
         )
 
+    # 内置编码 agent(docs/design/prompt-structure-design.md §2.2):chat 不带写代码的规则
+    gateway.agents[CODER_AGENT] = _doc_agent_factory(build_coder_agent_spec())
+
     await agent_registry.load()   # 坏文档记 warning 不阻塞 boot;之后按需热加载
 
     # 子 agent 运行器:agent_run 委派与 deep_research 共用(同步跑完子 run 取回最终文本,不触碰渠道)。
@@ -524,7 +528,8 @@ async def boot(
                                - {sp.component.name for sp in _all_specs})
     if _unknown_disabled:
         _logger.info("tools.disabled 中未匹配到已注册组 / 工具的条目(可能本就未注册):%s", _unknown_disabled)
-    _checked_specs = [build_chat_agent_spec(system_cfg.agent_defaults), *await agent_registry.list_specs()]
+    _checked_specs = [build_chat_agent_spec(system_cfg.agent_defaults), build_coder_agent_spec(),
+                      *await agent_registry.list_specs()]
     if system_cfg.web_search.xana_search_url:
         _checked_specs.append(build_researcher_agent_spec())
     for _spec in _checked_specs:

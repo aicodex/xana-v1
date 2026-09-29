@@ -132,6 +132,26 @@ def date_note(today: str, history: Sequence[MemoryMessage]) -> MemoryMessage | N
                  else f"今天是 {today}。")
 
 
+PROJECT_INSTRUCTIONS_FILE = "AGENTS.md"
+PROJECT_INSTRUCTIONS_MAX_CHARS = 20_000
+
+
+def project_instructions_note(
+    path: str, content: str, history: Sequence[MemoryMessage],
+) -> MemoryMessage | None:
+    """项目根目录 AGENTS.md(docs/design/prompt-structure-design.md §2.3;措辞译自 Claude Code 的
+    CLAUDE.md 注入)。内容变化才重新注入;空文件不注入;过长截断并注明。"""
+    body = content.strip()
+    if not body:
+        return None
+    if len(body) > PROJECT_INSTRUCTIONS_MAX_CHARS:
+        body = (body[:PROJECT_INSTRUCTIONS_MAX_CHARS]
+                + f"\n\n…(已截断,全文 {len(content)} 字,需要时用 Read 查看 {path})")
+    text = ("以下是本项目的说明。请遵循这些说明。重要:这些说明优先于默认行为,必须严格按原文执行。\n\n"
+            f"{path} 的内容(项目说明):\n\n{body}")
+    return changed_note("project_instructions", text, history)
+
+
 def model_switch_text(model: str) -> str:
     return f"本会话此后由模型 {model} 继续(模型 ID 为 {model})。"
 

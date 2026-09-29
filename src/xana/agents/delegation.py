@@ -20,6 +20,8 @@ SUBAGENT_EXCLUDED: tuple[str, ...] = (
     AGENT_RUN_TOOL, AGENT_DEFINE_TOOL, "EnterPlanMode", "EnterWorktree", "report_goal", "schedule",
 )
 
+SAME_AS_CALLER = "与你相同,不含委派与会话控制类"
+
 
 def subagent_ceiling(
     caller_available: frozenset[str] | None, specs: Iterable[ToolSpec], toolsets: Iterable[Toolset],
@@ -45,12 +47,17 @@ def agent_listing(
     """可委派 agent 列表(按名字排序,内容只随 agent 定义与工具目录变化)。"""
     specs = tuple(specs)
     toolsets = tuple(toolsets)
+    full = ceiling & {sp.component.name for sp in specs}
     lines = []
     for name in sorted(agents):
         spec = agents[name].spec()
-        tools = sorted(effective_tools(spec, ceiling, specs, toolsets))
+        tools = effective_tools(spec, ceiling, specs, toolsets)
         desc = spec.component.description
         if spec.when_to_use:
             desc = f"{desc}｜{spec.when_to_use}"
-        lines.append(f"- {name}: {desc}(工具: {', '.join(tools) if tools else '无'})")
+        if tools and tools == full:             # 与调用方相同就不逐个列,列表保持短
+            shown = SAME_AS_CALLER
+        else:
+            shown = ", ".join(sorted(tools)) if tools else "无"
+        lines.append(f"- {name}: {desc}(工具: {shown})")
     return "\n".join(lines)

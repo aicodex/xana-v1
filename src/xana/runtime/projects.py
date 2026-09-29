@@ -21,6 +21,14 @@ from xana.config.project_config import load_system_config, project_config_path, 
     update_project_config
 
 WORKSPACE_SEED = "# xana 助手\n\n你是 xana,一个通过聊天渠道服务用户的个人助手。\n"
+INSTRUCTIONS_FILE = "AGENTS.md"          # 项目说明:harness 每个会话读项目根目录的这个文件
+DEFAULT_INSTRUCTIONS = """\
+# default 项目
+
+这是 xana 的默认项目,也是项目的管理台:日常聊天、资料检索与研究,以及创建 / 配置其他项目。
+
+- 写代码、改代码、调试这类软件工程任务交给内置的 coder:用 agent_run 委派,或告诉用户可以用 /agent coder 切换。
+"""
 DEFAULT_PORT = 17777
 
 
@@ -44,6 +52,16 @@ def register(pid: str, root: Path) -> None:
         readme.write_text(WORKSPACE_SEED, encoding="utf-8")
     (home / PROJECT_FILE).write_text(json.dumps({"root": str(root)}, ensure_ascii=False, indent=2) + "\n",
                                      encoding="utf-8")
+
+
+def write_instructions(root: Path, text: str) -> bool:
+    """项目根目录还没有 AGENTS.md 时写入;已有则不覆盖,返回 False。"""
+    path = root / INSTRUCTIONS_FILE
+    if path.exists():
+        return False
+    root.mkdir(parents=True, exist_ok=True)
+    path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    return True
 
 
 def create_project(pid: str, *, root: Path | None = None, port: int | None = None,

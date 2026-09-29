@@ -65,6 +65,7 @@ from xana.harness_sdk.goal import (
 )
 from xana.harness_sdk.interfaces import Harness
 from xana.harness_sdk.context_notes import (
+    PROJECT_INSTRUCTIONS_FILE,
     READ_TOOL_NAME,
     TODO_TOOL_NAME,
     TOOL_SEARCH_TOOL_NAME,
@@ -74,6 +75,7 @@ from xana.harness_sdk.context_notes import (
     changed_note,
     continuation_note,
     date_note,
+    project_instructions_note,
     deferred_tools_note,
     memory_recall_note,
     model_switch_text,
@@ -158,6 +160,20 @@ def _has_env(context: HarnessContext) -> bool:
     """本 agent 的系统提示词是否含环境信息:默认提示词,或模板里放了 ${env} / ${base_prompt}。"""
     template = context.config_snapshot.get("agent_system_prompt")
     return not template or BASE_PROMPT_VAR in template or ENV_VAR in template
+
+
+def _project_instructions(cwd: str | None) -> tuple[str, str] | None:
+    """项目根目录 AGENTS.md 的 (路径, 内容);没有或读不了返回 None。"""
+    if not cwd:
+        return None
+    path = Path(cwd) / PROJECT_INSTRUCTIONS_FILE
+    try:
+        return str(path), path.read_text(encoding="utf-8")
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        _logger.warning("读取项目说明 %s 失败:%s", path, exc)
+        return None
 
 
 def _visible_skills(context: HarnessContext) -> frozenset[str] | None:
@@ -1003,6 +1019,11 @@ class DefaultHarness(Harness):
             today = date_note(self._today(), _hist)
             if today is not None:
                 pending_notes.append(today)
+            instructions = _project_instructions(context.cwd)
+            if instructions is not None:
+                note = project_instructions_note(*instructions, _hist)
+                if note is not None:
+                    pending_notes.append(note)
         if context.memory_injector_registry is not None and (
                 available is None or available & memory_tools):  # 记忆召回随 memory 组
             blocks = await context.memory_injector_registry.collect(

@@ -32,7 +32,8 @@ _DESCRIPTION = (
     "- list:列出项目、目录、端口、是否在运行、是否已接飞书机器人。\n"
     "- create:name(小写字母或数字开头,可含 - _);root 可选(缺省放在 ~/.xana/projects/<name>/workspace);"
     "agent_defaults 可选:{tools, disallowed_tools, skills},写法同 agent 的工具 / 技能选择"
-    "(tools 缺省 [\"default\"],skills 缺省全部,[] 表示没有)。\n"
+    "(tools 缺省 [\"default\"],skills 缺省全部,[] 表示没有);instructions 可选:项目说明(Markdown),"
+    "写进项目根目录的 AGENTS.md,该项目的每个会话都会读到(目录里已有 AGENTS.md 则不覆盖)。\n"
     "- configure:修改 name 项目的 agent_defaults;项目在运行时需要 stop 再 start 才生效。\n"
     "- bind_feishu:为 name 项目创建并接入一个新的飞书机器人,返回授权链接。把链接发给用户,"
     "用户在飞书里点开确认后,再调用 feishu_status。\n"
@@ -52,6 +53,7 @@ _SPEC = ToolSpec(
                        "enum": ["list", "create", "configure", "bind_feishu", "feishu_status", "start", "stop"]},
             "name": {"type": "string", "description": "项目名(除 list 外必填)"},
             "root": {"type": "string", "description": "create:项目目录,可选"},
+            "instructions": {"type": "string", "description": "create:项目说明,写进 AGENTS.md,可选"},
             "agent_defaults": {
                 "type": "object", "description": "create / configure:agent 默认配置",
                 "properties": {"tools": {"type": "array", "items": {"type": "string"}},
@@ -143,8 +145,13 @@ class ProjectManageTool(Tool):
         defaults = await self._check_defaults(data.get("agent_defaults") or {})
         root = Path(str(data["root"])) if data.get("root") else None
         info = projects.create_project(name, root=root, agent_defaults=defaults or None)
+        instructions = str(data.get("instructions") or "").strip()
+        note = ""
+        if instructions:
+            note = (",项目说明已写入 AGENTS.md" if projects.write_instructions(info.root, instructions)
+                    else "(目录里已有 AGENTS.md,没有覆盖)")
         return _ok(f"[project_manage] 已创建项目 {info.id}:目录 {info.root},端口 {info.port}"
-                   + (f",agent 默认 {defaults}" if defaults else "")
+                   + (f",agent 默认 {defaults}" if defaults else "") + note
                    + "。下一步:bind_feishu 接一个飞书机器人,然后 start。")
 
     async def _check_defaults(self, defaults: dict) -> dict:

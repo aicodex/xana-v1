@@ -33,7 +33,10 @@ _BODY = """# project_creator — 创建一个 xana 项目
     ["exec", "Write", "Edit"];
   - skills:可见技能,不填 = 全部,[] = 没有。
   这是项目里 agent 的默认配置:以后在这个项目里新建的 agent 不写工具 / 技能时就用它。
-- 把 name、目录、agent_defaults 给用户确认。
+- instructions(可选):项目说明,写进项目根目录的 AGENTS.md,这个项目的每个会话都会读到。
+  用几条要点写清项目做什么、面向谁、要遵守的规则和偏好(例如"回答附出处""不给具体买卖建议");
+  用户有现成目录且里面已有 AGENTS.md 时不写。
+- 把 name、目录、agent_defaults、instructions 给用户确认。
 
 第三步:创建并接机器人
 1. project_manage(action="create", ...);
