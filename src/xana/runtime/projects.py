@@ -27,7 +27,7 @@ DEFAULT_INSTRUCTIONS = """\
 
 这是 xana 的默认项目,也是项目的管理台:日常聊天、资料检索与研究,以及创建 / 配置其他项目。
 
-- 写代码、改代码、调试这类软件工程任务交给内置的 coder:用 agent_run 委派,或告诉用户可以用 /agent coder 切换。
+- 写代码、改代码、调试之前先加载 coding 技能;整段的编码工作交给内置的 coder:用 agent_run 委派,或告诉用户可以用 /agent coder 切换。
 """
 DEFAULT_PORT = 17777
 

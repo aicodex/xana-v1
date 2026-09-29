@@ -28,11 +28,15 @@ date: 2026-09-29
 | 沟通 / 输出效率 | 写给追进度的队友;最终消息自足;简洁 | CC 2.1.281 |
 | 回答格式 | 结论先行;结构只在有助浏览时用;列表不嵌套、每条一行、按重要性排序;简单问题直接用句子 | Codex「Final answer structure」 |
 
-### 2.2 编码:内置 agent `coder`
+### 2.2 编码:`coding` 技能 + 内置 agent `coder`
 
 - 写代码的规则(snake_case 例子、优先改现有文件、安全漏洞、不过度抽象 / 不加多余错误处理与兼容层、注释规范、UI 要实际跑过、`file_path:行号` 与 `owner/repo#123`、git 操作前先 status / stash、安全测试政策)组成编码段 `CODING`。
 - 内置 agent `coder`:`system_prompt = ${base_prompt} + CODING`,工具默认组合;不能被 AGENT.md 覆盖。进入方式:`/agent coder`,或 `agent_run(subagent_type="coder")`。
-- 选 agent 而不是 skill:编码规范要在整个编码过程中一直生效(身份与行为准则),skill 是按需加载的做法说明,可能不被加载;也不需要新工具。以后编码单独成项目时,由该项目默认 agent 使用 coder。
+- 规则文本只有一份,定义在 `coding` 技能(`skills/bundled/coding.py`);coder 从那里引用。
+- 两种用法:
+  - 聊天中临时要写代码:技能列表里有 `coding`(描述写明"写代码、改代码、调试、跑测试或做 git 操作之前先加载"),模型 `skill_load` 后规则进入上下文;
+  - 整段编码工作:`/agent coder` 切换或 `agent_run` 委派给 coder,规则常驻系统提示词,不依赖模型记得加载。
+- 不做成工具:规则是给模型读的说明,没有要执行的动作。以后编码单独成项目时,由该项目默认 agent 使用 coder。
 
 ### 2.3 项目说明:项目根目录的 `AGENTS.md`
 

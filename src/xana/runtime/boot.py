@@ -65,6 +65,7 @@ from xana.memory.markdown import (
     SQLiteMemorySearchEngine,
     SearchMemoryInjector,
 )
+from xana.skills.bundled.coding import CodingSkill
 from xana.skills.bundled.loop import LoopSkill
 from xana.skills.bundled.schedule import ScheduleSkill
 from xana.skills.bundled.agent_creator import AgentCreatorSkill
@@ -203,7 +204,7 @@ async def boot(
     from xana.skills.markdown_loader import FileSkillLoader, scan_skill_docs
     _doc_parser = MarkdownDocParser()
     bundled_skills = InMemorySkillRegistry()
-    for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill(), AgentCreatorSkill()):
+    for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill(), AgentCreatorSkill(), CodingSkill()):
         await bundled_skills.register(bundled)
     if project_id() == DEFAULT_PROJECT:   # default 项目是管理台:在聊天里创建 / 管理项目(project-design §7)
         await bundled_skills.register(ProjectCreatorSkill())
