@@ -19,8 +19,6 @@ if TYPE_CHECKING:
 
 # 记忆召回上限(照 Claude Code relevant_memories)
 RECALL_MAX_FILES = 5
-RECALL_MAX_FILE_BYTES = 4096
-RECALL_MAX_FILE_LINES = 200
 RECALL_MAX_SESSION_BYTES = 60 * 1024
 RECALL_MIN_TERMS = 2  # CC 用"含空格"判断,中文无空格,改用检索词数
 
@@ -62,18 +60,6 @@ def _tool_calls(m: MemoryMessage) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _truncate(path: str, body: str, *, can_read: bool) -> str:
-    lines = body.splitlines()
-    cut = "\n".join(lines[:RECALL_MAX_FILE_LINES])
-    encoded = cut.encode("utf-8")
-    if len(encoded) > RECALL_MAX_FILE_BYTES:
-        cut = encoded[:RECALL_MAX_FILE_BYTES].decode("utf-8", errors="ignore")
-    if cut != body:
-        cut += (f"\n\n(该记忆已截断,完整内容请用 Read 查看 {path})" if can_read
-                else f"\n\n(该记忆已截断:{path})")
-    return cut
-
-
 def memory_recall_note(
     blocks: Sequence[InjectedBlock], history: Sequence[MemoryMessage], user_input: str,
     *, can_read: bool = True,
@@ -91,20 +77,21 @@ def memory_recall_note(
     read_paths = [str((tc.get("input") or {}).get("file_path", ""))
                   for m in history for tc in _tool_calls(m)
                   if tc.get("tool_name") == READ_TOOL_NAME]
-    sections: list[str] = []
+    entries: list[str] = []
     paths: list[str] = []
     for block in blocks:
         path = block.node_path
         if (not block.content.strip() or path in surfaced or path in paths
                 or any(rp.endswith(path) for rp in read_paths if rp)):
             continue
-        sections.append(f"## {path}\n{_truncate(path, block.content, can_read=can_read)}")
+        entries.append(f"- {path}:{' '.join(block.content.split())}")
         paths.append(path)
         if len(paths) >= RECALL_MAX_FILES:
             break
-    if not sections:
+    if not entries:
         return None
-    text = "以下记忆可能与当前请求相关(来自记忆树):\n\n" + "\n\n".join(sections)
+    hint = "需要时用 Read 查看全文。" if can_read else ""
+    text = f"以下记忆可能与当前请求相关(来自记忆树,只列标题与描述){hint}\n" + "\n".join(entries)
     return _note("memory_recall", text, paths=tuple(paths), size=len(text.encode("utf-8")))
 
 

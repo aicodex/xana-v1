@@ -27,7 +27,7 @@ _CREATE_SPEC = ToolSpec(
         kind="tool", name="cron_create", qualified_name="builtin.cron_create",
         description=(
             "调度一个 prompt 在未来运行——按 cron 表达式循环触发,或在指定时间触发一次。"
-            "任务持久化到 ~/.xana/scheduled_tasks.json,serve 重启后仍然有效。\n"
+            "任务随当前项目持久化,serve 重启后仍然有效。\n"
             "cron 语法为本地时区的标准 5 字段:\"分 时 日 月 周\"。"
             "一次性任务(recurring=false)把分/时/日/月固定为具体值,触发一次后自动删除。"
             "循环任务示例:\"*/5 * * * *\" 每 5 分钟,\"0 * * * *\" 每小时,\"0 9 * * 1-5\" 工作日 9 点。"

@@ -112,7 +112,7 @@ from xana.tools.toolsets import BUILTIN_TOOLSETS, unknown_names
 
 
 _INJECTOR_TOP_K = 3
-_INJECTOR_BUDGET_CHARS = 2000
+_INJECTOR_BUDGET_CHARS = 600   # 召回只给标题 + 描述(每条约 200 字),全文按需 Read
 _FAKE_PROVIDER = "fake"
 BUILTIN_AGENT_NAMES = ("chat", RESEARCHER_AGENT)   # 内置 agent:不能被 AGENT.md 覆盖或删除
 _logger = logging.getLogger(__name__)
@@ -510,7 +510,8 @@ async def boot(
         await _register(LeadResearchTool(
             runner=agent_runner,
             model_registry=model_registry, provider=provider, model=model,
-            findings_root=project_root / "research", researcher_agent=RESEARCHER_AGENT))
+            # 原始发现是研究产物不是记忆:放项目私有目录,不进记忆树(不被召回)
+            findings_root=project_home() / "research", researcher_agent=RESEARCHER_AGENT))
 
     # 写错的名字不会生效(按名精确匹配,常见为大小写笔误),记 warning 提示修正;
     # 被系统级禁用的工具同样报出,提示该 agent 实际拿不到它。

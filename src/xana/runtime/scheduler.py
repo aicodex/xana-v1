@@ -1,6 +1,6 @@
 """FileSchedulerService — extension_api.capabilities.SchedulerService 的文件持久化实现。
 
-存储 ~/.xana/scheduled_tasks.json(boot 注入实际路径)。每条任务:
+存储在当前项目的 projects/<id>/scheduled_tasks.json(boot 注入实际路径)。每条任务:
 {id, cron, prompt, recurring, session_id, created_at, next_fire}
 next_fire 用 croniter 由 cron 表达式算出(本地时区)。SchedulerRunner(serve 内
 asyncio 任务)定期调 pop_due() 并把 prompt 经 gateway 注入对应 session。
