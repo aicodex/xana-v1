@@ -20,7 +20,7 @@ xanac "你好"   # CLI 一发一答,自动走 daemon SSE
 xanac -i       # Textual 交互式 REPL
 ```
 
-**项目**:一个项目 = 一套记忆 + 自己的 agent / 工具默认配置 + 一个 serve 进程(通常接一个飞书机器人)。安装即有默认项目 `default`。其他项目用 `xana project create <id> [--root <目录>]` / `xana project list` 管理,或在 default 项目的聊天里让 xana 用 `project_manage` 创建并接机器人;`xana serve --project <id>`、`xanac --project <id>` 选择项目。设计见 [docs/design/project-design.md](docs/design/project-design.md)。
+**项目**:一个项目 = 一套记忆 + 自己的 agent / 工具默认配置 + 一个 serve 进程(通常接一个飞书机器人)。安装即有默认项目 `default`。其他项目用 `xana project create <id> [--root <目录>]` / `xana project list` 管理,或在 default 项目的聊天里让 xana 用 `project_manage` 创建并接机器人;`xana serve --project <id>`、`xanac --project <id>` 选择项目。项目根目录的 `AGENTS.md` 是项目说明,该项目的每个会话都会读到(改完下一条消息生效)。设计见 [docs/design/project-design.md](docs/design/project-design.md)。
 
 `~/.xana` 布局:用户级 `config/system.json`(模型、搜索、策略)、`credentials/`、`agents/`、`skills/`、`code/`、`bin/`、`mem/`;每个项目的私有数据在 `projects/<id>/`(`project.json`、`config.json` 含机器人凭据 / daemon 端口 / 会话映射、`sessions/`、`runs/`、`logs/`、`run/`、`channels/`、`scheduled_tasks.json`、`evolution/`、`worktrees/`);default 项目的项目目录是 `projects/default/workspace`。
 

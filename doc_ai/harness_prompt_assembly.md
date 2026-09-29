@@ -23,20 +23,23 @@ status: active
 
 ## system prompt 结构
 
-### 7 个静态段（system_prompt.py 模块级常量）
+### 静态段（system_prompt.py 模块级常量）
 
-1. `INTRO` — 身份与安全/URL 红线
-2. `SYSTEM` — 输出即沟通、权限模式、prompt injection 警觉等
-3. `DOING_TASKS` — 执行任务总则
+通用核心，不带写代码的规则（在 `coding` 技能，`skills/bundled/coding.py`，写代码前经 `skill_load` 加载），也不写 xana 没有的机制（钩子、交互式权限审批、`/help`）。设计见 [prompt-structure-design](../docs/design/prompt-structure-design.md)。
+
+1. `INTRO` — 中性身份（"通过聊天渠道和命令行为用户工作的助手"）与不编造 URL
+2. `SYSTEM` — 输出即沟通（Markdown 按渠道渲染）、被拒调用不原样重试、prompt injection 警觉、自动压缩
+3. `DOING_TASKS` — 执行任务总则（探索性问题给推荐、失败先诊断、不超出要求）
 4. `ACTIONS` — 谨慎执行操作（风险操作清单）；末尾"如实报告结果"一句译自 CC 2.1.281
 5. `USING_TOOLS` — 专用工具优先、TodoWrite、并行调用
 6. `TONE` — 语气与风格
 7. `COMMUNICATING` — 与用户沟通（译自 CC 2.1.281「# Communicating with the user」：写给追进度的队友、第一次调用工具前说一句、最终消息自足）
 8. `OUTPUT` — 输出效率
+9. `ANSWER_FORMAT` — 回答格式（改写自 Codex「Final answer structure」：按任务大小定格式、列表不嵌套、结论先行、给出处）
 
 ### system 拼装（`build_system_prompt()`，会话内固定）
 
-默认提示词段序：INTRO、SYSTEM、DOING_TASKS、ACTIONS、env、tools、extension_sections、USING_TOOLS、TONE、COMMUNICATING、OUTPUT，最后是 profile_tail。规则：
+默认提示词段序：INTRO、SYSTEM、DOING_TASKS、ACTIONS、env、tools、extension_sections、USING_TOOLS、TONE、COMMUNICATING、OUTPUT、ANSWER_FORMAT，最后是 profile_tail。规则：
 
 - **profile_tail**（`profile_sections(PromptProfile)`）：会话级开关文本，固定在最末，顺序为进度核查 → 广泛查看 → 时间 → 已答视为完成 → 自主运行段（`mode=unattended` 时）→ 长期指令。交互默认为空（照 CC：交互不额外干预）；原则是少干预、重验证，完成判定交给 verify 与目标评估器。
 
@@ -57,6 +60,8 @@ status: active
 
 | kind | 何时追加 |
 |---|---|
+| `date` | 与环境段同条件（`_has_env`）：会话开始给一次"今天是 YYYY-MM-DD"，跨天追加"日期已变更"（CC 同款，只给日期） |
+| `project_instructions` | 与环境段同条件：项目根目录（`context.cwd`）有 `AGENTS.md` 时，每条用户消息前读一次，内容变化才注入；空文件不注入，超过 2 万字截断并提示用 Read 看全文；措辞译自 CC 的 CLAUDE.md 注入 |
 | `memory_recall` | agent 可用 memory 组工具时，每条新用户消息之后，有未注入过的命中时。截断提示"用 Read 查看"仅在可用 Read 时出现。按文件路径去重，跳过模型已 Read 的文件；单次 ≤5 个文件、每个 ≤4KB / 200 行；会话累计 60KB 后停止；检索词少于 2 个不召回（中文不以空格判断） |
 | `turn_input` | 技能 prompt blocks + extension `contribute_turn_input` 片段，内容变化时。贡献者经 `TurnInputContext.available_tools` 得知本 agent 的可用工具（技能列表仅在可用 `skill_load` 时列出），经 `TurnInputContext.visible_skills`（`_visible_skills(context)` 取 `config_snapshot["skills"]`，None = 全部）得知可见技能（技能列表只列这些） |
 | `deferred_tools` | 未揭示的 defer 工具名单（名字: 描述）变化时；名单清空且曾列出过时追加"均已加载"。agent 不可用 `tool_search` 时不隐藏任何工具（全部给完整 schema），也就没有这条 |
@@ -67,7 +72,7 @@ compact 摘要覆盖其前的 note；去重集合与累计量都靠扫描历史�
 
 ### 事实来源
 
-静态段最初逐字译自 CC 2.1.88（`constants/prompts.ts` 底版）；2026-09 对照 CC 2.1.276 做过一次克制微调（删除 CC 已删条目、补 CC 新增条目）。env 段模板逐字来自 AGENT_LOOP_PROMPT.md:123-130。note 文案（todo 提醒、按需工具）译自 CC 2.1.281。
+静态段最初逐字译自 CC 2.1.88（`constants/prompts.ts` 底版）；2026-09 对照 CC 2.1.276 做过一次克制微调（删除 CC 已删条目、补 CC 新增条目）；2026-09-29 拆出编码规则到 `coding` 技能、删去 xana 没有的机制、加入 Codex 回答格式。env 段模板逐字来自 AGENT_LOOP_PROMPT.md:123-130。note 文案（todo 提醒、按需工具）译自 CC 2.1.281。
 
 ## compact prompt（compact_prompt.py）
 

@@ -23,6 +23,7 @@ status: active
 命令行 `xana project` 与聊天里的 `project_manage` 工具共用，只管注册、查询、配置与启停，不涉及 serve 内部：
 
 - `create_project(id, root=None, port=None, agent_defaults=None)`：root 缺省 `projects/<id>/workspace`；端口缺省 `free_port(17778)` 分配（跳过其他项目已用端口与被占端口），同时生成 daemon token；最后写 `project.json`（它存在即项目就绪），项目目录缺 `README_ai.md` 时补一个。已存在抛 `FileExistsError`，id 不合法抛 `ValueError`。
+- `write_instructions(root, text)`：项目根目录还没有 `AGENTS.md`（项目说明，harness 每个会话读取）时写入，已有不覆盖（返回 False）。`ensure_default_project` 创建 default 项目时写入 `DEFAULT_INSTRUCTIONS`；`project_manage create` 的 `instructions` 经它写入。
 - `project_info(id)` / `all_projects()` → `ProjectInfo(id, root, port, running_pid, feishu_bot, agent_defaults)`。
 - `set_agent_defaults(id, …)`：改项目 config.json 的 `agent_defaults`（运行中的项目需重启生效）。
 - `set_feishu_bot(id, creds)`：写入扫码注册得到的飞书机器人到该项目 `channels.feishu`，并把确认人 `open_id` 加入该项目 `channels/pairings.json` 白名单。
