@@ -1,7 +1,7 @@
 """coding skill — 写代码的规则(docs/design/prompt-structure-design.md §2.2)。
 
-规则译自 Claude Code(执行任务里的编码条目、git 安全操作、引用格式、安全测试政策),是这段文本的唯一定义:
-chat 等 agent 要写代码时经 skill_load 加载;内置 agent coder 把它放进系统提示词常驻。
+规则译自 Claude Code(执行任务里的编码条目、git 安全操作、引用格式、安全测试政策)。
+默认提示词不带这些;agent 要写代码时经 skill_load 加载。
 """
 from __future__ import annotations
 

@@ -1,5 +1,5 @@
 ---
-title: 提示词结构:通用核心 + 编码 agent + 项目说明 AGENTS.md
+title: 提示词结构:通用核心 + 编码技能 + 项目说明 AGENTS.md
 status: active
 date: 2026-09-29
 ---
@@ -28,22 +28,18 @@ date: 2026-09-29
 | 沟通 / 输出效率 | 写给追进度的队友;最终消息自足;简洁 | CC 2.1.281 |
 | 回答格式 | 结论先行;结构只在有助浏览时用;列表不嵌套、每条一行、按重要性排序;简单问题直接用句子 | Codex「Final answer structure」 |
 
-### 2.2 编码:`coding` 技能 + 内置 agent `coder`
+### 2.2 编码:`coding` 技能
 
-- 写代码的规则(snake_case 例子、优先改现有文件、安全漏洞、不过度抽象 / 不加多余错误处理与兼容层、注释规范、UI 要实际跑过、`file_path:行号` 与 `owner/repo#123`、git 操作前先 status / stash、安全测试政策)组成编码段 `CODING`。
-- 内置 agent `coder`:`system_prompt = ${base_prompt} + CODING`,工具默认组合;不能被 AGENT.md 覆盖。进入方式:`/agent coder`,或 `agent_run(subagent_type="coder")`。
-- 规则文本只有一份,定义在 `coding` 技能(`skills/bundled/coding.py`);coder 从那里引用。
-- 两种用法:
-  - 聊天中临时要写代码:技能列表里有 `coding`(描述写明"写代码、改代码、调试、跑测试或做 git 操作之前先加载"),模型 `skill_load` 后规则进入上下文;
-  - 整段编码工作:`/agent coder` 切换或 `agent_run` 委派给 coder,规则常驻系统提示词,不依赖模型记得加载。
-- 不做成工具:规则是给模型读的说明,没有要执行的动作。以后编码单独成项目时,由该项目默认 agent 使用 coder。
+- 写代码的规则(snake_case 例子、优先改现有文件、安全漏洞、不过度抽象 / 不加多余错误处理与兼容层、注释规范、UI 要实际跑过、`file_path:行号` 与 `owner/repo#123`、git 操作前先 status / stash、安全测试政策)做成内置技能 `coding`(`skills/bundled/coding.py`)。
+- 技能列表里的描述写明"写代码、改代码、调试、跑测试或做 git 操作之前先加载";模型 `skill_load` 后规则进入上下文。default 项目的 AGENTS.md 也提示这一点。
+- 不做成工具:规则是给模型读的说明,没有要执行的动作。不另设编码 agent(只留一个入口);以后编码单独成项目时,在那个项目的 agent 模板里放进这段规则即可。
 
 ### 2.3 项目说明:项目根目录的 `AGENTS.md`
 
 - 会话开始时读项目目录(`project_root`)下的 `AGENTS.md`,作为 note 追加在第一条用户消息后(内容变化才重新注入);没有文件不注入;超过 20K 字截断并注明。
 - 措辞译自 CC 的 CLAUDE.md 注入:"以下是本项目的说明(项目根目录 AGENTS.md),请遵循;它们优先于默认行为。"
 - 与环境段同一条件:完全替换提示词且不放 `${env}` / `${base_prompt}` 的 agent 不注入。
-- default 项目创建时写入 `AGENTS.md`(`runtime/projects.DEFAULT_INSTRUCTIONS`):默认项目的定位,写代码的任务交给 coder。已有文件不覆盖。`project_manage create` 增加可选 `instructions`,由 project_creator 访谈后写入新项目的 AGENTS.md。
+- default 项目创建时写入 `AGENTS.md`(`runtime/projects.DEFAULT_INSTRUCTIONS`):默认项目的定位,写代码前先加载 coding 技能。已有文件不覆盖。`project_manage create` 增加可选 `instructions`,由 project_creator 访谈后写入新项目的 AGENTS.md。
 
 ### 2.4 子 agent 的交付说明(Kimi)
 
@@ -56,12 +52,12 @@ date: 2026-09-29
 
 ## 3. 影响
 
-- 系统提示词会话内固定,只影响新会话;默认 chat 的系统提示词 4.5K → 2.9K 字,coder 4.4K 字。
+- 系统提示词会话内固定,只影响新会话;默认 chat 的系统提示词 4.5K → 2.9K 字。
 - 已安装的 default 项目不会自动补 `AGENTS.md`(ensure_default_project 只在创建时写),部署时手动写一次。
-- 编码能力不删除,移入 `coder`。
+- 编码规则不删除,移入 `coding` 技能。
 
 ## 4. 验证
 
-- 抓取线上配置下 chat 与 coder 的第一轮请求,核对结构与字数;chat 不含编码段,coder 含。
+- 抓取线上配置下 chat 的第一轮请求,核对结构与字数;chat 不含编码段,技能列表有 coding。
 - AGENTS.md:有 / 无 / 变化 / 超长 / 纯净 agent 不注入。
 - 子 agent 任务前缀;全量测试 + compact 回归网。

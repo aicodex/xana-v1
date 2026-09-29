@@ -2,7 +2,7 @@
 
 通用核心:大部分译自 Claude Code(底版 ds_review/ROADMAP/AGENT_LOOP_PROMPT.md 即 CC 2.1.88,
 2026-09 对照 CC 2.1.276 / 2.1.281 微调),回答格式取自 Codex。写代码的规则不在这里,
-在内置 agent coder(xana.agents.coder)。这些字符串不在代码里拼接;拼装见 build_system_prompt()。"""
+在 coding 技能(xana.skills.bundled.coding)。这些字符串不在代码里拼接;拼装见 build_system_prompt()。"""
 from __future__ import annotations
 
 import os
