@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import collections.abc
 import contextlib
+import itertools
 import json
 import logging
 import time
@@ -74,7 +75,9 @@ from xana.harness_sdk.context_notes import (
     NO_PROGRESS_REMINDER,
     changed_note,
     continuation_note,
+    MAX_TURNS_SKIPPED,
     date_note,
+    max_turns_text,
     project_instructions_note,
     deferred_tools_note,
     memory_recall_note,
@@ -103,7 +106,6 @@ _logger = logging.getLogger(__name__)
 _DEFAULT_PROVIDER = "fake"
 _ANON_RUN_ID = "run-anon"
 _ANON_CALL_ID = "call-anon"
-_MAX_TURNS = 25  # 缺省工具轮上限;AgentSpec.max_turns(config_snapshot["max_turns"])可覆盖
 # 续跑上限(照 Claude Code 2.1.281):只有思考推 1 次、截断续写 3 次、stop hook 连续拦截 8 次
 _MAX_TRUNCATION_CONTINUES = 3
 _MAX_STOP_HOOK_BLOCKS = 8
@@ -1144,9 +1146,13 @@ class DefaultHarness(Harness):
                 },
             ))
 
-        max_turns = int(context.config_snapshot.get("max_turns") or _MAX_TURNS)
+        # 工具轮上限:缺省不限(与 Claude Code / Kimi Code 一致),AgentSpec.max_turns 显式配置时生效;
+        # 用完后多给一轮只写总结(wrap_up),仍调工具才报错。
+        _limit = context.config_snapshot.get("max_turns")
+        max_turns = int(_limit) if _limit else None
         stop_state = _StopState()
-        for turn_index in range(max_turns):
+        for turn_index in (range(max_turns + 1) if max_turns is not None else itertools.count()):
+            wrap_up = max_turns is not None and turn_index == max_turns
             if context.abort.aborted:
                 await self._fire_turn_end(
                     ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
@@ -1339,6 +1345,8 @@ class DefaultHarness(Harness):
                     todo_note = None
                 if todo_note is not None:
                     loop_notes.append(todo_note)
+            if wrap_up:
+                loop_notes.append(continuation_note("max_turns", max_turns_text(max_turns)))
             for n_idx, note in enumerate(loop_notes):
                 await self._append_note(context, session_id, agent_name, run_id,
                                         note, f"{turn_index}:{n_idx}")
@@ -1521,6 +1529,17 @@ class DefaultHarness(Harness):
             # 带已产出文本落地。
             if budget_exceeded is not None or episode_exceeded is not None:
                 break
+            if wrap_up:
+                if not iter_tool_calls:
+                    break                     # 收尾总结即最终回答
+                for call_idx, tc in enumerate(iter_tool_calls):   # 不再执行;补上结果保持历史成对
+                    skipped = MemoryMessage(role="tool", content=MAX_TURNS_SKIPPED, metadata={
+                        "tool_use_id": tc["call_id"], "tool_name": tc["tool_name"], "ok": False})
+                    await context.active_context_store.append_message(session_id, agent_name, skipped)
+                    await context.history_mirror.append(HistoryRow(
+                        row_id=f"{run_id}:tool:{turn_index}:{call_idx}", session_id=session_id,
+                        agent_name=agent_name, kind="tool", payload=skipped, ts=0.0))
+                continue                      # 循环结束 → 报 max_turns 错误
 
             if not iter_tool_calls:
                 decision = await self._stop_decision(

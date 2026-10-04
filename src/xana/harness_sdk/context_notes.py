@@ -166,6 +166,15 @@ CONTINUE_TRUNCATED = ("达到输出 token 上限。直接续写,不道歉,不回
                       "如果是在思路中间断开,就从中间接上。把剩余工作拆成更小的块。")
 
 
+MAX_TURNS_SKIPPED = "未执行:本条消息的工具调用次数已达上限。"
+
+
+def max_turns_text(limit: int) -> str:
+    """工具轮上限用完时的收尾指令:不再调用工具,给用户一份可接手的总结。"""
+    return (f"本条消息的工具调用已达到上限({limit} 轮),不能再调用工具。现在直接回复用户:"
+            "做到了哪里、得到了什么结果、还有哪些没做完,以及接下来怎么继续。")
+
+
 def stop_hook_text(reason: str) -> str:
     return f"Stop hook 反馈:{reason}"
 

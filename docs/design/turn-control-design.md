@@ -165,7 +165,7 @@ frozen dataclass,放 `agents/contracts.py`:
 4. `goal_mode` 且目标未报告终态(§6.3)→ **续跑**。
 5. 其他 → **结束**。
 
-**上限**(照 CC 2.1.281 的组合):只有 thinking 无文本推 1 次;输出截断续写 ≤3 次;工具调用格式错重试 1 次(xana 已有 `input_error` 回模型);stop 续跑点 / 评估器**连续**阻断上限 8 次;工具轮上限改读 `AgentSpec.max_turns`(缺省 25,CC 同样有上限)。达上限结束并在 final 事件标注 `continuation_exhausted`,等人查看。每次续跑发 `HarnessEvent(kind="continuation")`。
+**上限**(照 CC 2.1.281 的组合):只有 thinking 无文本推 1 次;输出截断续写 ≤3 次;工具调用格式错重试 1 次(xana 已有 `input_error` 回模型);stop 续跑点 / 评估器**连续**阻断上限 8 次;工具轮上限读 `AgentSpec.max_turns`:缺省不限(2026-09-29 改,与 CC 交互模式、Kimi Code 一致;原缺省 25 会把正常的长编码任务截断);显式配置时,用完后多给一轮收尾——追加 `max_turns` note 要求不再调工具、直接总结进度与剩余工作,模型照做即正常结束,仍调工具则不执行(补"未执行"结果保持历史成对)并报 max_turns 错误。达上限结束并在 final 事件标注 `continuation_exhausted`,等人查看。每次续跑发 `HarnessEvent(kind="continuation")`。
 
 ### 6.1 stop 续跑点(三家共有)
 
