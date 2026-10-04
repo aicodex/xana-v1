@@ -36,7 +36,7 @@ status: active
 - `memory_scope: MemoryScope | None` — `user / project / agent / session` 之一。
 - `isolation: IsolationMode`（`none / worktree / process / remote`）、`background: bool` — 声明执行形态，v1 未执行。
 - `parent_agent: str | None` — 父 agent 名，供 subagent 委派链使用（见 [agents_subagents](agents_subagents.md)）。
-- `max_turns: int | None` — 单次 run 的工具轮上限，经 `config_snapshot["max_turns"]` 传入 harness；`None` 用缺省 25。
+- `max_turns: int | None` — 单次 run 的工具轮上限，经 `config_snapshot["max_turns"]` 传入 harness；`None` = 不限（与 CC 交互模式、Kimi Code 一致）；显式配置时用完后有一轮收尾总结。
 - `system_prompt: str | None` — `None` → xana 默认系统提示词；字符串 → 系统提示词模板：`${base_prompt}` 嵌入完整默认提示词（在默认上扩展），`${env}` 环境段，`${extensions}` 扩展片段，未知占位符原样保留；不含占位符 = 完全替换（见 [harness_prompt_assembly](harness_prompt_assembly.md)）。
 - `prompt_profile: PromptProfile | None` — 会话级提示词开关（`harness_sdk/contracts.py`）。`None` = 交互默认。会话首次使用时由 ChatAgent 固化进 `SessionConfig.prompt_profile`，之后改 AGENT.md 不影响已有会话。两种模式默认值（照 Claude Code，少干预）：
   - `interactive`：所有开关关闭，system 不额外加任何文本；

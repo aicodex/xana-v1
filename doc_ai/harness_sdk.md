@@ -26,7 +26,7 @@ turn loop、prompt 组装、工具调度、auto-compact、暂停/取消、事件
 
 ## Owns
 
-- 单 turn 内的 model↔tool 往返循环（工具轮上限读 `AgentSpec.max_turns`，缺省 25）；纯文本结束时先走 Stop 决策（见 [harness_turn_controller](harness_turn_controller.md)）
+- 单 turn 内的 model↔tool 往返循环（工具轮上限读 `AgentSpec.max_turns`，缺省不限；显式配置时用完后多给一轮收尾总结，仍调工具则不执行并报 max_turns 错误）；纯文本结束时先走 Stop 决策（见 [harness_turn_controller](harness_turn_controller.md)）
 - system prompt 会话内固定（按会话缓存）；tools_schema 每轮组装（deferred 揭示后下一轮生效）；每轮变化的上下文以 ContextNote 追加进历史
 - auto-compact 的同步触发与摘要生成
 - placeholder（PH）的展开（`ph_expand.py`）与写回编排
