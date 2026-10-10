@@ -1,7 +1,7 @@
 """定时任务:文件持久化的 SchedulerService、serve 内的轮询器、到点任务的执行(docs/design/scheduled-task-design.md)。
 
 存储在当前项目的 projects/<id>/scheduled_tasks.json(boot 注入实际路径)。每条任务:
-{id, cron, prompt, recurring, session_id, route, agent, notify, created_at, next_fire, last_run}
+{id, cron, prompt, recurring, session_id, route, agent, notify, created_at, next_fire, last_run, done_at}
 next_fire 用 croniter 由 cron 表达式算出(本地时区)。route = 创建时会话所在的外部会话
 (adapter_id, thread_id),触发时据此找到该聊天"当前"的会话(/clear 换了会话 id 也能送达)。
 
@@ -37,6 +37,7 @@ _logger = logging.getLogger(__name__)
 RouteOf = Callable[[str], "tuple[str, str] | None"]
 NOTIFY_MODES = ("report", "silent")
 MAX_INFO_NOTICES = 3          # 每个子会话最多主动通知几次(防循环任务刷屏)
+DONE_KEEP_S = 7 * 24 * 3600   # 一次性任务触发后保留多久(供 cron_list 查看执行结果)
 
 
 def next_fire(cron: str, after_epoch: float) -> float:
@@ -96,7 +97,7 @@ class FileSchedulerService(SchedulerService):
         return tuple(self._load())
 
     async def record_run(self, task_id: str, *, at: str, status: str, transcript: str) -> None:
-        """记下最近一次执行(一次性任务触发时已删除,记不到就算了)。"""
+        """记下最近一次执行(任务已被删除就跳过)。"""
         jobs = self._load()
         for j in jobs:
             if j["id"] == task_id:
@@ -105,17 +106,18 @@ class FileSchedulerService(SchedulerService):
                 return
 
     async def pop_due(self, *, now_epoch: float | None = None) -> tuple[dict[str, Any], ...]:
-        """到点任务:一次性的删除,循环的滚动 next_fire。SchedulerRunner 专用。"""
+        """到点任务:循环的滚动 next_fire;一次性的标记 done_at 后保留 DONE_KEEP_S(期间 cron_list 能看到
+        执行结果),过期删除。SchedulerRunner 专用。"""
         now = now_epoch if now_epoch is not None else time.time()
-        jobs = self._load()
-        due = [j for j in jobs if j["next_fire"] <= now]
-        keep = [j for j in jobs if j["next_fire"] > now]
+        jobs = [j for j in self._load() if not j.get("done_at") or now - j["done_at"] < DONE_KEEP_S]
+        due = [j for j in jobs if not j.get("done_at") and j["next_fire"] <= now]
+        keep = [j for j in jobs if j.get("done_at") or j["next_fire"] > now]
         for j in due:
+            # 入库的是副本:返回给调用方的 due 条目保留触发时刻的 next_fire
             if j["recurring"]:
-                # 滚动副本入库:返回给调用方的 due 条目保留触发时刻的 next_fire
-                rolled = dict(j)
-                rolled["next_fire"] = next_fire(j["cron"], now)
-                keep.append(rolled)
+                keep.append({**j, "next_fire": next_fire(j["cron"], now)})
+            else:
+                keep.append({**j, "done_at": now})
         self._save(keep)
         return tuple(due)
 

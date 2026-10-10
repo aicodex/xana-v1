@@ -65,7 +65,7 @@ date: 2026-10-10
    | 请求决策 | 插入(等待决策) | 插入(等待决策) |
    | 运行中 `notify_user(info)` | 立即插入 | 立即插入 |
 
-6. **查看静默任务**:每次执行后在任务记录里写 `last_run = {at, status, transcript}`;`cron_list` 列出 agent、通知方式和最近一次执行(时间、状态、记录路径)。
+6. **查看静默任务**:每次执行后在任务记录里写 `last_run = {at, status, transcript}`;`cron_list` 列出 agent、通知方式和最近一次执行(时间、状态、记录路径)。一次性任务触发后不删除,记 `done_at` 并保留 7 天(不再触发),期间 `cron_list` 显示为"已执行"并带执行结果,过期由 `pop_due` 清掉。
 7. **组合**:`ScheduledTaskDispatcher` 改由 `boot()` 构造(唯一组合点,`BootResult.scheduler_dispatch`),serve 只负责启动 `SchedulerRunner`;`NotifyUserTool` 构造注入 dispatcher。
 
 ## 5. 影响
