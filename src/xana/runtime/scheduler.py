@@ -1,7 +1,8 @@
 """定时任务:文件持久化的 SchedulerService、serve 内的轮询器、到点任务的执行(docs/design/scheduled-task-design.md)。
 
 存储在当前项目的 projects/<id>/scheduled_tasks.json(boot 注入实际路径)。每条任务:
-{id, cron, prompt, recurring, session_id, route, agent, notify, created_at, next_fire, last_run, done_at}
+{id, cron, prompt, recurring, session_id, route, agent, notify, created_at, next_fire}
+一次性任务触发后删除;每次执行记一条历史到同目录的 scheduled_runs.jsonl(保留最近 MAX_HISTORY 条)。
 next_fire 用 croniter 由 cron 表达式算出(本地时区)。route = 创建时会话所在的外部会话
 (adapter_id, thread_id),触发时据此找到该聊天"当前"的会话(/clear 换了会话 id 也能送达)。
 
@@ -37,7 +38,7 @@ _logger = logging.getLogger(__name__)
 RouteOf = Callable[[str], "tuple[str, str] | None"]
 NOTIFY_MODES = ("report", "silent")
 MAX_INFO_NOTICES = 3          # 每个子会话最多主动通知几次(防循环任务刷屏)
-DONE_KEEP_S = 7 * 24 * 3600   # 一次性任务触发后保留多久(供 cron_list 查看执行结果)
+MAX_HISTORY = 200             # 执行历史保留条数
 
 
 def next_fire(cron: str, after_epoch: float) -> float:
@@ -51,6 +52,7 @@ class FileSchedulerService(SchedulerService):
     def __init__(self, *, path: Path, session_id: str, route_of: RouteOf | None = None) -> None:
         """route_of:会话 id → (adapter_id, thread_id),建任务时记下路由(缺省不记,触发时用原会话)。"""
         self._path = path
+        self._history_path = path.with_name("scheduled_runs.jsonl")
         self._route_of = route_of
         # 公有可变属性:cron 工具在 execute 时按真实 ToolContext.session_id 覆写;
         # 工具执行在同一事件循环内串行,无并发风险。
@@ -96,28 +98,43 @@ class FileSchedulerService(SchedulerService):
     async def list_all(self) -> tuple[dict[str, Any], ...]:
         return tuple(self._load())
 
-    async def record_run(self, task_id: str, *, at: str, status: str, transcript: str) -> None:
-        """记下最近一次执行(任务已被删除就跳过)。"""
-        jobs = self._load()
-        for j in jobs:
-            if j["id"] == task_id:
-                j["last_run"] = {"at": at, "status": status, "transcript": transcript}
-                self._save(jobs)
-                return
+    async def record_run(self, job: dict[str, Any], *, at: str, status: str, transcript: str) -> None:
+        """追加一条执行历史(一次性任务触发后已删除,历史是查看其结果的唯一途径)。"""
+        entry = {"task_id": job["id"], "cron": job["cron"], "prompt": job["prompt"], "recurring": job["recurring"],
+                 "agent": job.get("agent"), "notify": job.get("notify", "report"),
+                 "at": at, "status": status, "transcript": transcript}
+        lines = self._history_lines()[-(MAX_HISTORY - 1):] + [json.dumps(entry, ensure_ascii=False)]
+        self._history_path.parent.mkdir(parents=True, exist_ok=True)
+        self._history_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    async def history(self, limit: int = 20) -> tuple[dict[str, Any], ...]:
+        """最近的执行历史,新的在前。"""
+        out: list[dict[str, Any]] = []
+        for line in reversed(self._history_lines()):
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+            if len(out) >= limit:
+                break
+        return tuple(out)
+
+    def _history_lines(self) -> list[str]:
+        try:
+            return [ln for ln in self._history_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        except FileNotFoundError:
+            return []
 
     async def pop_due(self, *, now_epoch: float | None = None) -> tuple[dict[str, Any], ...]:
-        """到点任务:循环的滚动 next_fire;一次性的标记 done_at 后保留 DONE_KEEP_S(期间 cron_list 能看到
-        执行结果),过期删除。SchedulerRunner 专用。"""
+        """到点任务:一次性的删除,循环的滚动 next_fire。SchedulerRunner 专用。"""
         now = now_epoch if now_epoch is not None else time.time()
-        jobs = [j for j in self._load() if not j.get("done_at") or now - j["done_at"] < DONE_KEEP_S]
-        due = [j for j in jobs if not j.get("done_at") and j["next_fire"] <= now]
-        keep = [j for j in jobs if j.get("done_at") or j["next_fire"] > now]
+        jobs = self._load()
+        due = [j for j in jobs if j["next_fire"] <= now]
+        keep = [j for j in jobs if j["next_fire"] > now]
         for j in due:
-            # 入库的是副本:返回给调用方的 due 条目保留触发时刻的 next_fire
             if j["recurring"]:
+                # 滚动副本入库:返回给调用方的 due 条目保留触发时刻的 next_fire
                 keep.append({**j, "next_fire": next_fire(j["cron"], now)})
-            else:
-                keep.append({**j, "done_at": now})
         self._save(keep)
         return tuple(due)
 
@@ -266,7 +283,7 @@ class ScheduledTaskDispatcher:
             decision = self._decisions.pop(child, None)
         transcript = self._runs_dir / f"{outcome.run_id}.jsonl"
         if self._scheduler is not None:
-            await self._scheduler.record_run(job["id"], at=fired_at, status=(
+            await self._scheduler.record_run(job, at=fired_at, status=(
                 "awaiting_decision" if decision else outcome.status), transcript=str(transcript))
         if decision is not None:
             text = decision_notification(job, decision, outcome, fired_at=fired_at, child=child,

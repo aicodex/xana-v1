@@ -65,7 +65,7 @@ date: 2026-10-10
    | 请求决策 | 插入(等待决策) | 插入(等待决策) |
    | 运行中 `notify_user(info)` | 立即插入 | 立即插入 |
 
-6. **查看静默任务**:每次执行后在任务记录里写 `last_run = {at, status, transcript}`;`cron_list` 列出 agent、通知方式和最近一次执行(时间、状态、记录路径)。一次性任务触发后不删除,记 `done_at` 并保留 7 天(不再触发),期间 `cron_list` 显示为"已执行"并带执行结果,过期由 `pop_due` 清掉。
+6. **执行历史**:每次执行追加一条到项目的 `scheduled_runs.jsonl`(任务 id、cron、prompt、agent、通知方式、时间、状态、记录路径;保留最近 200 条),是执行结果的唯一权威。`cron_list` 默认只列等待执行的任务(未触发的一次性任务与循环任务),循环任务附最近一次执行(取自历史);`cron_list(history=true)` 列最近的执行历史。一次性任务触发后照旧删除,结果在历史里查。
 7. **组合**:`ScheduledTaskDispatcher` 改由 `boot()` 构造(唯一组合点,`BootResult.scheduler_dispatch`),serve 只负责启动 `SchedulerRunner`;`NotifyUserTool` 构造注入 dispatcher。
 
 ## 5. 影响
@@ -79,4 +79,4 @@ date: 2026-10-10
 - `tests/test_scheduler.py`:路由记录、`/clear` 后送到新会话、子会话参数、通知内容、bind_session、失败通知、长任务不阻塞轮询。
 - `tests/test_agent_composition.py`:真实 boot 下子会话看不到主会话历史,带定时说明、不带子 agent 说明。
 - 元 agent cron 走真实 `ScheduledTaskDispatcher`(`tests/test_meta_agent.py`)。
-- 追加:`agent` 参数校验与执行;silent 完成不插入、失败与决策插入;子会话为无人值守、`notify_user` 只在无人值守会话可见;info 立即送达与条数上限;决策后 `agent_run` resume 定时子会话;`last_run` 记录与 `cron_list` 展示。
+- 追加:`agent` 参数校验与执行;silent 完成不插入、失败与决策插入;子会话为无人值守、`notify_user` 只在无人值守会话可见;info 立即送达与条数上限;决策后 `agent_run` resume 定时子会话;执行历史记录与 `cron_list` 两种视图。

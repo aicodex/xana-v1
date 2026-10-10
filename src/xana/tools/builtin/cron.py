@@ -18,7 +18,7 @@ from xana.agents.interfaces import Agent
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.extension_api.capabilities import SchedulerService
 from xana.policy.contracts import PermissionResult
-from xana.runtime.scheduler import FileSchedulerService
+from xana.runtime.scheduler import MAX_HISTORY, FileSchedulerService
 from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
@@ -32,7 +32,7 @@ _CREATE_SPEC = ToolSpec(
             "任务随当前项目持久化,serve 重启后仍然有效。触发时在独立的新会话里执行(看不到当前对话,"
             "prompt 要写得能独立执行),无人值守;按 notify 决定是否把结果送回当前聊天。\n"
             "cron 语法为本地时区的标准 5 字段:\"分 时 日 月 周\"。"
-            "一次性任务(recurring=false)把分/时/日/月固定为具体值,只触发一次(执行记录保留 7 天)。"
+            "一次性任务(recurring=false)把分/时/日/月固定为具体值,只触发一次,触发后删除(执行结果用 cron_list history=true 查看)。"
             "循环任务示例:\"*/5 * * * *\" 每 5 分钟,\"0 * * * *\" 每小时,\"0 9 * * 1-5\" 工作日 9 点。"
             "避免 :00 和 :30 整点——选错峰分钟(如 :57、:03、:07)。"),
         source=ComponentSource(source_type="builtin", scope="system")),
@@ -45,7 +45,7 @@ _CREATE_SPEC = ToolSpec(
             "prompt": {"type": "string", "description": "每次触发时执行的任务,要写得不依赖当前对话就能完成。"},
             "recurring": {"type": "boolean",
                           "description": "true(默认)= 每次匹配都触发直至删除;"
-                                         "false = 下次匹配触发一次后不再触发(执行记录保留 7 天)。"},
+                                         "false = 下次匹配触发一次后删除。"},
             "agent": {"type": "string",
                       "description": "到点运行的 agent 名(专门的 agent / 工作流);不填 = 当前会话的 agent。"},
             "notify": {"type": "string", "enum": ["report", "silent"],
@@ -62,9 +62,13 @@ _LIST_SPEC = ToolSpec(
     toolset="schedule",
     component=ComponentSpec(
         kind="tool", name="cron_list", qualified_name="builtin.cron_list",
-        description="列出 cron_create 调度的定时任务,含 7 天内执行过的一次性任务及其最近一次执行结果。",
+        description=("列出等待执行的定时任务(还没触发的一次性任务与循环任务,循环任务附最近一次执行)。"
+                     "history=true 时改为列出最近的执行历史(含已触发、已删除的一次性任务):时间、任务、状态、记录路径。"),
         source=ComponentSource(source_type="builtin", scope="system")),
-    input_schema={"type": "object", "properties": {}, "required": []},
+    input_schema={"type": "object", "properties": {
+        "history": {"type": "boolean", "description": "true = 查看执行历史;默认 false = 等待执行的任务"},
+        "limit": {"type": "number", "description": "history 时最多列几条(默认 20)"},
+    }, "required": []},
     read_only=True,
     defer=True,
     display=ToolDisplay(category="other", verb="查看定时任务", result="none"),
@@ -130,19 +134,25 @@ class CronCreateTool(_CronToolBase):
 
 
 class CronListTool(_CronToolBase):
-    def __init__(self, scheduler: SchedulerService) -> None:
+    def __init__(self, scheduler: FileSchedulerService) -> None:
         self.scheduler = scheduler
 
     def spec(self) -> ToolSpec:
         return _LIST_SPEC
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
+        if invocation.input.get("history"):
+            runs = await self.scheduler.history(int(invocation.input.get("limit") or 20))
+            rendered = "\n".join(_render_run(r) for r in runs) or "(还没有执行历史)"
+            return ToolResult(ok=True, content={"runs": list(runs)}, rendered=rendered)
+        last: dict[str, dict] = {}
+        for r in await self.scheduler.history(MAX_HISTORY):
+            last.setdefault(r["task_id"], r)
         jobs = await self.scheduler.list_all()
         shaped = [{"id": j["id"], "cron": j["cron"], "prompt": j["prompt"], "recurring": j["recurring"],
-                   "agent": j.get("agent"), "notify": j.get("notify", "report"), "last_run": j.get("last_run"),
-                   "done": bool(j.get("done_at"))}
+                   "agent": j.get("agent"), "notify": j.get("notify", "report"), "last_run": last.get(j["id"])}
                   for j in jobs]
-        rendered = "\n".join(_render_job(j) for j in shaped) or "(无定时任务)"
+        rendered = "\n".join(_render_job(j) for j in shaped) or "(没有等待执行的定时任务)"
         return ToolResult(ok=True, content={"jobs": shaped}, rendered=rendered)
 
 
@@ -162,8 +172,11 @@ class CronDeleteTool(_CronToolBase):
 
 def _render_job(j: dict) -> str:
     last = j["last_run"]
-    tail = (f";最近一次 {last['at']} {last['status']},记录 {last['transcript']}" if last else ";还没执行过")
-    if j["done"]:
-        tail = f";一次性任务,已执行(保留 7 天){tail.replace(';还没执行过', ';正在执行')}"
-    return (f"- {j['id']} {j['cron']} recurring={j['recurring']} agent={j['agent'] or '当前会话的 agent'} "
-            f"notify={j['notify']}: {j['prompt'][:60]}{tail}")
+    tail = f";最近一次 {last['at']} {last['status']},记录 {last['transcript']}" if last else ""
+    return (f"- {j['id']} {j['cron']} {'循环' if j['recurring'] else '一次性'} "
+            f"agent={j['agent'] or '当前会话的 agent'} notify={j['notify']}: {j['prompt'][:60]}{tail}")
+
+
+def _render_run(r: dict) -> str:
+    return (f"- {r['at']} {r['task_id']}({'循环' if r['recurring'] else '一次性'},{r['cron']}) {r['status']}: "
+            f"{r['prompt'][:60]};记录 {r['transcript']}")
