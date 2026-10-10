@@ -52,6 +52,7 @@ from xana.harness_sdk.compact import (
 from xana.harness_sdk.contracts import (
     HarnessContext,
     HarnessEvent,
+    NOTIFY_USER_TOOL,
     HarnessRequest,
     ProgressEvent,
     PromptProfile,
@@ -1300,6 +1301,9 @@ class DefaultHarness(Harness):
             if not profile.goal_mode:  # report_goal 只在目标模式会话中出现
                 schemas = [sc for sc in schemas if sc["name"] != REPORT_GOAL_TOOL]
                 deferred_names = [d for d in deferred_names if d[0] != REPORT_GOAL_TOOL]
+            if profile.mode != "unattended":  # notify_user 只在无人值守会话中出现
+                schemas = [sc for sc in schemas if sc["name"] != NOTIFY_USER_TOOL]
+                deferred_names = [d for d in deferred_names if d[0] != NOTIFY_USER_TOOL]
             if ext_tools:
                 # extension 工具不参与 defer:永远全量 schema,且覆盖同名内置工具
                 ext_tool_names = set(ext_tools)

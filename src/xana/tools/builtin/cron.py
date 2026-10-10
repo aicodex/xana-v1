@@ -12,6 +12,9 @@ add 之前用 ToolContext.session_id 覆写——工具执行在同一事件循�
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+from xana.agents.interfaces import Agent
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.extension_api.capabilities import SchedulerService
 from xana.policy.contracts import PermissionResult
@@ -27,7 +30,7 @@ _CREATE_SPEC = ToolSpec(
         description=(
             "调度一个 prompt 在未来运行——按 cron 表达式循环触发,或在指定时间触发一次。"
             "任务随当前项目持久化,serve 重启后仍然有效。触发时在独立的新会话里执行(看不到当前对话,"
-            "prompt 要写得能独立执行),完成后结果作为通知送回当前聊天。\n"
+            "prompt 要写得能独立执行),无人值守;按 notify 决定是否把结果送回当前聊天。\n"
             "cron 语法为本地时区的标准 5 字段:\"分 时 日 月 周\"。"
             "一次性任务(recurring=false)把分/时/日/月固定为具体值,触发一次后自动删除。"
             "循环任务示例:\"*/5 * * * *\" 每 5 分钟,\"0 * * * *\" 每小时,\"0 9 * * 1-5\" 工作日 9 点。"
@@ -43,6 +46,11 @@ _CREATE_SPEC = ToolSpec(
             "recurring": {"type": "boolean",
                           "description": "true(默认)= 每次匹配都触发直至删除;"
                                          "false = 下次匹配触发一次后自动删除。"},
+            "agent": {"type": "string",
+                      "description": "到点运行的 agent 名(专门的 agent / 工作流);不填 = 当前会话的 agent。"},
+            "notify": {"type": "string", "enum": ["report", "silent"],
+                       "description": "report(默认)= 每次跑完把结果发给用户;silent = 后台静默,"
+                                      "只在失败、需要用户决策或任务主动通知时才发消息。"},
         },
         "required": ["cron", "prompt"],
     },
@@ -87,8 +95,10 @@ class _CronToolBase(Tool):
 
 
 class CronCreateTool(_CronToolBase):
-    def __init__(self, scheduler: FileSchedulerService) -> None:
+    def __init__(self, scheduler: FileSchedulerService, agents: Mapping[str, Agent] | None = None) -> None:
+        """agents:活的 agent 表,用于校验 agent 参数(None = 不校验)。"""
         self.scheduler = scheduler
+        self._agents = agents
 
     def spec(self) -> ToolSpec:
         return _CREATE_SPEC
@@ -97,18 +107,25 @@ class CronCreateTool(_CronToolBase):
         cron = str(invocation.input.get("cron", ""))
         prompt = str(invocation.input.get("prompt", ""))
         recurring = bool(invocation.input.get("recurring", True))
+        agent = str(invocation.input.get("agent") or "").strip() or None
+        notify = str(invocation.input.get("notify") or "report")
+        if agent is not None and self._agents is not None and agent not in self._agents:
+            return ToolResult(ok=False, content=None, failure_kind="validation", error=f"未知 agent {agent!r}",
+                              rendered=f"[cron_create 失败: 未知 agent {agent!r},可选:{', '.join(sorted(self._agents))}]")
         # 任务记录的 session_id = 创建它的会话(runner 串行消费,赋值无并发风险)
         if context.session_id:
             self.scheduler.session_id = context.session_id
         try:
-            task_id = await self.scheduler.add(cron=cron, prompt=prompt, recurring=recurring)
+            task_id = await self.scheduler.add(cron=cron, prompt=prompt, recurring=recurring,
+                                               agent=agent, notify=notify)
         except ValueError as e:
             return ToolResult(ok=False, content=None, failure_kind="validation",
                               error=str(e), rendered=f"[cron_create 失败: {e}]")
         return ToolResult(
             ok=True,
-            content={"id": task_id, "cron": cron, "recurring": recurring},
-            rendered=f"[cron_create] 已调度 {task_id}: {cron} → {prompt[:50]}",
+            content={"id": task_id, "cron": cron, "recurring": recurring, "agent": agent, "notify": notify},
+            rendered=(f"[cron_create] 已调度 {task_id}: {cron} → {prompt[:50]}"
+                      f"(agent: {agent or '当前会话的 agent'},{'静默' if notify == 'silent' else '每次报告结果'})"),
         )
 
 
@@ -121,11 +138,10 @@ class CronListTool(_CronToolBase):
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         jobs = await self.scheduler.list_all()
-        shaped = [{"id": j["id"], "cron": j["cron"], "prompt": j["prompt"],
-                   "recurring": j["recurring"]} for j in jobs]
-        rendered = "\n".join(
-            f"- {j['id']} {j['cron']} recurring={j['recurring']}: {j['prompt'][:60]}"
-            for j in shaped) or "(无定时任务)"
+        shaped = [{"id": j["id"], "cron": j["cron"], "prompt": j["prompt"], "recurring": j["recurring"],
+                   "agent": j.get("agent"), "notify": j.get("notify", "report"), "last_run": j.get("last_run")}
+                  for j in jobs]
+        rendered = "\n".join(_render_job(j) for j in shaped) or "(无定时任务)"
         return ToolResult(ok=True, content={"jobs": shaped}, rendered=rendered)
 
 
@@ -141,3 +157,10 @@ class CronDeleteTool(_CronToolBase):
         await self.scheduler.remove(task_id)
         return ToolResult(ok=True, content={"id": task_id},
                           rendered=f"[cron_delete] 已删除 {task_id}")
+
+
+def _render_job(j: dict) -> str:
+    last = j["last_run"]
+    tail = (f";最近一次 {last['at']} {last['status']},记录 {last['transcript']}" if last else ";还没执行过")
+    return (f"- {j['id']} {j['cron']} recurring={j['recurring']} agent={j['agent'] or '当前会话的 agent'} "
+            f"notify={j['notify']}: {j['prompt'][:60]}{tail}")

@@ -50,6 +50,7 @@ class ProgressEvent:
 
 
 PromptMode = Literal["interactive", "unattended"]
+NOTIFY_USER_TOOL = "notify_user"   # 只在无人值守会话中可见(没人在实时看,才需要主动通知)
 TimeSignal = Literal["off", "elapsed", "budget"]
 
 _PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {

@@ -23,7 +23,7 @@ BUILTIN_TOOLSETS: tuple[Toolset, ...] = (
     Toolset("session", "会话内工作流:todo、计划模式、worktree、目标汇报", default=True),
     Toolset("meta", "按需加载工具 schema 与技能说明:tool_search / skill_load", default=True),
     Toolset("research", "多步深度研究:deep_research / background_research", default=True),
-    Toolset("schedule", "定时任务:CronCreate / CronList / CronDelete", default=True),
+    Toolset("schedule", "定时任务:cron_create / cron_list / cron_delete,无人值守时的 notify_user", default=True),
     Toolset("agents", "委派子 agent 与创建 agent:agent_run / agent_define", default=True),
     Toolset("projects", "管理 xana 项目(只在 default 项目):project_manage", default=True),
 )

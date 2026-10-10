@@ -346,17 +346,12 @@ async def _run_inner(argv: argparse.Namespace) -> int:
 
     runner = None
     if boot_result.scheduler is not None:
-        from xana.runtime.scheduler import ScheduledTaskDispatcher, SchedulerRunner
+        from xana.runtime.scheduler import SchedulerRunner
 
         # 到点任务在独立子会话里跑,结果通知插进该聊天当前的会话(docs/design/scheduled-task-design.md)
         runner = SchedulerRunner(
             scheduler=boot_result.scheduler,
-            dispatch=ScheduledTaskDispatcher(
-                gateway=boot_result.gateway, runner=boot_result.agent_runner,
-                runs_dir=project_home() / "sessions" / "runs",
-                session_config_store=boot_result.session_config_store,
-                resolver=boot_result.session_resolver, meta_service=boot_result.meta_service,
-            ),
+            dispatch=boot_result.scheduler_dispatch,
         )
         runner.start()
         print("[xana serve] scheduler runner started")

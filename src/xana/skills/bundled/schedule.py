@@ -30,9 +30,13 @@ _BODY = """# schedule — 管理定时任务(本地)
    把换算结果用人话复述给用户确认(如「每个工作日 9:03」)。
    避开 :00/:30 整点,选错峰分钟。
 3. 一次性任务用 recurring=false(触发一次后自动删除);周期任务 recurring=true。
-4. 用户确认后调 cron_create,把返回的任务 ID 告诉用户。
+4. 由谁来跑:要跑某个专门的 agent / 工作流时填 agent(须是已有的 agent);不填 = 当前会话的 agent。
+5. 怎么通知:每次都要看结果(日报、汇总)用 notify="report"(默认);只要做完、不用每次看
+   (数据更新、定期整理、监控)用 notify="silent"——失败、需要用户拍板或发现要紧的事时仍会通知。
+   任务在无人值守模式下运行,需要用户决定时会用 notify_user 发问,用户答复后接着做。
+6. 用户确认后调 cron_create,把返回的任务 ID 告诉用户。
 
-查看:cron_list 列出全部任务(ID/cron/prompt)。
+查看:cron_list 列出全部任务(ID/cron/agent/通知方式/prompt/最近一次执行的时间、状态和记录路径)。
 修改:先 cron_delete 旧任务再 cron_create 新任务(无原地更新)。
 删除:cron_delete(id)。删除前把要删的任务复述给用户确认。
 """

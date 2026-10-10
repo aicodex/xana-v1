@@ -83,8 +83,10 @@ class AgentRunTool(Tool):
         return f"{parent}-agent-{agent}-{uuid.uuid4().hex[:6]}"
 
     def _resume_target(self, parent: str, agent_id: str) -> str | None:
-        """agent_id 须是本会话派出的子会话;返回其 agent 名。"""
-        m = re.fullmatch(re.escape(f"{parent}-agent-") + r"(.+)-[0-9a-f]{6}", agent_id)
+        """agent_id 须是本会话派出的子会话(agent_run 委派的,或定时任务的子会话
+        {会话}-cron-{任务}-{agent}-{随机},docs/design/scheduled-task-design.md §4.3);返回其 agent 名。"""
+        m = (re.fullmatch(re.escape(f"{parent}-agent-") + r"(.+)-[0-9a-f]{6}", agent_id)
+             or re.fullmatch(re.escape(f"{parent}-cron-") + r"[0-9a-f]{8}-(.+)-[0-9a-f]{6}", agent_id))
         return m.group(1) if m else None
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:

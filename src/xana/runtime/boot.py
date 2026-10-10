@@ -83,7 +83,7 @@ from xana.state.interfaces import RunStore, SessionStore, StateRepository
 from xana.session_config.file_store import FileSessionConfigStore
 from xana.session_config.interfaces import SessionConfigStore
 from xana.tools.builtin._todo_store import TodoStore
-from xana.runtime.scheduler import FileSchedulerService
+from xana.runtime.scheduler import FileSchedulerService, ScheduledTaskDispatcher
 from xana.runtime.session_resolver import SessionResolver
 from xana.agent_adapter.agent_runner import GatewayAgentRunner
 from xana.tools.builtin.agent_define import AgentDefineTool
@@ -103,6 +103,7 @@ from xana.tools.builtin.skill_load import SkillLoadTool
 from xana.tools.builtin.todo_write import TodoWriteTool
 from xana.tools.builtin.tool_search import ToolSearchTool
 from xana.tools.builtin.web_fetch import WebFetchTool
+from xana.tools.builtin.notify_user import NotifyUserTool
 from xana.tools.builtin.report_goal import ReportGoalTool
 from xana.tools.builtin.web_search import WebSearchTool
 from xana.tools.builtin.xana_search import (BackgroundResearchTool, WebOpenUrlTool, XanaSearchClient,
@@ -140,6 +141,7 @@ class BootResult:
     scheduler: FileSchedulerService | None = None
     session_resolver: SessionResolver | None = None
     agent_runner: AgentRunner | None = None
+    scheduler_dispatch: ScheduledTaskDispatcher | None = None
     main_writer: MainWriter | None = None
     run_jsonl_writer: RunJsonlWriter | None = None
     write_queue: WriteQueue | None = None
@@ -315,7 +317,7 @@ async def boot(
     # 定时任务记下创建时会话所在的聊天,触发时送到该聊天当前的会话(docs/design/scheduled-task-design.md)
     scheduler = FileSchedulerService(
         path=project_home() / "scheduled_tasks.json", session_id="default", route_of=session_resolver.route_of)
-    await _register(CronCreateTool(scheduler))
+    await _register(CronCreateTool(scheduler, agents))
     await _register(CronListTool(scheduler))
     await _register(CronDeleteTool(scheduler))
 
@@ -554,6 +556,14 @@ async def boot(
         agent_name=_meta_agent_name,
     )
 
+    # 定时任务到点执行(docs/design/scheduled-task-design.md):无人值守的独立子会话,按通知方式插回当前会话;
+    # notify_user 经它送达通知、登记待决策的问题。serve 只负责启动 SchedulerRunner。
+    scheduler_dispatch = ScheduledTaskDispatcher(
+        gateway=gateway, runner=agent_runner, runs_dir=project_home() / "sessions" / "runs",
+        scheduler=scheduler, session_config_store=session_config_store,
+        resolver=session_resolver, meta_service=meta_service)
+    await _register(NotifyUserTool(dispatcher=scheduler_dispatch))
+
     # §1.5 Compact-as-PH: ContextSDK constructed above and bound into the
     # legacy active_context_store; same instance is wired into the
     # command router so /compact reaches the same buffer.
@@ -595,6 +605,7 @@ async def boot(
         scheduler=scheduler,
         session_resolver=session_resolver,
         agent_runner=agent_runner,
+        scheduler_dispatch=scheduler_dispatch,
         main_writer=main_writer,
         run_jsonl_writer=run_jsonl_writer,
         write_queue=write_queue,
