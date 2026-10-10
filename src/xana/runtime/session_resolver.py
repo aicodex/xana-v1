@@ -82,6 +82,15 @@ class SessionResolver:
         with self._lock:
             return self._map.get(_make_key(adapter_id, thread_id))
 
+    def route_of(self, session_id: str) -> tuple[str, str] | None:
+        """反查:当前映射到 ``session_id`` 的 (adapter_id, thread_id);没有返回 None。"""
+        with self._lock:
+            for key, sid in self._map.items():
+                if sid == session_id:
+                    adapter_id, _, thread_id = key.partition("\t")
+                    return adapter_id, thread_id
+        return None
+
     def snapshot(self) -> dict[str, str]:
         """Read-only copy of the canonical map (for tests / observability)."""
         with self._lock:

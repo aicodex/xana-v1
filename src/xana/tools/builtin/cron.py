@@ -5,10 +5,9 @@
 经 tool_search 揭示后才能调用。
 
 session 归属:SchedulerService ABC 的 add() 不接收 session_id,而任务必须
-记录创建它的会话(runner 到点把 prompt 注回该 session)。裁定(计划 Task 4):
+记录创建它的会话(到点后结果送回该聊天当前的会话,docs/design/scheduled-task-design.md)。
 FileSchedulerService 暴露公有可变属性 session_id,CronCreateTool.execute 在
-add 之前用 ToolContext.session_id 覆写——SchedulerRunner 串行消费任务,
-工具执行也在同一事件循环内串行,无并发风险。因此 CronCreateTool 标注具体
+add 之前用 ToolContext.session_id 覆写——工具执行在同一事件循环内串行,无并发风险。因此 CronCreateTool 标注具体
 类型 FileSchedulerService;list/delete 只用 ABC 方法,标注 ABC。
 """
 from __future__ import annotations
@@ -27,7 +26,8 @@ _CREATE_SPEC = ToolSpec(
         kind="tool", name="cron_create", qualified_name="builtin.cron_create",
         description=(
             "调度一个 prompt 在未来运行——按 cron 表达式循环触发,或在指定时间触发一次。"
-            "任务随当前项目持久化,serve 重启后仍然有效。\n"
+            "任务随当前项目持久化,serve 重启后仍然有效。触发时在独立的新会话里执行(看不到当前对话,"
+            "prompt 要写得能独立执行),完成后结果作为通知送回当前聊天。\n"
             "cron 语法为本地时区的标准 5 字段:\"分 时 日 月 周\"。"
             "一次性任务(recurring=false)把分/时/日/月固定为具体值,触发一次后自动删除。"
             "循环任务示例:\"*/5 * * * *\" 每 5 分钟,\"0 * * * *\" 每小时,\"0 9 * * 1-5\" 工作日 9 点。"
@@ -39,7 +39,7 @@ _CREATE_SPEC = ToolSpec(
             "cron": {"type": "string",
                      "description": '本地时区标准 5 字段 cron 表达式:"分 时 日 月 周"'
                                     '(如 "*/5 * * * *" = 每 5 分钟)。'},
-            "prompt": {"type": "string", "description": "每次触发时注入的 prompt。"},
+            "prompt": {"type": "string", "description": "每次触发时执行的任务,要写得不依赖当前对话就能完成。"},
             "recurring": {"type": "boolean",
                           "description": "true(默认)= 每次匹配都触发直至删除;"
                                          "false = 下次匹配触发一次后自动删除。"},

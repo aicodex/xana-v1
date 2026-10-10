@@ -44,13 +44,14 @@ class GatewayAgentRunner(AgentRunner):
         parent_session_id: str | None = None,
         tool_ceiling: frozenset[str] | None = None,
         on_step: Callable[[SubagentStep], None] | None = None,
+        preamble: str | None = None,
     ) -> AgentRunOutcome:
         agent = self._agents.get(agent_name)
         if agent is None:
             raise LookupError(f"unknown agent {agent_name!r}")
         fresh = self._session_store is None or await self._session_store.get(session_id) is None
         if fresh:
-            prompt = f"{SUBAGENT_PREAMBLE}\n\n{prompt}"
+            prompt = f"{preamble or SUBAGENT_PREAMBLE}\n\n{prompt}"
         if self._session_store is not None and fresh:
             await self._session_store.upsert(SessionRecord(
                 session_id=session_id, current_agent=agent_name, parent_session_id=parent_session_id,

@@ -62,8 +62,10 @@ class AgentRunner(ABC):
         parent_session_id: str | None = None,
         tool_ceiling: frozenset[str] | None = None,
         on_step: Callable[[SubagentStep], None] | None = None,
+        preamble: str | None = None,
     ) -> AgentRunOutcome:
         """在 ``session_id``(调用方给的独立会话)里运行 ``agent_name``,返回最终文本。
+        新会话的第一条任务前加一段说明:``preamble``,缺省为子 agent 说明(主 agent 只看得到最后一条消息)。
         同一 ``session_id`` 再次运行即在原子会话上下文里继续。``tool_ceiling`` 限定子 agent 可用工具的上限
         (与它自身的工具选择取交集;None = 不设上限)。``on_step`` 按顺序回调子 agent 的每一步
         (思考摘录、工具调用及参数摘要、最终回答),供调用方展示进度。"""

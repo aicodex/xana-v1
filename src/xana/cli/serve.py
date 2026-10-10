@@ -95,39 +95,6 @@ def build_adapters(
     return adapters
 
 
-def _make_scheduler_dispatch(gateway, meta_service=None):
-    """SchedulerRunner 的 dispatch 回调:把到点任务的 prompt 注入 gateway。
-
-    入口选择:gateway.submit(InboundMessage) —— 与 adapter 入站泵同一条路径
-    (router 在 gateway 内部把 InboundMessage 转成 AgentRequest,adapter.render
-    把回复送回渠道)。adapter_id 按任务记录的 session_id 前缀推断
-    (tg-… → telegram,feishu-… → feishu),没匹配时退回首个已注册 adapter。
-    元 agent cron(§6.3,marker 任务)由 meta_service.fire() 消费:产出
-    episode + 全新窗口注入元 prompt。
-    """
-    prefix_to_adapter = {"tg": "telegram", "feishu": "feishu"}
-
-    async def dispatch(*, session_id: str, text: str) -> None:
-        if meta_service is not None and meta_service.owns(text):
-            await meta_service.fire()
-            return
-        from xana.agent_adapter.contracts import InboundMessage
-
-        adapter_id = prefix_to_adapter.get(session_id.split("-", 1)[0])
-        if adapter_id not in gateway.adapters:
-            adapter_id = next(iter(gateway.adapters), None)
-        if adapter_id is None:
-            return
-        inbound = InboundMessage(
-            adapter_id=adapter_id, session_id=session_id, text=text,
-            metadata={"source": "scheduler"},
-        )
-        async for _rendered in gateway.submit(inbound):
-            pass
-
-    return dispatch
-
-
 async def _run_inbound_pump(adapter: Adapter, gateway) -> None:
     """Pull inbound messages, submit to gateway, and drain RenderedMessage stream.
 
@@ -379,13 +346,16 @@ async def _run_inner(argv: argparse.Namespace) -> int:
 
     runner = None
     if boot_result.scheduler is not None:
-        from xana.runtime.scheduler import SchedulerRunner
+        from xana.runtime.scheduler import ScheduledTaskDispatcher, SchedulerRunner
 
+        # 到点任务在独立子会话里跑,结果通知插进该聊天当前的会话(docs/design/scheduled-task-design.md)
         runner = SchedulerRunner(
             scheduler=boot_result.scheduler,
-            dispatch=_make_scheduler_dispatch(
-                boot_result.gateway,
-                meta_service=getattr(boot_result, "meta_service", None),
+            dispatch=ScheduledTaskDispatcher(
+                gateway=boot_result.gateway, runner=boot_result.agent_runner,
+                runs_dir=project_home() / "sessions" / "runs",
+                session_config_store=boot_result.session_config_store,
+                resolver=boot_result.session_resolver, meta_service=boot_result.meta_service,
             ),
         )
         runner.start()

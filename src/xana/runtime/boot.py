@@ -33,6 +33,7 @@ from xana.config.loader import (
 )
 from xana.extension_api.builtin.agent_listing import AgentListingContributor
 from xana.extension_api.builtin.skills_listing import SkillsListingContributor
+from xana.extension_api.capabilities import AgentRunner
 from xana.extension_api.registry import ExtensionRegistry, ExtensionRegistryBuilder
 from xana.harness_sdk.default import DefaultHarness
 from xana.harness_sdk.interfaces import ProgressSink
@@ -138,6 +139,7 @@ class BootResult:
     model: str
     scheduler: FileSchedulerService | None = None
     session_resolver: SessionResolver | None = None
+    agent_runner: AgentRunner | None = None
     main_writer: MainWriter | None = None
     run_jsonl_writer: RunJsonlWriter | None = None
     write_queue: WriteQueue | None = None
@@ -302,8 +304,17 @@ async def boot(
     await _register(BashTool())
     await _register(ToolSearchTool(tool_registry=tools))
     await _register(ReportGoalTool())  # 仅目标模式会话可见(harness 按 PromptProfile 过滤)
+    # SessionResolver — single source of truth for (adapter_id, thread_id) -> sid.
+    # Seeded from system_cfg.sessions (read-once at boot per I16); mirror-writes
+    # the map back to this project's config.json (project-design §4).
+    session_resolver = SessionResolver(
+        system_config=system_cfg,
+        system_json_path=cp.project_config_path,
+        writer=write_project_sessions,
+    )
+    # 定时任务记下创建时会话所在的聊天,触发时送到该聊天当前的会话(docs/design/scheduled-task-design.md)
     scheduler = FileSchedulerService(
-        path=project_home() / "scheduled_tasks.json", session_id="default")
+        path=project_home() / "scheduled_tasks.json", session_id="default", route_of=session_resolver.route_of)
     await _register(CronCreateTool(scheduler))
     await _register(CronListTool(scheduler))
     await _register(CronDeleteTool(scheduler))
@@ -322,14 +333,6 @@ async def boot(
         await _register(ProjectManageTool(tool_registry=tools, skills=bundled_skills))
 
     model_thresholds = {e.name: derive_compact_thresholds(e) for e in system_cfg.models}
-    # SessionResolver — single source of truth for (adapter_id, thread_id) -> sid.
-    # Seeded from system_cfg.sessions (read-once at boot per I16); mirror-writes
-    # the map back to this project's config.json (project-design §4).
-    session_resolver = SessionResolver(
-        system_config=system_cfg,
-        system_json_path=cp.project_config_path,
-        writer=write_project_sessions,
-    )
     # 联网:配置了 xana-search 服务时用 web_search(只返回搜索摘要)/ web_open_url(读全文 + 按目标提炼)
     # / background_research(服务端后台研究,本地模型);deep_research(主模型 + 子研究员)在 agent 注册后接入。
     # 未配置时沿用旧的 web_search / web_fetch(brave key 走
@@ -591,6 +594,7 @@ async def boot(
         model=model,
         scheduler=scheduler,
         session_resolver=session_resolver,
+        agent_runner=agent_runner,
         main_writer=main_writer,
         run_jsonl_writer=run_jsonl_writer,
         write_queue=write_queue,
