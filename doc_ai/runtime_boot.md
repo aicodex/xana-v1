@@ -28,7 +28,7 @@ status: active
    - 无 `history_root`：`InMemoryHistoryMirror`，writer 全为 `None`（内存态，无持久化）。
 4. **WriteQueue**：`WriteQueue` + `WriteQueueConsumer` 作为**独立 asyncio task**（`xana-write-queue-consumer`）启动——spec §11 要求 consumer 与同步模式的 `_invoke` 解耦，否则 replace_range 入队时死锁。
 5. **Tool registry**：`InMemoryToolRegistry` 注册全部内置工具。关键注入：
-   - `FileSchedulerService(path=projects/<id>/scheduled_tasks.json, session_id="default")` → `CronCreateTool/CronListTool/CronDeleteTool`；
+   - `SessionResolver` 先构造，`FileSchedulerService(path=projects/<id>/scheduled_tasks.json, session_id="default", route_of=session_resolver.route_of)` → `CronCreateTool(scheduler, agents)/CronListTool/CronDeleteTool`；`MetaEvolutionService` 之后组装 `ScheduledTaskDispatcher`（gateway、agent_runner、scheduler、session_config_store、resolver、meta_service）并注册 `NotifyUserTool(dispatcher=...)`（见 [runtime_scheduler](runtime_scheduler.md)）；
    - `FileSessionConfigStore(root=projects/<id>/sessions)`（todo 存储同目录，worktree 根为 `projects/<id>/worktrees`） → `EnterPlanModeTool` / `EnterWorktreeTool`；同一个 store 实例后面也进 `BootResult` 和 `DefaultCommandRouter`；
    - `WebSearchTool` 注入 `brave_search_key`（来自 system.json）；
    - 仅当 `project_id() == "default"`：注册 `ProjectManageTool`（工具组 `projects`，default 项目是管理台）；
@@ -46,7 +46,7 @@ status: active
 
 ## 出口：BootResult
 
-`BootResult`（boot.py:103）是一个 dataclass，字段即上述全部组装产物：`gateway`、`agents`、`memory_tree`、`search_engine`、`active_context_store`、`history_mirror`、`memory_injector_registry`、`tool_registry`、`skill_registry`、`model_registry`、`state_repository`、`session_config_store`、`progress_sink`、`provider`、`model`，以及可空尾部 `scheduler` / `session_resolver` / `main_writer` / `run_jsonl_writer` / `write_queue` / `write_consumer` / `write_consumer_task` / `budget_tracker` / `agent_spawner` / `subagent_dispatcher` / `agent_registry`。CLI（serve/chat）与测试从这里取件，不做二次组装。
+`BootResult`（boot.py:103）是一个 dataclass，字段即上述全部组装产物：`gateway`、`agents`、`memory_tree`、`search_engine`、`active_context_store`、`history_mirror`、`memory_injector_registry`、`tool_registry`、`skill_registry`、`model_registry`、`state_repository`、`session_config_store`、`progress_sink`、`provider`、`model`，以及可空尾部 `scheduler` / `session_resolver` / `agent_runner` / `scheduler_dispatch` / `main_writer` / `run_jsonl_writer` / `write_queue` / `write_consumer` / `write_consumer_task` / `budget_tracker` / `agent_spawner` / `subagent_dispatcher` / `agent_registry`。CLI（serve/chat）与测试从这里取件，不做二次组装。
 
 ## 不变量
 

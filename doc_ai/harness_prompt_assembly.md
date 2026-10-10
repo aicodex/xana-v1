@@ -19,7 +19,7 @@ status: active
 
 ## 职责
 
-生成会话内固定的 system prompt，并把每轮变化的上下文（记忆召回、技能、按需工具、todo 提醒）以 ContextNote 追加进历史；tools_schema 每轮组装，deferred 工具被揭示后下一轮即生效。
+生成会话内固定的 system prompt，并把每轮变化的上下文（记忆召回、技能、按需工具、todo 提醒）以 ContextNote 追加进历史；tools_schema 每轮组装，deferred 工具被揭示后下一轮即生效；`report_goal` 只在目标模式会话、`notify_user` 只在无人值守会话（`PromptProfile.mode == "unattended"`）的 tools_schema 中出现。
 
 ## system prompt 结构
 
@@ -86,4 +86,4 @@ compact 摘要覆盖其前的 note；去重集合与累计量都靠扫描历史�
 ## 不变量
 
 - system 会话内固定；每轮变化的上下文只以 ContextNote 追加，不得回到 system（前缀稳定测试守护）。
-- 项目级规则文件（CLAUDE.md 类）目前不进 system prompt；CC 是包 `<system-reminder>` 作为 messages[0] prepend，xana 预留了同样位置（default.py 中 TODO(claude_md)）。
+- 项目说明（项目根目录 `AGENTS.md`）不进 system prompt，以 `project_instructions` note 注入（见上表）。

@@ -1082,9 +1082,6 @@ class DefaultHarness(Harness):
                 thread_store=thread_store, turn_store=turn_store, base_parts=[],
             )
         todo_store = context.metadata.get("todo_store")
-        # TODO(claude_md): CC 把 CLAUDE.md 包 <system-reminder> 作为 messages[0]
-        # prepend(PROMPT_ASSEMBLY_ORDER.md),不进 system prompt;xana 实现
-        # 项目级规则文件加载后在这里 prepend 首条 user message。
         # system prompt 与 tools_schema 在每轮 turn 循环内组装(deferred 揭示
         # 后下一轮即生效),这里只准备不变的输入。
 

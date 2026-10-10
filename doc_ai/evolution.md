@@ -26,7 +26,7 @@ status: active
 | 变更单 schema（假设→diff 摘要→证据指针→判决）走 L2 门禁 | [evolution_module](evolution_module.md) / [memory_rules_gate](memory_rules_gate.md) |
 | 元 agent 定时唤醒（cron 幂等安装、prompt 固定四段组装、held-out 不回流、propose_doc_change 唯一提案路径） | [evolution_module](evolution_module.md) / [runtime_scheduler](runtime_scheduler.md) |
 | spawn/分叉门禁 + Write/Edit 受保护目录（L2 + 两级 agent 目录） | [agent_adapter_gateway](agent_adapter_gateway.md) / [tools_permission_sandbox](tools_permission_sandbox.md) |
-| serve 侧 marker 任务 dispatch（`_make_scheduler_dispatch`） | [cli_serve](cli_serve.md) |
+| marker 任务 dispatch（`ScheduledTaskDispatcher`） | [runtime_scheduler](runtime_scheduler.md) |
 | harness usage 写点消费 episode 阈值（`episode_threshold` 事件、优雅落地、RunRecord.metadata `episode_exceeded`） | [harness_sdk](harness_sdk.md) / [evolution_module](evolution_module.md) |
 
 ## 设计原则（仍然有效）

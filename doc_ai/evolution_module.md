@@ -17,7 +17,7 @@ status: active
 - [episode.py](../src/xana/evolution/episode.py) — `EpisodeRunner` 状态机 + `EpisodeGatedSpawner` 门禁 + `EpisodeGateError`
 - [meta.py](../src/xana/evolution/meta.py) — `MetaEvolutionService` 元 agent 定时唤醒
 - [boot.py](../src/xana/runtime/boot.py) — 组装点（`boot()` 是唯一组合点）
-- [serve.py](../src/xana/cli/serve.py) — `_make_scheduler_dispatch` marker 任务消费
+- [scheduler.py](../src/xana/runtime/scheduler.py) — `ScheduledTaskDispatcher` marker 任务消费
 
 ## 模块定位
 
@@ -125,7 +125,7 @@ verdict 规则：canary 失败，或 Δ ≤ 0（有评估时）→ `rolled_back`
 
 ## serve 集成（marker 任务 dispatch）
 
-`cli/serve.py` 的 `_make_scheduler_dispatch(gateway, meta_service=None)`：到点任务先过 `meta_service.owns(text)`，命中 marker → `meta_service.fire()`（产出 episode + 全新窗口注入元 prompt），不走路通 adapter 注入。serve 组装时传 `getattr(boot_result, "meta_service", None)`。boot 里 `MetaEvolutionService` 的 `agent_name` 取 FileAgentRegistry 第一个 spec 的组件名（缺省 `"chat"`），`agents_root = ~/.xana/agents`，`todo_store` 与 chat 共用。详见 [cli_serve](cli_serve.md)。
+`runtime/scheduler.py` 的 `ScheduledTaskDispatcher`（boot 组装时注入 `meta_service`）：到点任务先过 `meta_service.owns(prompt)`，命中 marker → `meta_service.fire()`（产出 episode + 全新窗口注入元 prompt），不走普通定时任务的独立子会话流程。boot 里 `MetaEvolutionService` 的 `agent_name` 取 FileAgentRegistry 第一个 spec 的组件名（缺省 `"chat"`），`agents_root = ~/.xana/agents`，`todo_store` 与 chat 共用。详见 [runtime_scheduler](runtime_scheduler.md)。
 
 ## 不变量
 

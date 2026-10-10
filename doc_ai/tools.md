@@ -56,14 +56,15 @@ status: active
 | `skill_load` | `skill_load.py` | 按名取 bundled skill 全文（两阶段加载的第二阶段）；不在 `ToolContext.visible_skills` 内的技能按不存在处理（`not_found`，只列可见技能） | read_only |
 | `EnterPlanMode` | `enter_plan_mode.py` | 写 `SessionConfig.metadata["mode"]="plan"`（enforcement 见下） | read_only |
 | `EnterWorktree` | `enter_worktree.py` | `git worktree add` 并把路径写进 session metadata | destructive |
-| `cron_create` | `cron.py` | 调度定时 prompt（注入 `SchedulerService`） | defer |
-| `cron_list` | `cron.py` | 列出定时任务 | read_only, defer |
+| `cron_create` | `cron.py` | 调度定时任务：`agent` 指定运行的 agent，`notify` = report / silent；到点在无人值守的独立子会话执行，结果按通知方式插回当前聊天（见 [runtime_scheduler](runtime_scheduler.md)） | defer |
+| `cron_list` | `cron.py` | 列出定时任务（agent、通知方式、最近一次执行的时间 / 状态 / 记录路径） | read_only, defer |
+| `notify_user` | `notify_user.py` | 只在无人值守会话可见：`info` 立即告知用户（每次任务 ≤3 条），`decision` 请用户决策并结束本次执行，答复后经 `agent_run` resume 继续 | open_world |
 | `cron_delete` | `cron.py` | 按 ID 删除定时任务 | defer |
 | `web_search` | `xana_search.py` | 配置了 xana-search 服务（`system.json` `web_search.xana_search_url/token`）时注册：1–4 条查询并行，只返回标题/链接/日期/搜索引擎摘要 | read_only, open_world, parallel |
 | `web_open_url` | `xana_search.py` | 同上：打开 1–10 个网页读全文，给 objective 时由小模型提炼要点（原文引用逐字核对）；执行中经 `report_progress` 上报阅读进度 | read_only, open_world, parallel |
 | `background_research` | `xana_search.py` | 同上：服务端后台研究任务（本地 27B 规划 + 4B 阅读，不占主模型），提交返回 job_id，`wait_s` 长轮询（期间上报进度） | read_only, open_world, parallel |
 | `deep_research` | `lead_research.py` | 配置了 xana-search 时注册：主模型当研究负责人拆子课题（effort low/medium/high = 3/4/6）→ 经 `AgentRunner` 并行跑内置 `researcher` 子 agent → 汇总成带出处的报告；实时进度，子研究员原始发现写到工作区 `research/<日期>/`（设计见 [lead-research-design](../docs/design/lead-research-design.md)） | read_only, open_world, parallel |
-| `agent_run` | `agent_run.py` | 把子任务委派给另一个 agent，在独立子会话里同步跑完并取回最终回答；可 `resume` 续接，子 agent 工具 = 自身 ∩ 调用方上限（见 [agents_subagents](agents_subagents.md)） | open_world, parallel |
+| `agent_run` | `agent_run.py` | 把子任务委派给另一个 agent，在独立子会话里同步跑完并取回最终回答；可 `resume` 续接（也接受本会话的定时子会话），子 agent 工具 = 自身 ∩ 调用方上限（见 [agents_subagents](agents_subagents.md)） | open_world, parallel |
 | `agent_define` | `agent_define.py` | `catalog` 看工具组目录与已有 agent；`create` 校验后按 `scope` 写 `<project_root>/.xana/agents/<name>/AGENT.md`（`project`，缺省）或 `~/.xana/agents/<name>/AGENT.md`（`user`），强制刷新注册表后立即可用（不能提权、不能覆盖内置）；`delete` 删除文件 agent 并立即生效（内置不能删），见 [agents](agents.md) | — |
 | `project_manage` | `project_manage.py` | **只在 default 项目注册**（工具组 `projects`）：`list` / `create`（名字、目录、`agent_defaults`、`instructions`：写进项目根目录 `AGENTS.md`，已有不覆盖）/ `configure`（改 `agent_defaults`，未知工具 / 组 / 技能名报错）/ `bind_feishu`（飞书扫码创建应用，立即返回授权链接，后台轮询，确认后写入该项目 channels 并把确认人加入配对白名单）/ `feishu_status`（等待绑定结果，最多 2 分钟，上报进度）/ `start` / `stop`（不能停 default）；逻辑在 `runtime/projects.py`，设计见 [project-design](../docs/design/project-design.md) §7 | open_world |
 | `web_search`（旧） | `web_search.py` | 未配置 xana-search 时的回退：联网搜索（native/brave/duckduckgo） | read_only, open_world, defer |
