@@ -18,6 +18,7 @@ import logging
 import time
 import uuid
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -36,6 +37,13 @@ _logger = logging.getLogger(__name__)
 RouteOf = Callable[[str], "tuple[str, str] | None"]
 NOTIFY_MODES = ("report", "silent")
 MAX_INFO_NOTICES = 3          # 每个子会话最多主动通知几次(防循环任务刷屏)
+
+
+def next_fire(cron: str, after_epoch: float) -> float:
+    """cron 表达式按本地时区的下一次触发时刻(epoch 秒)。croniter 拿到裸时间戳会按 UTC 解释,
+    所以先转成带本地时区的 datetime。"""
+    start = datetime.fromtimestamp(after_epoch).astimezone()
+    return croniter(cron, start).get_next(datetime).timestamp()
 
 
 class FileSchedulerService(SchedulerService):
@@ -76,7 +84,7 @@ class FileSchedulerService(SchedulerService):
             "id": task_id, "cron": cron, "prompt": prompt, "recurring": recurring,
             "session_id": self.session_id, "route": list(route) if route else None,
             "agent": agent, "notify": notify, "created_at": now,
-            "next_fire": croniter(cron, now).get_next(float),
+            "next_fire": next_fire(cron, now),
         })
         self._save(jobs)
         return task_id
@@ -106,7 +114,7 @@ class FileSchedulerService(SchedulerService):
             if j["recurring"]:
                 # 滚动副本入库:返回给调用方的 due 条目保留触发时刻的 next_fire
                 rolled = dict(j)
-                rolled["next_fire"] = croniter(j["cron"], now).get_next(float)
+                rolled["next_fire"] = next_fire(j["cron"], now)
                 keep.append(rolled)
         self._save(keep)
         return tuple(due)
