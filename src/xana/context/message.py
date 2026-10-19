@@ -156,6 +156,8 @@ class CompactPlaceholder(Message):
 class CompactSummary(Message):
     summary: str
     _internal: "_PlaceholderInternal"
+    # 压缩前已揭示的按需工具:压缩后工具结果没了,靠它保住揭示状态(CC preCompactDiscoveredTools)
+    revealed_tools: tuple[str, ...] = ()
 
     # Verbatim from §1.9 — single source for model-visible + card body.
     POST_COMPACT_TEMPLATE = (

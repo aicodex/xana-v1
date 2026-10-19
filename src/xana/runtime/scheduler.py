@@ -329,6 +329,8 @@ class ScheduledTaskDispatcher:
 
     async def _deliver(self, session_id: str, route: tuple[str, str] | None, text: str) -> None:
         adapters = self._gateway.adapters
+        if route is None and self._resolver is not None:
+            route = self._resolver.route_of(session_id)      # 任务没记路由:按会话反查它属于哪个聊天
         adapter_id = route[0] if route else session_id.split("-", 1)[0]
         if adapter_id not in adapters:
             adapter_id = next(iter(adapters), None)

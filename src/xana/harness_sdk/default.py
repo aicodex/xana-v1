@@ -47,7 +47,7 @@ from xana.extension_api.contracts import (
 from xana.extension_api.registry import ExtensionRegistry
 from xana.harness_sdk.compact import (
     BLOCKING_HEADROOM, build_post_compact_context, estimate_tokens,
-    generate_summary, messages_since_boundary, revealed_tools_from_messages,
+    generate_summary, messages_since_boundary, persist_compact_transcript, revealed_tools_from_messages,
 )
 from xana.harness_sdk.contracts import (
     HarnessContext,
@@ -1278,6 +1278,7 @@ class DefaultHarness(Harness):
                                         ph_id=auto_run_id,
                                         transcript_path=transcript,
                                     ),
+                                    revealed_tools=tuple(revealed_now),
                                 )
                                 await sdk.replace_placeholder(
                                     session_id, agent_name, auto_run_id, (cs,),
@@ -1806,7 +1807,8 @@ def _assemble_for_model(system_content: str, history: tuple[MemoryMessage, ...])
     assistant/tool metadata that round-trip the tool_use cycle."""
     msgs: list[ModelMessage] = [ModelMessage(role="system", content=system_content)]
     for m in history:
-        role = m.role if m.role in ("user", "assistant", "system", "tool") else "system"
+        # compact 摘要按会话规格 §1.9 以 user 角色出现(CompactSummary.to_anthropic 同);其余未知角色归 system
+        role = "user" if m.role == "compact" else m.role if m.role in ("user", "assistant", "system", "tool") else "system"
         msgs.append(ModelMessage(role=role, content=m.content, metadata=dict(m.metadata)))
     return tuple(msgs)
 
@@ -1825,25 +1827,7 @@ def _sessions_root_from(context: HarnessContext) -> Path:
 async def _persist_compact_transcript(
     context: HarnessContext, session_id: str, messages: tuple
 ) -> str | None:
-    """Compact 前把将被压缩的消息区间落盘 ~/.xana/sessions/{sid}/compact-{ts}.jsonl。
-
-    诚信修复:CompactSummary 引用的 transcript 路径必须真实存在且可读回原
-    消息(此前 default.py 虚构 runs/autocompact-*.jsonl,文件并不存在)。
-    """
-    try:
-        target_dir = _sessions_root_from(context) / session_id
-        target_dir.mkdir(parents=True, exist_ok=True)
-        path = target_dir / f"compact-{int(time.time() * 1_000_000)}.jsonl"
-        with path.open("w", encoding="utf-8") as fh:
-            for m in messages:
-                fh.write(json.dumps(
-                    {"role": m.role, "content": m.content, "metadata": dict(m.metadata)},
-                    ensure_ascii=False,
-                ) + "\n")
-        return str(path)
-    except Exception:
-        _logger.exception("compact transcript persist failed")
-        return None
+    return persist_compact_transcript(_sessions_root_from(context), session_id, messages)
 
 
 def _to_anthropic_tool_schema(spec) -> dict:

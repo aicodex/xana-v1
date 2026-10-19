@@ -154,6 +154,19 @@ class MarkdownDocParser(SkillManifestParser):
                     )
                 metadata["prompt_profile"] = (
                     dict(prompt_profile) if isinstance(prompt_profile, dict) else prompt_profile)
+            # 运行参数:用哪个模型、思考强度、工具轮上限(以前写了也被忽略,2026-10-19)
+            if fm.get("model") is not None:
+                if not isinstance(fm["model"], str) or not fm["model"].strip():
+                    raise SkillManifestError(path=path, kind=kind, field="model", reason="model 必须是模型名")
+                metadata["model"] = fm["model"].strip()
+            if fm.get("effort") is not None:
+                if not isinstance(fm["effort"], (str, int)) or isinstance(fm["effort"], bool):
+                    raise SkillManifestError(path=path, kind=kind, field="effort", reason="effort 必须是字符串或整数")
+                metadata["effort"] = fm["effort"]
+            if fm.get("max_turns") is not None:
+                if not isinstance(fm["max_turns"], int) or isinstance(fm["max_turns"], bool) or fm["max_turns"] < 1:
+                    raise SkillManifestError(path=path, kind=kind, field="max_turns", reason="max_turns 必须是正整数")
+                metadata["max_turns"] = fm["max_turns"]
             return SkillManifest(
                 name=name,
                 description=goal,

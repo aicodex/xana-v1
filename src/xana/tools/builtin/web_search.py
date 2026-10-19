@@ -52,9 +52,12 @@ _SPEC = ToolSpec(
 
 
 class WebSearchTool(Tool):
-    def __init__(self, *, session_config_store, brave_api_key: str | None = None) -> None:
+    def __init__(self, *, session_config_store, brave_api_key: str | None = None,
+                 native_available: bool = False) -> None:
+        """native_available:模型端有内置搜索(deepseek 系)。没有时缺省用 duckduckgo,设成 native 也按 duckduckgo。"""
         self.session_config_store = session_config_store
         self.brave_api_key = brave_api_key
+        self._native = native_available
 
     def spec(self) -> ToolSpec:
         return _SPEC
@@ -66,7 +69,9 @@ class WebSearchTool(Tool):
         query = str(invocation.input.get("query", "")).strip()
         max_results = min(int(invocation.input.get("max_results", DEFAULT_RESULTS) or DEFAULT_RESULTS), MAX_RESULTS)
         cfg = await self.session_config_store.get(context.session_id)
-        provider = (cfg.search_provider or "native").lower()
+        provider = (cfg.search_provider or ("native" if self._native else "duckduckgo")).lower()
+        if provider == "native" and not self._native:
+            provider = "duckduckgo"        # 当前模型没有内置搜索(如 kimi):native 不可用
         if provider == "native":
             return ToolResult(
                 ok=False, content=None, failure_kind="unsupported",

@@ -122,8 +122,9 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         # 没有就 fallback uuid(单测、命令行直接调用 ChatAgent 的场景)。
         run_id = str(request.metadata.get("gateway_run_id") or
                      f"{request.session_id}-{uuid.uuid4().hex[:8]}")
-        model = self.model
-        effort: str | int | None = None
+        # 模型 / 思考强度:会话设置(/model、/effort)> agent 自己的设置(AGENT.md)> 缺省
+        model = spec.model or self.model
+        effort: str | int | None = spec.effort
         async_mode = True  # P3 完成,默认 async
         cfg = None
         profile = spec.prompt_profile or PromptProfile()

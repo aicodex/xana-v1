@@ -105,11 +105,26 @@ def run(args: argparse.Namespace, *, out: TextIO) -> int:
             print(f"[xana sync] 迁移失败,未启动 serve:{exc}", file=out)
             return 1
         _migrate_memories(home, out)
+        _migrate_session_keys(out)
     else:
         print("[xana sync] serve 仍在运行(--no-restart),跳过项目初始化 / 迁移", file=out)
     for pid in stopped:
         _start_serve(home, pid, out)
     return 0
+
+
+def _migrate_session_keys(out: TextIO) -> None:
+    """会话映射的渠道键统一为适配器 id:旧版 Telegram 用 "tg\t<chat>",改为 "telegram\t<chat>"(会话 id 不变,
+    历史照常接上;2026-10-19,docs/design/session-and-card-state.md §1.0)。幂等。"""
+    from xana.config.project_config import project_config_path, read_project_config, update_project_config
+    from xana.runtime.projects import all_projects
+    for info in all_projects():
+        path = project_config_path(info.id)
+        sessions = read_project_config(path).get("sessions") or {}
+        renamed = {("telegram" + k[2:] if k.startswith("tg\t") else k): v for k, v in sessions.items()}
+        if renamed != sessions:
+            update_project_config(path, sessions=renamed)
+            print(f"[xana sync] 项目 {info.id} 的 Telegram 会话映射已改用 telegram 键", file=out)
 
 
 def _migrate_memories(home: Path, out: TextIO) -> None:

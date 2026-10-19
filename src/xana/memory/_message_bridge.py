@@ -66,6 +66,7 @@ def memory_message_to_sdk(mm: MemoryMessage) -> Message | None:
         return CompactSummary(
             summary=mm.content,
             _internal=_PlaceholderInternal(run_id="", ph_id="", transcript_path=""),
+            revealed_tools=tuple(mm.metadata.get("pre_compact_revealed_tools") or ()),
         )
     # role == "system" or unknown -> filter out at SDK level
     return None
@@ -179,11 +180,10 @@ def sdk_to_legacy_item(m: Message) -> MemoryMessage | Placeholder | None:
             content = m._render()
         except Exception:
             content = m.summary
-        return MemoryMessage(
-            role="compact",
-            content=content,
-            metadata={"compact_summary": True},
-        )
+        meta: dict = {"compact_summary": True}
+        if m.revealed_tools:
+            meta["pre_compact_revealed_tools"] = list(m.revealed_tools)
+        return MemoryMessage(role="compact", content=content, metadata=meta)
     return None
 
 

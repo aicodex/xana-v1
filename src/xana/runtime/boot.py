@@ -369,7 +369,8 @@ async def boot(
     else:
         await _register(WebSearchTool(
             session_config_store=session_config_store,
-            brave_api_key=(system_cfg.web_search.brave_search_key or None)))
+            brave_api_key=(system_cfg.web_search.brave_search_key or None),
+            native_available=provider.startswith("deepseek")))
         await _register(WebFetchTool())
     # §4.3 预算护栏:concrete helper(boot 组装,不抽 ABC),注入 harness ctx.metadata。
     budget_tracker = BudgetTracker()
@@ -544,11 +545,15 @@ async def boot(
     _checked_specs = [build_chat_agent_spec(system_cfg.agent_defaults), *await agent_registry.list_specs()]
     if system_cfg.web_search.xana_search_url:
         _checked_specs.append(build_researcher_agent_spec())
+    _models = {e.name for e in system_cfg.models if e.type == provider} | {model}
     for _spec in _checked_specs:
         _unknown = unknown_names((*_spec.tools, *_spec.disallowed_tools), _all_specs, _all_toolsets)
         if _unknown:
             _logger.warning("agent %s 的 tools / disallowed_tools 含未知的组或工具 %s",
                             _spec.component.name, _unknown)
+        if _spec.model and _spec.model not in _models:
+            _logger.warning("agent %s 指定的模型 %s 不在当前 provider(%s)已配置的模型里,调用会失败",
+                            _spec.component.name, _spec.model, provider)
 
     # §6.3: 元 agent 服务。迭代对象 = 首个文档 agent(没有则 builtin.chat);
     # cron 幂等安装,首个 episode 时创建。
@@ -587,7 +592,10 @@ async def boot(
         # 只列同 provider 的模型:进程内只注册了当前 provider 的 client,
         # 跨 provider 的模型名发给它会出错。
         available_models=tuple(e.name for e in system_cfg.models if e.type == provider) or (model,),
-        available_search_providers=("native", "brave", "duckduckgo"),
+        # 接了 xana-search 时搜索由它负责,没有可切换的引擎;否则第一个是缺省(只有 deepseek 系有模型内置搜索)
+        available_search_providers=(() if system_cfg.web_search.xana_search_url else
+                                    ("native", "brave", "duckduckgo") if provider.startswith("deepseek")
+                                    else ("duckduckgo", "brave")),
         available_efforts=KIMI_EFFORTS if provider.startswith("kimi") else DEEPSEEK_EFFORTS,
         model_registry=model_registry,
         provider=provider,

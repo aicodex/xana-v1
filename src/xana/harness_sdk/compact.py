@@ -6,6 +6,10 @@ boundary/summary/保留消息全部是普通 MemoryMessage,summary 字段不再�
 from __future__ import annotations
 
 import collections.abc
+import json
+import logging
+import time
+from pathlib import Path
 from typing import Awaitable, Callable, Sequence
 
 from xana.context.message import CompactSummary as _CompactSummary
@@ -15,6 +19,8 @@ from xana.harness_sdk.compact_prompt import (
 )
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
 from xana.memory.contracts import ActiveContext, MemoryMessage
+
+_logger = logging.getLogger(__name__)
 
 class _CompactCancelled(Exception):
     """on_progress 回调里检测到用户取消 → 中止流。
@@ -137,6 +143,23 @@ def _extract_summary(text: str) -> str | None:
 
 # 公开别名:/compact 命令流式进度需要随时取「目前已生成的部分摘要」
 partial_summary = _extract_summary
+
+
+def persist_compact_transcript(sessions_root: Path, session_id: str, messages) -> str | None:
+    """compact 前把将被压缩的消息落盘 {sessions_root}/{sid}/compact-{ts}.jsonl,返回路径(失败 None)。
+    CompactSummary 引用的"完整记录"必须真实存在;auto-compact 与 /compact 共用。"""
+    try:
+        target_dir = Path(sessions_root) / session_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"compact-{int(time.time() * 1_000_000)}.jsonl"
+        with path.open("w", encoding="utf-8") as fh:
+            for m in messages:
+                fh.write(json.dumps({"role": m.role, "content": m.content, "metadata": dict(m.metadata)},
+                                    ensure_ascii=False) + "\n")
+        return str(path)
+    except Exception:
+        _logger.exception("compact transcript persist failed")
+        return None
 
 
 def revealed_tools_from_messages(messages) -> set[str]:

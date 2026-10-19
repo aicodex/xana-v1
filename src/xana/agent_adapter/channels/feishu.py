@@ -118,12 +118,12 @@ class FeishuAdapter(Adapter):
 
     def rotate_session(self, external_thread_id: str) -> str:
         if self._resolver is not None:
-            return self._resolver.rotate("feishu", external_thread_id)
+            return self._resolver.rotate(self.adapter_id, external_thread_id)
         return self._bindings.rotate(external_thread_id, prefix="feishu")
 
     def _allocate_sid(self, external_thread_id: str) -> str:
         if self._resolver is not None:
-            return self._resolver.resolve("feishu", external_thread_id)
+            return self._resolver.resolve(self.adapter_id, external_thread_id)
         return self._bindings.allocate(external_thread_id, prefix="feishu")
 
     async def _drain_pending(self) -> None:

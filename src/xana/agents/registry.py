@@ -76,6 +76,9 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path,
         system_prompt=body.strip() or None,
         prompt_profile=prompt_profile,
         verify=verify,
+        model=md.get("model"),
+        effort=md.get("effort"),
+        max_turns=md.get("max_turns"),
     )
 
 

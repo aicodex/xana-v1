@@ -163,12 +163,12 @@ class TelegramAdapter(Adapter):
 
     def rotate_session(self, external_thread_id: str) -> str:
         if self._resolver is not None:
-            return self._resolver.rotate("tg", external_thread_id)
+            return self._resolver.rotate(self.adapter_id, external_thread_id)
         return self._bindings.rotate(external_thread_id, prefix="tg")
 
     def _allocate_sid(self, external_thread_id: str) -> str:
         if self._resolver is not None:
-            return self._resolver.resolve("tg", external_thread_id)
+            return self._resolver.resolve(self.adapter_id, external_thread_id)
         return self._bindings.allocate(external_thread_id, prefix="tg")
 
     async def _drain_pending(self) -> None:

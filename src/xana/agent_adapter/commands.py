@@ -17,7 +17,7 @@ import asyncio
 import dataclasses
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
 
-from xana.config.paths import project_id, project_root
+from xana.config.paths import project_home, project_id, project_root
 from xana.agent_adapter.contracts import CommandResult, CommandSpec, InboundMessage
 from xana.agent_adapter.interfaces import CommandRouter
 
@@ -218,7 +218,7 @@ class DefaultCommandRouter(CommandRouter):
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
         from xana.harness_sdk.compact import (
             _CompactCancelled,
-            generate_summary, messages_since_boundary, partial_summary,
+            generate_summary, messages_since_boundary, partial_summary, persist_compact_transcript,
             revealed_tools_from_messages, summary_progress,
         )
         from xana.harness_sdk.contracts import ProgressEvent
@@ -366,6 +366,10 @@ class DefaultCommandRouter(CommandRouter):
             # prompt building to the SDK, the legacy store is the truth for
             # prompt assembly. /compact is now SDK-truth for the compact
             # write coordination.
+            # 摘要引用的"完整记录"要真实存在(与 auto-compact 同一落盘函数);压缩前已揭示的工具随摘要保留
+            transcript = (persist_compact_transcript(project_home() / "sessions", inbound.session_id, live)
+                          or f"runs/{run_id}.jsonl")
+            revealed = tuple(sorted(revealed_tools_from_messages(snapshot.messages))) if snapshot else ()
             if sdk_ph_acquired and self.context_sdk is not None:
                 from xana.context._internal import _PlaceholderInternal
                 from xana.context.message import CompactSummary
@@ -373,13 +377,13 @@ class DefaultCommandRouter(CommandRouter):
                     summary=summary,
                     _internal=_PlaceholderInternal(
                         run_id=run_id, ph_id=run_id,
-                        transcript_path=f"runs/{run_id}.jsonl",
+                        transcript_path=transcript,
                     ),
+                    revealed_tools=revealed,
                 )
                 await self.context_sdk.replace_placeholder(
                     inbound.session_id, "chat", run_id, (cs,))
                 sdk_ph_acquired = False
-            _ = revealed_tools_from_messages(snapshot.messages) if snapshot else set()
             # §1.9 single-source render: same string the model will see
             # (CompactSummary.to_anthropic/openai) is what the card panel
             # shows. Without this, the card body was the raw model output
@@ -387,9 +391,7 @@ class DefaultCommandRouter(CommandRouter):
             # full templated form — visible divergence between front-end
             # and back-end "compact summary".
             from xana.context.message import CompactSummary as _CS
-            rendered_summary = _CS.render(
-                summary, transcript_path=f"runs/{run_id}.jsonl",
-            )
+            rendered_summary = _CS.render(summary, transcript_path=transcript)
             if ph_note is not None:
                 ph_note({
                     "kind": "compact_finalized",
@@ -555,14 +557,16 @@ class DefaultCommandRouter(CommandRouter):
         target = args.strip()
         if not target:
             if not self.available_search_providers:
-                return CommandResult(ok=True, message="未配置可选搜索引擎")
+                return CommandResult(ok=True, message="当前由 xana-search 搜索服务负责搜索,没有可切换的搜索引擎")
             cfg = await self._current_config(inbound.session_id)
-            cur = (cfg.search_provider if cfg and cfg.search_provider else None) or "native"
+            cur = (cfg.search_provider if cfg and cfg.search_provider else None) or self.available_search_providers[0]
             return CommandResult(
                 ok=True, message=f"当前搜索引擎: {cur}",
                 payload={"buttons": _option_buttons("/search_provider", self.available_search_providers)})
-        if self.available_search_providers and target not in self.available_search_providers:
-            return CommandResult(ok=False, message=f"未知搜索引擎 {target}")
+        if not self.available_search_providers:
+            return CommandResult(ok=False, message="当前由 xana-search 搜索服务负责搜索,没有可切换的搜索引擎")
+        if target not in self.available_search_providers:
+            return CommandResult(ok=False, message=f"未知搜索引擎 {target},可选:{', '.join(self.available_search_providers)}")
         new = await self._persist_with(inbound.session_id, search_provider=target)
         return CommandResult(ok=True, message=f"搜索引擎切换为 {new.search_provider}")
 
