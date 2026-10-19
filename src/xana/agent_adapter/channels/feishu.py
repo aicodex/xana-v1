@@ -13,7 +13,6 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, AsyncIterator
 
-from xana.agent_adapter.channels._bindings import BindingStore
 from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels.card import Card
 from xana.agent_adapter.channels.feishu_events import parse_message_event
@@ -95,13 +94,11 @@ class FeishuAdapter(Adapter):
         self,
         *,
         config: FeishuConfig,
-        bindings: BindingStore,
         api_sender: FeishuApiSender | None = None,
         pairing: PairingStore | None = None,
-        session_resolver: Any = None,
+        session_resolver: Any,
     ) -> None:
         self._config = config
-        self._bindings = bindings
         self._api_sender = api_sender
         self._pairing = pairing
         self._resolver = session_resolver
@@ -117,14 +114,10 @@ class FeishuAdapter(Adapter):
         self._gateway = gateway
 
     def rotate_session(self, external_thread_id: str) -> str:
-        if self._resolver is not None:
-            return self._resolver.rotate(self.adapter_id, external_thread_id)
-        return self._bindings.rotate(external_thread_id, prefix="feishu")
+        return self._resolver.rotate(self.adapter_id, external_thread_id)
 
     def _allocate_sid(self, external_thread_id: str) -> str:
-        if self._resolver is not None:
-            return self._resolver.resolve(self.adapter_id, external_thread_id)
-        return self._bindings.allocate(external_thread_id, prefix="feishu")
+        return self._resolver.resolve(self.adapter_id, external_thread_id)
 
     async def _drain_pending(self) -> None:
         while self._pending_tasks:
@@ -286,15 +279,8 @@ class FeishuAdapter(Adapter):
     # Session binding helpers
     # ------------------------------------------------------------------
 
-    async def bind_session_for_chat(self, chat_id: str, session_id: str) -> None:
-        self._bindings.put(chat_id, session_id)
-        self._get_or_create_buffer(session_id).chat_id = chat_id
-
     async def bind_session(self, binding: SessionBinding) -> None:
-        chat_id = binding.external_thread_id
-        session_id = binding.session_id
-        self._bindings.put(chat_id, session_id)
-        self._get_or_create_buffer(session_id).chat_id = chat_id
+        self._get_or_create_buffer(binding.session_id).chat_id = binding.external_thread_id
 
     # ------------------------------------------------------------------
     # Render (AgentEvent path)

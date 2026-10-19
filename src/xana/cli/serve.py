@@ -26,7 +26,6 @@ from pathlib import Path
 
 from xana.config.paths import project_home, project_id, project_root
 from xana.config.project_config import daemon_socket
-from xana.agent_adapter.channels._bindings import BindingStore
 from xana.agent_adapter.channels._pairing import PairingStore
 from xana.agent_adapter.channels.daemon_bridge import DaemonBridgeAdapter
 from xana.agent_adapter.channels.feishu import FeishuAdapter, FeishuConfig
@@ -40,7 +39,7 @@ from xana.runtime.daemon_http import build_daemon_app, run_tcp, run_unix_socket
 
 def build_adapters(
     *, bindings_root: Path, env: dict[str, str], system: SystemConfig,
-    session_resolver: object = None,
+    session_resolver: object,
 ) -> list[Adapter]:
     adapters: list[Adapter] = []
     pairing = PairingStore(path=bindings_root / "pairings.json")
@@ -70,9 +69,8 @@ def build_adapters(
             api_base=api_base,
             connection_mode=connection_mode,
         )
-        bindings = BindingStore(path=bindings_root / "feishu.bindings.json")
         adapters.append(FeishuAdapter(
-            config=cfg, bindings=bindings, pairing=pairing,
+            config=cfg, pairing=pairing,
             session_resolver=session_resolver,
         ))
 
@@ -86,9 +84,8 @@ def build_adapters(
             else frozenset(tg.allowed_user_ids)
         )
         cfg = TelegramConfig(bot_token=bot_token, allowed_user_ids=allowed)
-        bindings = BindingStore(path=bindings_root / "telegram.bindings.json")
         adapters.append(TelegramAdapter(
-            config=cfg, bindings=bindings, pairing=pairing,
+            config=cfg, pairing=pairing,
             session_resolver=session_resolver,
         ))
     return adapters
