@@ -6,9 +6,8 @@ long-polling — works behind NAT, no need to configure a public HTTPS webhook
 URL in the Feishu admin panel.
 
 Why a separate file:
-- `lark-oapi` is a heavy optional dep; importing it only when WS mode is
-  selected keeps webhook-only deployments light (install via
-  ``pip install xana[feishu-ws]``).
+- `lark-oapi` is a heavy optional dep, imported only when the Feishu adapter
+  starts (install via ``pip install xana[feishu-ws]``).
 - The SDK's ``Client.start()`` is blocking, so we run it in a daemon thread
   and bridge events to the main asyncio loop via
   :func:`asyncio.run_coroutine_threadsafe`.
