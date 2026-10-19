@@ -20,7 +20,6 @@ from xana.config.paths import DEFAULT_PROJECT, PROJECT_FILE, list_projects, proj
 from xana.config.project_config import load_system_config, project_config_path, read_project_config, \
     update_project_config
 
-WORKSPACE_SEED = "# xana 助手\n\n你是 xana,一个通过聊天渠道服务用户的个人助手。\n"
 INSTRUCTIONS_FILE = "AGENTS.md"          # 项目说明:harness 每个会话读项目根目录的这个文件
 DEFAULT_INSTRUCTIONS = """\
 # default 项目
@@ -43,13 +42,10 @@ class ProjectInfo:
 
 
 def register(pid: str, root: Path) -> None:
-    """写 project.json(最后写:它存在即表示项目就绪);项目目录缺 README_ai.md 时补一个。"""
+    """写 project.json(最后写:它存在即表示项目就绪)。"""
     home = project_home(pid)
     home.mkdir(parents=True, exist_ok=True)
     root.mkdir(parents=True, exist_ok=True)
-    readme = root / "README_ai.md"
-    if not readme.exists():
-        readme.write_text(WORKSPACE_SEED, encoding="utf-8")
     (home / PROJECT_FILE).write_text(json.dumps({"root": str(root)}, ensure_ascii=False, indent=2) + "\n",
                                      encoding="utf-8")
 

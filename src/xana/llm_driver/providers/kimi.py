@@ -277,6 +277,9 @@ def _build_request_body(request: ModelRequest, config: KimiConfig) -> dict[str, 
         if msg.role == "assistant":
             out: dict[str, Any] = {"role": "assistant"}
             tool_calls = (msg.metadata or {}).get("tool_calls") or []
+            # 取消/仅思考的轮次可留在历史中，但 Kimi 不接受没有回答或工具调用的 assistant。
+            if not msg.content and not tool_calls:
+                continue
             if msg.content or not tool_calls:
                 out["content"] = msg.content or ""
             reasoning = (msg.metadata or {}).get("reasoning_content")

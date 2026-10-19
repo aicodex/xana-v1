@@ -82,10 +82,9 @@ class EditTool(Tool):
             return PermissionResult(
                 decision="deny",
                 reason=(
-                    f"{target} 位于受保护目录,裸 Edit 被拒绝;"
-                    "规则的唯一写入口是 memory_write 工具"
-                    "(action=refine/supersede);"
-                    "Agent 文档的唯一变更路径是 episode 提案→评估→判决闭环(§6.3)。"
+                    f"{target} 位于受保护目录,裸 Edit 被拒绝:"
+                    "记忆(memory/)只能用 memory_write 写(action=create/update/delete),"
+                    "agent 文档(AGENT.md)只能用 agent_define 写。"
                 ),
             )
         return PermissionResult(decision="allow", reason="file edit allowed")

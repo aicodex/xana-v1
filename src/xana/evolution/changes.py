@@ -1,8 +1,7 @@
-"""变更单写入 —— L2/changes/ 的 memory_write 门禁复用(计划 §6.1)。
+"""变更单写入 —— L2/changes/ 的门禁写入(计划 §6.1)。
 
-不复制 memory_write 的实现:ChangeWriter 内部持有一个
-MemoryWriteTool 实例(rules_dir="L2/changes"),create 查重、supersede
-链、frontmatter(status/evidence)全部走同款门禁语义。
+ChangeWriter 内部持有 GatedEntryWriter(change_gate.py):create 查重、supersede
+链、frontmatter(status/evidence)。
 
 schema(§6.1):假设 → diff 摘要 → 证据指针 → 判决。
 """
@@ -11,7 +10,7 @@ from __future__ import annotations
 from xana.evolution.contracts import ChangeBody
 from xana.memory.interfaces import MemorySearchEngine
 from xana.memory.markdown import MarkdownMemoryTree
-from xana.tools.builtin.memory_write import MemoryWriteTool, _split_frontmatter
+from xana.evolution.change_gate import GatedEntryWriter, _split_frontmatter
 from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult
 
 CHANGES_DIR = "L2/changes"
@@ -61,8 +60,7 @@ class ChangeWriter:
         changes_dir: str = CHANGES_DIR,
     ) -> None:
         self._tree = tree
-        # 复用 memory_write 工具的同款门禁,只换目录到 L2/changes/。
-        self._tool = MemoryWriteTool(tree=tree, engine=engine, rules_dir=changes_dir)
+        self._tool = GatedEntryWriter(tree=tree, engine=engine, rules_dir=changes_dir)
         self._dir = changes_dir
 
     async def propose(

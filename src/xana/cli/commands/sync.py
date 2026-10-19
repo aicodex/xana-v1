@@ -104,11 +104,24 @@ def run(args: argparse.Namespace, *, out: TextIO) -> int:
         except MigrationError as exc:
             print(f"[xana sync] 迁移失败,未启动 serve:{exc}", file=out)
             return 1
+        _migrate_memories(home, out)
     else:
         print("[xana sync] serve 仍在运行(--no-restart),跳过项目初始化 / 迁移", file=out)
     for pid in stopped:
         _start_serve(home, pid, out)
     return 0
+
+
+def _migrate_memories(home: Path, out: TextIO) -> None:
+    """各项目旧格式的记忆(memory/*.md 无 type、L2/rules/*.md)一次性迁到 memory/ 新格式,先备份
+    (docs/design/memory-recall-design.md §4)。幂等。"""
+    from xana.memory.store import migrate_legacy
+    from xana.runtime.projects import all_projects
+    backup = home.parent / f"{home.name}-memory-backup"
+    for info in all_projects():
+        moved = migrate_legacy(info.root, backup_root=backup)
+        if moved:
+            print(f"[xana sync] 项目 {info.id} 的记忆已迁到 memory/:{', '.join(moved)}(备份在 {backup})", file=out)
 
 
 def serve_pid_paths(home: Path) -> dict[str, Path]:

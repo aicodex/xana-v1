@@ -44,10 +44,9 @@ class WriteTool(Tool):
         memory_tree: MarkdownMemoryTree | None = None,
         protected_dir: "Path | tuple[Path, ...] | list[Path] | None" = None,
     ) -> None:
-        # memory_tree: 成功写入 root 内 .md 后增量 reindex（L1 联动）。
-        # protected_dir: 受保护目录(L2 规则目录 / ~/.xana/agents Agent 文档目录,
-        # §6.3)—— 裸写被 policy 拒绝;规则唯一写入口是 memory_write 工具,
-        # Agent 文档唯一变更路径是 episode 提案→评估→判决闭环。
+        # memory_tree: 成功写入 root 内 .md 后增量 reindex(memory_search 索引)。
+        # protected_dir: 受保护目录(记忆目录 memory/ / 两级 agent 文档目录)—— 裸写被 policy 拒绝;
+        # 记忆唯一写入口是 memory_write,agent 文档是 agent_define。
         self._memory_tree = memory_tree
         if protected_dir is None:
             self._protected_dirs: tuple[Path, ...] = ()
@@ -75,10 +74,9 @@ class WriteTool(Tool):
             return PermissionResult(
                 decision="deny",
                 reason=(
-                    f"{target} 位于受保护目录,裸 Write 被拒绝;"
-                    "规则的唯一写入口是 memory_write 工具"
-                    "(action=create/refine/supersede);"
-                    "Agent 文档的唯一变更路径是 episode 提案→评估→判决闭环(§6.3)。"
+                    f"{target} 位于受保护目录,裸 Write 被拒绝:"
+                    "记忆(memory/)只能用 memory_write 写(action=create/update/delete),"
+                    "agent 文档(AGENT.md)只能用 agent_define 写。"
                 ),
             )
         return PermissionResult(decision="allow", reason="file write allowed")

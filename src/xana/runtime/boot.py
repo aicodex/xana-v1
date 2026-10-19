@@ -63,7 +63,6 @@ from xana.memory.interfaces import (
 from xana.memory.markdown import (
     MarkdownMemoryTree,
     SQLiteMemorySearchEngine,
-    SearchMemoryInjector,
 )
 from xana.skills.bundled.coding import CodingSkill
 from xana.skills.bundled.loop import LoopSkill
@@ -83,6 +82,9 @@ from xana.state.interfaces import RunStore, SessionStore, StateRepository
 from xana.session_config.file_store import FileSessionConfigStore
 from xana.session_config.interfaces import SessionConfigStore
 from xana.tools.builtin._todo_store import TodoStore
+from xana.memory.recall import ProjectMemoryInjector
+from xana.memory.store import ProjectMemoryStore
+from xana.runtime.memory_selector import ModelMemorySelector
 from xana.runtime.scheduler import FileSchedulerService, ScheduledTaskDispatcher
 from xana.runtime.session_resolver import SessionResolver
 from xana.agent_adapter.agent_runner import GatewayAgentRunner
@@ -114,8 +116,6 @@ from xana.tools.registry import InMemoryToolRegistry
 from xana.tools.toolsets import BUILTIN_TOOLSETS, unknown_names
 
 
-_INJECTOR_TOP_K = 3
-_INJECTOR_BUDGET_CHARS = 600   # 召回只给标题 + 描述(每条约 200 字),全文按需 Read
 _FAKE_PROVIDER = "fake"
 BUILTIN_AGENT_NAMES = ("chat", RESEARCHER_AGENT)   # 内置 agent:不能被 AGENT.md 覆盖或删除
 _logger = logging.getLogger(__name__)
@@ -165,7 +165,7 @@ class _CompositeStateRepository(StateRepository):
 
 
 def _search_db_path(project_root: Path) -> Path:
-    """L1: 持久索引文件 projects/<id>/sessions/search-{project_hash}.db。
+    """记忆树检索索引(memory_search)的持久文件 projects/<id>/sessions/search-{project_hash}.db。
 
     文件库让索引跨重启保留(connect 时按行水合),运行期靠 Write/Edit 的
     reindex 钩子增量更新,boot 的 rebuild_from_tree 只做幂等校准。
@@ -189,9 +189,9 @@ async def boot(
     tree = MarkdownMemoryTree(root=project_root, entrypoint="README_ai.md", search_engine=engine)
     await tree.load()
     await engine.rebuild_from_tree(tree)
-    injector = SearchMemoryInjector(engine, top_k=_INJECTOR_TOP_K, budget_chars=_INJECTOR_BUDGET_CHARS)
+    # 项目记忆(docs/design/memory-recall-design.md):memory/ 目录;注入器在模型注册后接入(召回要调模型挑选)
+    memory_store = ProjectMemoryStore(project_root)
     injector_registry = DefaultMemoryInjectorRegistry()
-    await injector_registry.register(injector, priority=100)
 
     # §1.5 Compact-as-PH: construct ContextSDK FIRST, then back the legacy
     # InMemoryActiveContextStore with it so writes flow into both stores and
@@ -292,15 +292,13 @@ async def boot(
             return
         await tools.register(tool)
     await _register(MemorySearchTool(engine))
-    await _register(MemoryWriteTool(tree=tree, engine=engine))
+    await _register(MemoryWriteTool(store=memory_store, tree=tree))
     await _register(ReadTool())
-    # L2 门禁:裸写 L2/ 规则目录与 ~/.xana/agents Agent 文档目录被拒
-    # (protected_dir 多目录,§6.3);root 内 .md 写后走 post_tool_use 增量
-    # reindex(memory_tree)。
-    l2_root = project_root / "L2"
-    agent_dirs = (xana_home() / "agents", project_root / ".xana" / "agents")   # 只能经 agent_define 写
-    await _register(EditTool(memory_tree=tree, protected_dir=(l2_root, *agent_dirs)))
-    await _register(WriteTool(memory_tree=tree, protected_dir=(l2_root, *agent_dirs)))
+    # 写保护:记忆目录 memory/ 只能经 memory_write 写,两级 agent 文档目录只能经 agent_define 写;
+    # root 内 .md 写后增量 reindex(memory_tree)。
+    agent_dirs = (xana_home() / "agents", project_root / ".xana" / "agents")
+    await _register(EditTool(memory_tree=tree, protected_dir=(memory_store.dir, *agent_dirs)))
+    await _register(WriteTool(memory_tree=tree, protected_dir=(memory_store.dir, *agent_dirs)))
     await _register(GlobTool())
     await _register(GrepTool())
     await _register(BashTool())
@@ -359,6 +357,15 @@ async def boot(
         name: limit.max_concurrent for name, limit in system_cfg.limits.items()
     })
     await model_registry.register(provider, client)
+
+    # 记忆召回:快速模型(model_tiers.fast 且属于当前 provider)挑选,否则用当前模型;超时退回字面检索
+    _fast = system_cfg.model(system_cfg.model_tiers.fast) if system_cfg.model_tiers.fast else None
+    memory_selector = ModelMemorySelector(
+        model_registry=model_registry, provider=provider,
+        model=_fast.name if _fast is not None and _fast.type == provider else model)
+    await injector_registry.register(ProjectMemoryInjector(
+        memory_store, selector=memory_selector, mode=system_cfg.memory.recall,
+        timeout_s=system_cfg.memory.select_timeout_s), priority=100)
 
     # §4.3 预算护栏:concrete helper(boot 组装,不抽 ABC),注入 harness ctx.metadata。
     budget_tracker = BudgetTracker()

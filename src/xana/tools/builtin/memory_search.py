@@ -1,4 +1,4 @@
-"""memory_search: model-side L2 query against the shared MemorySearchEngine."""
+"""memory_search:检索本项目的记忆与文档(整个项目目录的 Markdown,共享 MemorySearchEngine)。"""
 from __future__ import annotations
 
 from xana.component.contracts import ComponentSource, ComponentSpec
@@ -15,7 +15,7 @@ _SPEC = ToolSpec(
         kind="tool",
         name="memory_search",
         qualified_name="builtin.memory_search",
-        description="Search the project memory tree.",
+        description="检索本项目的记忆与文档(项目目录下的 Markdown)。记忆索引里没有、需要翻项目文档时使用。",
         source=ComponentSource(source_type="builtin", scope="system"),
     ),
     input_schema={

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Awaitable, Callable, Literal
 
 HistoryKind = Literal["user", "assistant", "tool", "system", "compact"]
 MemoryNodeKind = Literal["dir", "doc", "leaf"]
@@ -29,7 +29,9 @@ LintViolationKind = Literal[
     "frontmatter_invalid",
 ]
 LintSeverity = Literal["error", "warn", "info"]
-InjectionPlacement = Literal["system_head", "system_tail", "user_prefix"]
+# 注入块的去向(harness 按它分成不同的 ContextNote):index = 记忆索引,pinned = 置顶记忆全文,
+# recall = 本条消息召回的记忆全文(docs/design/memory-recall-design.md §3.2–3.3)
+InjectionPlacement = Literal["index", "pinned", "recall"]
 SearchBackendKind = Literal["keyword", "embedding", "hybrid", "external"]
 PlaceholderStatus = Literal["running", "completed", "cancelled", "failed"]
 
@@ -185,3 +187,28 @@ class InjectedBlock:
     reason: str
     score: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# 项目记忆(memory/ 目录,docs/design/memory-recall-design.md)
+# ---------------------------------------------------------------------------
+
+MemoryType = Literal["user", "feedback", "project", "reference"]
+MEMORY_TYPES: tuple[MemoryType, ...] = ("user", "feedback", "project", "reference")
+
+
+@dataclass(frozen=True)
+class MemoryRecord:
+    """一条记忆:memory/<slug>.md。path 相对项目根目录;mtime 用于"写于 N 天前"的过时提示。"""
+    slug: str
+    path: str
+    name: str
+    description: str
+    type: MemoryType
+    pinned: bool
+    body: str
+    mtime: float
+
+
+# 召回选择:输入(用户这句话, 候选记忆),返回选中的 slug(按相关度)。实现可调用模型(由 runtime 注入)。
+MemorySelector = Callable[[str, "tuple[MemoryRecord, ...]"], Awaitable["tuple[str, ...]"]]

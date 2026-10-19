@@ -68,7 +68,6 @@ from xana.harness_sdk.goal import (
 from xana.harness_sdk.interfaces import Harness
 from xana.harness_sdk.context_notes import (
     PROJECT_INSTRUCTIONS_FILE,
-    READ_TOOL_NAME,
     TODO_TOOL_NAME,
     TOOL_SEARCH_TOOL_NAME,
     CONTINUE_THINKING_ONLY,
@@ -81,6 +80,8 @@ from xana.harness_sdk.context_notes import (
     max_turns_text,
     project_instructions_note,
     deferred_tools_note,
+    memory_index_note,
+    memory_pinned_note,
     memory_recall_note,
     model_switch_text,
     stop_hook_text,
@@ -217,6 +218,8 @@ class DefaultHarness(Harness):
         agent_name: str,
         extension_system_text: str,
         history: tuple[MemoryMessage, ...],
+        *,
+        memory: bool = False,
     ) -> tuple[str, list[MemoryMessage]]:
         """本会话固定的 system;会话内换模型时不改 system,改为追加 model_switch note。"""
         cached = self._session_systems.get((session_id, agent_name))
@@ -226,6 +229,7 @@ class DefaultHarness(Harness):
                 env=env_section(cwd=context.cwd or None, model=context.model),
                 extension_sections=extension_system_text,
                 profile_tail=profile_sections(_profile(context)),
+                memory=memory,
             )
             self._session_systems[(session_id, agent_name)] = (context.model, text)
             return text, []
@@ -1011,6 +1015,8 @@ class DefaultHarness(Harness):
         available = _available_tools(
             context, specs + tuple(t.spec() for t in ext_tools.values()), toolsets)
         memory_tools = {sp.component.name for sp in specs if sp.toolset == "memory"}
+        has_memory = context.memory_injector_registry is not None and (
+            available is None or bool(available & memory_tools))
         visible_skills = _visible_skills(context)
 
         # §5 ContextNote:每条用户消息一次的上下文(记忆召回、技能/扩展片段)以 note
@@ -1027,13 +1033,17 @@ class DefaultHarness(Harness):
                 note = project_instructions_note(*instructions, _hist)
                 if note is not None:
                     pending_notes.append(note)
-        if context.memory_injector_registry is not None and (
-                available is None or available & memory_tools):  # 记忆召回随 memory 组
+        if has_memory:   # 记忆随 memory 组:索引与置顶记忆强制注入(变化才注入),召回附在本条消息后
             blocks = await context.memory_injector_registry.collect(
                 session_id, agent_name, request.user_input, context.cwd
             )
-            recall = memory_recall_note(blocks, _hist, request.user_input,
-                                        can_read=_can_use(available, READ_TOOL_NAME))
+            by_place = {place: [b for b in blocks if b.placement == place] for place in ("index", "pinned", "recall")}
+            if _has_env(context):
+                for note in (memory_index_note("\n".join(b.content for b in by_place["index"]), _hist),
+                             memory_pinned_note("\n".join(b.content for b in by_place["pinned"]), _hist)):
+                    if note is not None:
+                        pending_notes.append(note)
+            recall = memory_recall_note(by_place["recall"], _hist)
             if recall is not None:
                 pending_notes.append(recall)
         turn_input_parts: list[str] = []
@@ -1334,7 +1344,7 @@ class DefaultHarness(Harness):
                     "enabled" if context.config_snapshot.get("thinking") else "disabled")
             tools_schema: tuple[dict, ...] = tuple(schemas)
             system_content, loop_notes = self._session_system(
-                context, session_id, agent_name, extension_system_text, history_msgs)
+                context, session_id, agent_name, extension_system_text, history_msgs, memory=has_memory)
             deferred_note = deferred_tools_note(tuple(deferred_names), history_msgs)
             if deferred_note is not None:
                 loop_notes.append(deferred_note)
@@ -1513,18 +1523,30 @@ class DefaultHarness(Harness):
             asst_metadata: dict[str, Any] = {"tool_calls": list(iter_tool_calls)} if iter_tool_calls else {}
             if iter_thinking:
                 asst_metadata["reasoning_content"] = "".join(iter_thinking)
-            asst_msg = MemoryMessage(role="assistant", content=turn_text, metadata=asst_metadata)
-            await context.active_context_store.append_message(session_id, agent_name, asst_msg)
-            await context.history_mirror.append(
-                HistoryRow(
-                    row_id=f"{run_id}:assistant:{turn_index}",
-                    session_id=session_id,
-                    agent_name=agent_name,
-                    kind="assistant",
-                    payload=asst_msg,
-                    ts=0.0,
+            if turn_text or iter_tool_calls or iter_thinking:
+                asst_msg = MemoryMessage(role="assistant", content=turn_text, metadata=asst_metadata)
+                await context.active_context_store.append_message(session_id, agent_name, asst_msg)
+                await context.history_mirror.append(
+                    HistoryRow(
+                        row_id=f"{run_id}:assistant:{turn_index}",
+                        session_id=session_id,
+                        agent_name=agent_name,
+                        kind="assistant",
+                        payload=asst_msg,
+                        ts=0.0,
+                    )
                 )
-            )
+
+            # 无工具需配对时直接取消收尾；收尾轮取消也不能落入 max_turns 错误。
+            if context.abort.aborted and not iter_tool_calls:
+                await self._fire_turn_end(
+                    ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                    thread_store=thread_store, turn_store=turn_store, status=None,
+                    abort_reason=context.abort.reason or "aborted",
+                )
+                yield HarnessEvent(kind="cancelled", session_id=session_id, run_id=run_id,
+                                   payload={"reason": context.abort.reason or "cancelled"})
+                return
 
             # §4.3/§6.2 收尾:预算/episode 硬阈值超限 → 不再开新轮/派发工具,
             # 带已产出文本落地。

@@ -18,14 +18,13 @@ from typing import Any
 import yaml
 
 from xana.memory.contracts import (
-    InjectedBlock,
     MemoryLintResult,
     MemoryLintViolation,
     MemoryNode,
     SearchHit,
     SearchQuery,
 )
-from xana.memory.interfaces import MemoryInjector, MemorySearchEngine, MemoryTree
+from xana.memory.interfaces import MemorySearchEngine, MemoryTree
 
 MAX_INCLUDE_DEPTH = 5
 FRONTMATTER_MAX_LINES = 30
@@ -617,59 +616,6 @@ class SQLiteMemorySearchEngine(MemorySearchEngine):
         spans = tuple(line.strip()[:200] for line in lines[:2])
         return SearchHit(node_path=path, score=len(overlap) / len(terms),
                          matched_spans=spans, node=node)
-
-
-class SearchMemoryInjector(MemoryInjector):
-    """MemoryInjector implementation backed by an existing search engine."""
-
-    def __init__(self, engine: MemorySearchEngine, top_k: int = 5, budget_chars: int = 4000) -> None:
-        self.engine = engine
-        self.top_k = top_k
-        self.budget_chars = budget_chars
-
-    async def name(self) -> str:
-        return "memory_search"
-
-    async def select(self, session_id: str, agent_name: str, user_input: str, cwd: str) -> tuple[InjectedBlock, ...]:
-        hits = await self.engine.search(SearchQuery(text=user_input, top_k=self.top_k))
-        blocks: list[InjectedBlock] = []
-        remaining = self.budget_chars
-        for hit in hits:
-            node = hit.node
-            if node is None or remaining <= 0:
-                continue
-            content = memory_entry(node)[:remaining]   # 只给标题 + 一句描述;全文由模型按需 Read
-            remaining -= len(content)
-            blocks.append(
-                InjectedBlock(
-                    node_path=hit.node_path,
-                    content=content,
-                    placement="system_tail",
-                    reason="memory_search",
-                    score=hit.score,
-                    metadata={"session_id": session_id, "agent_name": agent_name, "cwd": cwd},
-                )
-            )
-        return tuple(blocks)
-
-
-ENTRY_DESC_CHARS = 120
-
-
-def memory_entry(node: MemoryNode) -> str:
-    """记忆召回用的一行条目:标题 — 描述(frontmatter description,否则正文第一句非标题文字)。"""
-    desc = str(node.frontmatter.get("description") or "").strip()
-    if not desc:
-        for line in node.body.splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and line != "---":
-                desc = line
-                break
-    desc = " ".join(desc.split())
-    if len(desc) > ENTRY_DESC_CHARS:
-        desc = desc[: ENTRY_DESC_CHARS - 1] + "…"
-    title = " ".join((node.title or "").split())
-    return f"{title} — {desc}" if title and desc and desc != title else (title or desc)
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:

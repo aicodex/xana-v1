@@ -12,15 +12,14 @@ from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 from xana.context.message import ContextNote
 from xana.memory.contracts import InjectedBlock, MemoryMessage
-from xana.memory.markdown import search_terms
 
 if TYPE_CHECKING:
     from xana.tools.builtin._todo_store import TodoItem
 
 # 记忆召回上限(照 Claude Code relevant_memories)
-RECALL_MAX_FILES = 5
-RECALL_MAX_SESSION_BYTES = 60 * 1024
-RECALL_MIN_TERMS = 2  # CC 用"含空格"判断,中文无空格,改用检索词数
+RECALL_MAX_SESSION_BYTES = 60 * 1024   # 一个会话累计召回的上限(照 Claude Code relevant_memories)
+MEMORY_INDEX_HEADER = "以下是本项目的记忆索引(memory/ 目录,每条一行;需要某条的全文时用 Read 查看):\n\n"
+MEMORY_PINNED_HEADER = "以下是本项目置顶的记忆,每次都要遵循:\n\n"
 
 # todo 提醒节奏(照 Claude Code TODO_REMINDER_CONFIG)
 TODO_TURNS_SINCE_WRITE = 10
@@ -60,13 +59,26 @@ def _tool_calls(m: MemoryMessage) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def memory_recall_note(
-    blocks: Sequence[InjectedBlock], history: Sequence[MemoryMessage], user_input: str,
-    *, can_read: bool = True,
-) -> MemoryMessage | None:
-    """本条用户消息的记忆召回。同一记忆文件一个会话只注入一次;会话累计到上限即停。"""
-    if len(set(search_terms(user_input))) < RECALL_MIN_TERMS:
-        return None
+def memory_index_note(text: str, history: Sequence[MemoryMessage]) -> MemoryMessage | None:
+    """记忆索引(强制注入,变化才重新注入);记忆被删光时若曾列出过,说明已没有记忆。"""
+    if not text.strip():
+        return (_note("memory_index", "本项目目前没有记忆。")
+                if _notes(history, "memory_index") and _last_key(history, "memory_index") != _key("本项目目前没有记忆。")
+                else None)
+    return changed_note("memory_index", MEMORY_INDEX_HEADER + text, history)
+
+
+def memory_pinned_note(text: str, history: Sequence[MemoryMessage]) -> MemoryMessage | None:
+    """置顶记忆全文(强制注入,变化才重新注入)。"""
+    if not text.strip():
+        return (_note("memory_pinned", "本项目目前没有置顶记忆。")
+                if _notes(history, "memory_pinned") and _last_key(history, "memory_pinned") != _key("本项目目前没有置顶记忆。")
+                else None)
+    return changed_note("memory_pinned", MEMORY_PINNED_HEADER + text, history)
+
+
+def memory_recall_note(blocks: Sequence[InjectedBlock], history: Sequence[MemoryMessage]) -> MemoryMessage | None:
+    """本条用户消息召回的记忆全文。同一记忆一个会话只注入一次,模型已 Read 过的跳过;会话累计到上限即停。"""
     surfaced: set[str] = set()
     total = 0
     for md in _notes(history, "memory_recall"):
@@ -77,21 +89,18 @@ def memory_recall_note(
     read_paths = [str((tc.get("input") or {}).get("file_path", ""))
                   for m in history for tc in _tool_calls(m)
                   if tc.get("tool_name") == READ_TOOL_NAME]
-    entries: list[str] = []
+    parts: list[str] = []
     paths: list[str] = []
     for block in blocks:
         path = block.node_path
         if (not block.content.strip() or path in surfaced or path in paths
                 or any(rp.endswith(path) for rp in read_paths if rp)):
             continue
-        entries.append(f"- {path}:{' '.join(block.content.split())}")
+        parts.append(block.content)
         paths.append(path)
-        if len(paths) >= RECALL_MAX_FILES:
-            break
-    if not entries:
+    if not parts:
         return None
-    hint = "需要时用 Read 查看全文。" if can_read else ""
-    text = f"以下记忆可能与当前请求相关(来自记忆树,只列标题与描述){hint}\n" + "\n".join(entries)
+    text = "以下记忆可能与当前请求相关(来自本项目 memory/):\n\n" + "\n\n---\n\n".join(parts)
     return _note("memory_recall", text, paths=tuple(paths), size=len(text.encode("utf-8")))
 
 

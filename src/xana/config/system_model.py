@@ -14,7 +14,7 @@ RuntimeConfig remain the public, frozen-dataclass surface.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -71,6 +71,14 @@ class Channels(BaseModel):
     model_config = ConfigDict(extra="forbid")
     telegram: TelegramChannel = TelegramChannel()
     feishu: FeishuChannel = FeishuChannel()
+
+
+class MemoryConfig(BaseModel):
+    """记忆召回(docs/design/memory-recall-design.md §3.3):select = 模型挑选(默认,照 Claude Code)/
+    lexical = 只用字面检索 / off = 只注入索引与置顶记忆。"""
+    model_config = ConfigDict(extra="forbid")
+    recall: Literal["select", "lexical", "off"] = "select"
+    select_timeout_s: float = 3.0
 
 
 class WebSearch(BaseModel):
@@ -175,6 +183,7 @@ class SystemConfig(BaseModel):
     limits: dict[str, ProviderLimit] = {}
     channels: Channels = Channels()
     web_search: WebSearch = WebSearch()
+    memory: MemoryConfig = MemoryConfig()
     tools: ToolsConfig = ToolsConfig()
     agent_defaults: AgentDefaults = AgentDefaults()
     mcp: Mcp = Mcp()

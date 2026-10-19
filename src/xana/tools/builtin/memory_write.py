@@ -1,267 +1,131 @@
-"""memory_write: the single gated write entry for L2 rule entries.
+"""memory_write:项目记忆(memory/ 目录)的唯一写入口(docs/design/memory-recall-design.md §3.4)。
 
-Rules live at ``{memory_root}/L2/rules/*.md`` and reuse the MemoryTree node
-space. Bare Write/Edit into L2/ is denied at the policy checkpoint; this
-tool is the only sanctioned mutation path:
-
-* ``create``  — forces a top-k similarity search first; a hit above the
-  threshold is rejected with a demand to use refine/supersede instead.
-* ``refine``  — rewrites the body of an existing entry (status preserved).
-* ``supersede`` — writes the new entry and flips the old one's frontmatter
-  ``status: deprecated`` + ``superseded_by`` (the file is never deleted);
-  deprecated entries drop out of search results.
-
-Frontmatter contract: ``title / status / evidence / supersedes / updated``.
+- create:name、description、type、content 必填;与已有记忆的名称 + 描述高度相似时拒绝,提示改用 update。
+- update:改正文或 frontmatter(未给的字段保持原样)。
+- delete:删除错误或过时的记忆。
+memory/ 对 Write / Edit 受保护,本工具保证 frontmatter 完整;写入后增量更新记忆树索引(memory_search 可检索)。
 """
 from __future__ import annotations
 
-import time
-from pathlib import Path
-from typing import Any
-
-import yaml
-
 from xana.component.contracts import ComponentSource, ComponentSpec
-from xana.memory.contracts import SearchQuery
-from xana.memory.interfaces import MemorySearchEngine
-from xana.memory.markdown import MarkdownMemoryTree, search_terms
+from xana.memory.contracts import MEMORY_TYPES
+from xana.memory.markdown import MarkdownMemoryTree
+from xana.memory.store import ProjectMemoryStore
 from xana.policy.contracts import PermissionResult
 from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
-_ACTIONS = ("create", "refine", "supersede")
+_ACTIONS = ("create", "update", "delete")
+DUPLICATE_THRESHOLD = 0.6
+
+_DESCRIPTION = (
+    "保存、更新或删除本项目的记忆(memory/ 目录,跨会话保留;记忆索引每个会话自动注入,相关记忆按消息自动召回)。\n"
+    "- create:新建一条。name(简短名称)、description(一句话说明,写清它在什么情况下有用,召回靠它)、"
+    "type、content 必填;path 是文件名(小写字母 / 数字,可含 - _)。已有相近的记忆时会被拒绝,改用 update。\n"
+    "- update:修改已有记忆;只传要改的字段。\n"
+    "- delete:删除错误或过时的记忆。\n"
+    "type:user(用户是谁、偏好)/ feedback(用户对做法的纠正或认可,写清原因与适用场景)/ "
+    "project(进行中的工作、目标、约束,日期写绝对日期)/ reference(外部资源在哪)。"
+    "pinned=true 表示每个会话都注入全文,只给短而关键、必须一直遵守的规则。"
+)
 
 _SPEC = ToolSpec(
     toolset="memory",
     component=ComponentSpec(
-        kind="tool",
-        name="memory_write",
-        qualified_name="builtin.memory_write",
-        description=(
-            "Gated write entry for L2 rule entries (L2/rules/*.md). "
-            "action=create forces a duplicate check; use refine to update an "
-            "existing entry and supersede to replace one (old entry becomes "
-            "deprecated, never deleted)."
-        ),
-        source=ComponentSource(source_type="builtin", scope="system"),
-    ),
+        kind="tool", name="memory_write", qualified_name="builtin.memory_write", description=_DESCRIPTION,
+        source=ComponentSource(source_type="builtin", scope="system")),
     input_schema={
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": list(_ACTIONS)},
-            "path": {"type": "string", "description": "Entry name relative to L2/rules/ (with or without .md)"},
-            "title": {"type": "string"},
-            "content": {"type": "string", "description": "Rule body (markdown)"},
-            "supersedes": {"type": "string", "description": "For action=supersede: existing entry path being replaced"},
-            "evidence": {"type": "string", "description": "Run pointer backing this rule, e.g. runs/r12.jsonl"},
+            "path": {"type": "string", "description": "记忆文件名,如 user_preferences(可带 .md)"},
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "type": {"type": "string", "enum": list(MEMORY_TYPES)},
+            "content": {"type": "string", "description": "正文(Markdown)"},
+            "pinned": {"type": "boolean"},
         },
         "required": ["action", "path"],
     },
     destructive=True,
-    display=ToolDisplay(category="memory", verb="写记忆", summary_args=("title", "path")),
+    display=ToolDisplay(category="other", verb="写记忆", summary_args=("action", "path")),
 )
 
 
-def _token_set(text: str) -> set[str]:
-    return set(search_terms(text))
-
-
-def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}, text
-    for idx, line in enumerate(lines[1:], start=1):
-        if line.strip() == "---":
-            try:
-                parsed = yaml.safe_load("\n".join(lines[1:idx]))
-            except yaml.YAMLError:
-                parsed = None
-            fm = parsed if isinstance(parsed, dict) else {}
-            return fm, "\n".join(lines[idx + 1:])
-    return {}, text
-
-
-def _dump_entry(frontmatter: dict[str, Any], body: str) -> str:
-    head = yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False).strip()
-    return f"---\n{head}\n---\n\n{body.strip()}\n"
-
-
 class MemoryWriteTool(Tool):
-    def __init__(
-        self,
-        *,
-        tree: MarkdownMemoryTree,
-        engine: MemorySearchEngine,
-        rules_dir: str = "L2/rules",
-        similarity_threshold: float = 0.6,
-    ) -> None:
+    def __init__(self, *, store: ProjectMemoryStore, tree: MarkdownMemoryTree | None = None) -> None:
+        """tree:写入后增量更新记忆树(memory_search 的索引);None = 不更新。"""
+        self._store = store
         self._tree = tree
-        self._engine = engine
-        self._rules_dir = rules_dir.strip("/")
-        self._threshold = similarity_threshold
 
     def spec(self) -> ToolSpec:
         return _SPEC
 
-    # ---- validation -------------------------------------------------------
-
     async def validate(self, invocation: ToolInvocation) -> None:
-        action = invocation.input.get("action")
-        if action not in _ACTIONS:
-            raise ValueError(f"memory_write action must be one of {_ACTIONS}")
-        self._normalize_path(invocation.input.get("path"))
-        if action in ("create", "supersede"):
-            if not str(invocation.input.get("title") or "").strip():
-                raise ValueError(f"memory_write {action} requires non-empty 'title'")
-            if not str(invocation.input.get("content") or "").strip():
-                raise ValueError(f"memory_write {action} requires non-empty 'content'")
-        if action == "refine" and not str(invocation.input.get("content") or "").strip():
-            raise ValueError("memory_write refine requires non-empty 'content'")
-        if action == "supersede" and not str(invocation.input.get("supersedes") or "").strip():
-            raise ValueError("memory_write supersede requires 'supersedes' (path of the entry being replaced)")
-
-    def _normalize_path(self, raw: Any) -> str:
-        if not isinstance(raw, str) or not raw.strip():
-            raise ValueError("memory_write requires non-empty 'path'")
-        name = raw.strip().replace("\\", "/")
-        if name.startswith("/") or ".." in Path(name).parts:
-            raise ValueError(f"unsafe rule path: {raw!r}")
-        name = name.removeprefix(self._rules_dir + "/")
-        if not name.endswith(".md"):
-            name = f"{name}.md"
-        if not Path(name).name or ".." in Path(name).parts:
-            raise ValueError(f"unsafe rule path: {raw!r}")
-        return f"{self._rules_dir}/{name}"
-
-    # ---- permission: this tool IS the sanctioned write path ---------------
+        data = invocation.input
+        if data.get("action") not in _ACTIONS:
+            raise ValueError(f"action 只能是 {list(_ACTIONS)}")
+        if data["action"] == "create":
+            missing = [k for k in ("name", "description", "type", "content") if not str(data.get(k) or "").strip()]
+            if missing:
+                raise ValueError(f"create 需要 {', '.join(missing)}")
+        if data.get("type") and data["type"] not in MEMORY_TYPES:
+            raise ValueError(f"type 只能是 {list(MEMORY_TYPES)}")
 
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
-        return PermissionResult(decision="allow", reason="memory_write is the gated rule write entry")
-
-    # ---- execution --------------------------------------------------------
+        return PermissionResult(decision="allow", reason="memory_write 是项目记忆的写入口")
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
-        action = invocation.input["action"]
-        rel = self._normalize_path(invocation.input["path"])
-        title = str(invocation.input.get("title") or "").strip()
-        content = str(invocation.input.get("content") or "").strip()
-        evidence = str(invocation.input.get("evidence") or "").strip()
+        data = invocation.input
+        try:
+            if data["action"] == "create":
+                return await self._create(data)
+            if data["action"] == "update":
+                return await self._update(data)
+            return await self._delete(str(data["path"]))
+        except ValueError as exc:
+            return _fail(str(exc))
 
-        if action == "create":
-            return await self._create(rel, title, content, evidence)
-        if action == "refine":
-            return await self._refine(rel, content)
-        return await self._supersede(rel, title, content, evidence, invocation)
+    async def _create(self, data: dict) -> ToolResult:
+        slug = str(data["path"])
+        if self._store.get(slug) is not None:
+            return _fail(f"记忆 {slug} 已存在,改用 update")
+        name, desc = str(data["name"]), str(data["description"])
+        near = self._store.similar(name, desc)
+        if near is not None and near[1] >= DUPLICATE_THRESHOLD:
+            return _fail(f"已有相近的记忆 {near[0].path}(相似度 {near[1]:.2f}),改用 update 更新它")
+        record = self._store.write(slug, name=name, description=desc, mtype=str(data["type"]),
+                                   body=str(data["content"]), pinned=bool(data.get("pinned")))
+        await self._reindex(record.path)
+        return _ok(f"[memory_write] 已新建记忆 {record.path}({record.type}{',置顶' if record.pinned else ''})")
 
-    async def _create(self, rel: str, title: str, content: str, evidence: str) -> ToolResult:
-        dup = await self._find_duplicate(rel, title, content)
-        if dup is not None:
-            sim, hit_path = dup
-            return ToolResult(
-                ok=False,
-                content=None,
-                error=(
-                    f"相似条目已存在 ({hit_path}, 相似度 {sim:.2f} ≥ {self._threshold:.2f})。"
-                    f"改用 action=refine 更新它,或 action=supersede 发起替代链。"
-                ),
-                failure_kind="validation",
-                rendered=f"[memory_write denied] duplicate of {hit_path}",
-            )
-        frontmatter: dict[str, Any] = {
-            "title": title,
-            "status": "candidate",
-            "evidence": evidence,
-            "created": time.time(),
-        }
-        body = f"# {title}\n\n{content}\n"
-        await self._write_and_reindex(rel, _dump_entry(frontmatter, body))
-        return ToolResult(
-            ok=True,
-            content={"path": rel, "action": "create"},
-            rendered=f"[memory_write ok] created {rel}",
-        )
+    async def _update(self, data: dict) -> ToolResult:
+        old = self._store.get(str(data["path"]))
+        if old is None:
+            return _fail(f"记忆 {data['path']} 不存在,用 create 新建")
+        record = self._store.write(
+            old.slug, name=str(data.get("name") or old.name), description=str(data.get("description") or old.description),
+            mtype=str(data.get("type") or old.type), body=str(data["content"]) if data.get("content") else old.body,
+            pinned=bool(data["pinned"]) if "pinned" in data else old.pinned)
+        await self._reindex(record.path)
+        return _ok(f"[memory_write] 已更新记忆 {record.path}")
 
-    async def _refine(self, rel: str, content: str) -> ToolResult:
-        path = self._tree.root / rel
-        if not path.exists():
-            return ToolResult(
-                ok=False, content=None,
-                error=f"refine 目标不存在: {rel}(用 action=create 新建)",
-                failure_kind="not_found",
-                rendered=f"[memory_write failed] {rel} not found",
-            )
-        fm, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
-        title = str(fm.get("title") or Path(rel).stem)
-        fm["updated"] = time.time()
-        body = f"# {title}\n\n{content}\n"
-        await self._write_and_reindex(rel, _dump_entry(fm, body))
-        return ToolResult(
-            ok=True,
-            content={"path": rel, "action": "refine"},
-            rendered=f"[memory_write ok] refined {rel}",
-        )
+    async def _delete(self, slug: str) -> ToolResult:
+        record = self._store.get(slug)
+        if record is None or not self._store.delete(slug):
+            return _fail(f"记忆 {slug} 不存在")
+        await self._reindex(record.path)
+        return _ok(f"[memory_write] 已删除记忆 {record.path}")
 
-    async def _supersede(
-        self, rel: str, title: str, content: str, evidence: str, invocation: ToolInvocation,
-    ) -> ToolResult:
-        raw_old = str(invocation.input.get("supersedes") or "").strip()
-        old_rel = self._normalize_path(raw_old)
-        old_path = self._tree.root / old_rel
-        if not old_path.exists():
-            return ToolResult(
-                ok=False, content=None,
-                error=f"supersede 目标不存在: {old_rel}",
-                failure_kind="not_found",
-                rendered=f"[memory_write failed] {old_rel} not found",
-            )
-        new_fm: dict[str, Any] = {
-            "title": title,
-            "status": "candidate",
-            "supersedes": old_rel,
-            "evidence": evidence,
-            "created": time.time(),
-        }
-        body = f"# {title}\n\n{content}\n"
-        await self._write_and_reindex(rel, _dump_entry(new_fm, body))
+    async def _reindex(self, rel: str) -> None:
+        if self._tree is not None:
+            await self._tree.reindex_paths((rel,))
 
-        old_fm, old_body = _split_frontmatter(old_path.read_text(encoding="utf-8"))
-        old_fm["status"] = "deprecated"
-        old_fm["superseded_by"] = rel
-        old_fm["updated"] = time.time()
-        old_path.write_text(_dump_entry(old_fm, old_body), encoding="utf-8")
-        await self._tree.reindex_paths((old_path,))
-        return ToolResult(
-            ok=True,
-            content={"path": rel, "action": "supersede", "superseded": old_rel},
-            rendered=f"[memory_write ok] superseded {old_rel} → {rel}",
-        )
 
-    async def _find_duplicate(self, rel: str, title: str, content: str) -> tuple[float, str] | None:
-        query_text = f"{title}\n{content[:500]}"
-        query_tokens = _token_set(query_text)
-        if not query_tokens:
-            return None
-        hits = await self._engine.search(SearchQuery(text=query_text, top_k=5))
-        best = 0.0
-        best_path: str | None = None
-        for hit in hits:
-            node = hit.node
-            if node is None or node.path == rel:
-                continue
-            haystack = _token_set(f"{node.title}\n{node.body}")
-            if not haystack:
-                continue
-            sim = len(query_tokens & haystack) / len(query_tokens)
-            if sim > best:
-                best, best_path = sim, node.path
-        if best_path is not None and best >= self._threshold:
-            return (best, best_path)
-        return None
+def _ok(text: str) -> ToolResult:
+    return ToolResult(ok=True, content=None, rendered=text)
 
-    async def _write_and_reindex(self, rel: str, text: str) -> None:
-        path = self._tree.root / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        await self._tree.reindex_paths((path,))
 
-    # ---- plumbing ---------------------------------------------------------
+def _fail(error: str) -> ToolResult:
+    return ToolResult(ok=False, content=None, error=error, failure_kind="validation",
+                      rendered=f"[memory_write 失败: {error}]")

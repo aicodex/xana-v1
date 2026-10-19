@@ -1,0 +1,217 @@
+"""变更单的门禁写入(create 查重 / refine / supersede 替代链),目录 L2/changes/。
+
+原是 L2 规则的 memory_write 实现;记忆改为 memory/ 目录后(docs/design/memory-recall-design.md),
+这套带 status / evidence / supersede 链的语义只剩变更单在用,移到 evolution 内部。
+"""
+from __future__ import annotations
+
+import time
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from xana.memory.contracts import SearchQuery
+from xana.memory.interfaces import MemorySearchEngine
+from xana.memory.markdown import MarkdownMemoryTree, search_terms
+from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult
+
+_ACTIONS = ("create", "refine", "supersede")
+
+def _token_set(text: str) -> set[str]:
+    return set(search_terms(text))
+
+
+def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, text
+    for idx, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            try:
+                parsed = yaml.safe_load("\n".join(lines[1:idx]))
+            except yaml.YAMLError:
+                parsed = None
+            fm = parsed if isinstance(parsed, dict) else {}
+            return fm, "\n".join(lines[idx + 1:])
+    return {}, text
+
+
+def _dump_entry(frontmatter: dict[str, Any], body: str) -> str:
+    head = yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False).strip()
+    return f"---\n{head}\n---\n\n{body.strip()}\n"
+
+
+class GatedEntryWriter:
+    def __init__(
+        self,
+        *,
+        tree: MarkdownMemoryTree,
+        engine: MemorySearchEngine,
+        rules_dir: str = "L2/changes",
+        similarity_threshold: float = 0.6,
+    ) -> None:
+        self._tree = tree
+        self._engine = engine
+        self._rules_dir = rules_dir.strip("/")
+        self._threshold = similarity_threshold
+
+    # ---- validation -------------------------------------------------------
+
+    async def validate(self, invocation: ToolInvocation) -> None:
+        action = invocation.input.get("action")
+        if action not in _ACTIONS:
+            raise ValueError(f"memory_write action must be one of {_ACTIONS}")
+        self._normalize_path(invocation.input.get("path"))
+        if action in ("create", "supersede"):
+            if not str(invocation.input.get("title") or "").strip():
+                raise ValueError(f"memory_write {action} requires non-empty 'title'")
+            if not str(invocation.input.get("content") or "").strip():
+                raise ValueError(f"memory_write {action} requires non-empty 'content'")
+        if action == "refine" and not str(invocation.input.get("content") or "").strip():
+            raise ValueError("memory_write refine requires non-empty 'content'")
+        if action == "supersede" and not str(invocation.input.get("supersedes") or "").strip():
+            raise ValueError("memory_write supersede requires 'supersedes' (path of the entry being replaced)")
+
+    def _normalize_path(self, raw: Any) -> str:
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError("memory_write requires non-empty 'path'")
+        name = raw.strip().replace("\\", "/")
+        if name.startswith("/") or ".." in Path(name).parts:
+            raise ValueError(f"unsafe rule path: {raw!r}")
+        name = name.removeprefix(self._rules_dir + "/")
+        if not name.endswith(".md"):
+            name = f"{name}.md"
+        if not Path(name).name or ".." in Path(name).parts:
+            raise ValueError(f"unsafe rule path: {raw!r}")
+        return f"{self._rules_dir}/{name}"
+
+    # ---- permission: this tool IS the sanctioned write path ---------------
+
+    # ---- execution --------------------------------------------------------
+
+    async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
+        action = invocation.input["action"]
+        rel = self._normalize_path(invocation.input["path"])
+        title = str(invocation.input.get("title") or "").strip()
+        content = str(invocation.input.get("content") or "").strip()
+        evidence = str(invocation.input.get("evidence") or "").strip()
+
+        if action == "create":
+            return await self._create(rel, title, content, evidence)
+        if action == "refine":
+            return await self._refine(rel, content)
+        return await self._supersede(rel, title, content, evidence, invocation)
+
+    async def _create(self, rel: str, title: str, content: str, evidence: str) -> ToolResult:
+        dup = await self._find_duplicate(rel, title, content)
+        if dup is not None:
+            sim, hit_path = dup
+            return ToolResult(
+                ok=False,
+                content=None,
+                error=(
+                    f"相似条目已存在 ({hit_path}, 相似度 {sim:.2f} ≥ {self._threshold:.2f})。"
+                    f"改用 action=refine 更新它,或 action=supersede 发起替代链。"
+                ),
+                failure_kind="validation",
+                rendered=f"[memory_write denied] duplicate of {hit_path}",
+            )
+        frontmatter: dict[str, Any] = {
+            "title": title,
+            "status": "candidate",
+            "evidence": evidence,
+            "created": time.time(),
+        }
+        body = f"# {title}\n\n{content}\n"
+        await self._write_and_reindex(rel, _dump_entry(frontmatter, body))
+        return ToolResult(
+            ok=True,
+            content={"path": rel, "action": "create"},
+            rendered=f"[memory_write ok] created {rel}",
+        )
+
+    async def _refine(self, rel: str, content: str) -> ToolResult:
+        path = self._tree.root / rel
+        if not path.exists():
+            return ToolResult(
+                ok=False, content=None,
+                error=f"refine 目标不存在: {rel}(用 action=create 新建)",
+                failure_kind="not_found",
+                rendered=f"[memory_write failed] {rel} not found",
+            )
+        fm, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
+        title = str(fm.get("title") or Path(rel).stem)
+        fm["updated"] = time.time()
+        body = f"# {title}\n\n{content}\n"
+        await self._write_and_reindex(rel, _dump_entry(fm, body))
+        return ToolResult(
+            ok=True,
+            content={"path": rel, "action": "refine"},
+            rendered=f"[memory_write ok] refined {rel}",
+        )
+
+    async def _supersede(
+        self, rel: str, title: str, content: str, evidence: str, invocation: ToolInvocation,
+    ) -> ToolResult:
+        raw_old = str(invocation.input.get("supersedes") or "").strip()
+        old_rel = self._normalize_path(raw_old)
+        old_path = self._tree.root / old_rel
+        if not old_path.exists():
+            return ToolResult(
+                ok=False, content=None,
+                error=f"supersede 目标不存在: {old_rel}",
+                failure_kind="not_found",
+                rendered=f"[memory_write failed] {old_rel} not found",
+            )
+        new_fm: dict[str, Any] = {
+            "title": title,
+            "status": "candidate",
+            "supersedes": old_rel,
+            "evidence": evidence,
+            "created": time.time(),
+        }
+        body = f"# {title}\n\n{content}\n"
+        await self._write_and_reindex(rel, _dump_entry(new_fm, body))
+
+        old_fm, old_body = _split_frontmatter(old_path.read_text(encoding="utf-8"))
+        old_fm["status"] = "deprecated"
+        old_fm["superseded_by"] = rel
+        old_fm["updated"] = time.time()
+        old_path.write_text(_dump_entry(old_fm, old_body), encoding="utf-8")
+        await self._tree.reindex_paths((old_path,))
+        return ToolResult(
+            ok=True,
+            content={"path": rel, "action": "supersede", "superseded": old_rel},
+            rendered=f"[memory_write ok] superseded {old_rel} → {rel}",
+        )
+
+    async def _find_duplicate(self, rel: str, title: str, content: str) -> tuple[float, str] | None:
+        query_text = f"{title}\n{content[:500]}"
+        query_tokens = _token_set(query_text)
+        if not query_tokens:
+            return None
+        hits = await self._engine.search(SearchQuery(text=query_text, top_k=5))
+        best = 0.0
+        best_path: str | None = None
+        for hit in hits:
+            node = hit.node
+            if node is None or node.path == rel:
+                continue
+            haystack = _token_set(f"{node.title}\n{node.body}")
+            if not haystack:
+                continue
+            sim = len(query_tokens & haystack) / len(query_tokens)
+            if sim > best:
+                best, best_path = sim, node.path
+        if best_path is not None and best >= self._threshold:
+            return (best, best_path)
+        return None
+
+    async def _write_and_reindex(self, rel: str, text: str) -> None:
+        path = self._tree.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        await self._tree.reindex_paths((path,))
+
+    # ---- plumbing ---------------------------------------------------------
