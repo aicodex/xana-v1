@@ -45,7 +45,7 @@ date: 2026-09-27
 
 - 用户级 `system.json`:models / default_model / model_tiers / limits / web_search / mcp / policy / tools。
 - 项目级 `projects/<id>/config.json`:channels、daemon、sessions、tools、agent_defaults(§8)。
-- 合并:加载 `system.json` 后,用项目配置覆盖允许的键(channels、daemon、sessions、tools、agent_defaults);项目配置出现其他键报错(模型、凭据、搜索服务地址、策略不能由项目改)。
+- 合并:加载 `system.json` 后,用项目配置覆盖允许的键(channels、daemon、sessions、tools、agent_defaults);`tools.disabled` 例外,取并集——用户级禁用对所有项目生效,项目只能再多禁(2026-10-19);项目配置出现其他键报错(模型、凭据、搜索服务地址、策略不能由项目改)。
 - `daemon.unix_socket` 未配置时取 `projects/<id>/run/serve.sock`;`daemon.port` 每个项目不同(default 沿用 17777,新项目创建时分配空闲端口)。
 - `SessionResolver` 的渠道→会话映射写回项目 `config.json`;项目 `config.json` 权限 600(含机器人凭据)。
 

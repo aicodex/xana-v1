@@ -2,7 +2,8 @@
 
 用户级 {XANA_HOME}/config/system.json 放全局配置;项目级 projects/<id>/config.json 只能放
 PROJECT_KEYS(机器人、daemon 端口 / socket、渠道→会话映射、工具禁用、agent 默认配置)。加载时用项目配置覆盖用户配置的
-这些键;项目配置出现其他键即报错——模型、凭据、搜索服务地址、策略不能由项目改。
+这些键(工具禁用除外:取并集,用户级禁用对所有项目生效);项目配置出现其他键即报错——模型、凭据、搜索服务地址、
+策略不能由项目改。
 """
 from __future__ import annotations
 
@@ -48,7 +49,12 @@ def read_project_config(path: Path) -> dict[str, Any]:
 
 
 def merge_system_config(user: dict[str, Any], project: dict[str, Any]) -> SystemConfig:
-    return SystemConfig(**{**user, **project})
+    """项目键覆盖用户键;例外是 tools.disabled 取并集——用户级禁用是全局的,项目只能再多禁,不能放开。"""
+    merged = {**user, **project}
+    if "tools" in user and "tools" in project:
+        disabled = [*(user["tools"].get("disabled") or []), *(project["tools"].get("disabled") or [])]
+        merged["tools"] = {**user["tools"], **project["tools"], "disabled": list(dict.fromkeys(disabled))}
+    return SystemConfig(**merged)
 
 
 def load_system_config(pid: str | None = None) -> SystemConfig:
