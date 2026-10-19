@@ -40,10 +40,10 @@ _BODY = """# project_creator — 创建一个 xana 项目
 
 第三步:创建并接机器人
 1. project_manage(action="create", ...);
-2. project_manage(action="bind_feishu", name=...),把返回的授权链接原样发给用户:
-   "在飞书里点开这个链接,确认创建机器人";然后结束这一轮,等用户回复;
-3. 用户说已确认后,project_manage(action="feishu_status", name=...);
-4. project_manage(action="start", name=...)。
+2. project_manage(action="bind_feishu", name=...),把返回的授权链接原样发给用户,并告诉用户:
+   "在飞书里点开这个链接确认创建机器人;确认后项目会自动启动,大约一分钟后就可以直接和新机器人聊天";
+   然后结束这一轮;
+3. 用户回来时,project_manage(action="feishu_status", name=...) 确认绑定与启动结果。
 
 第四步:告诉用户
 新机器人的名字、启动约需一分钟、之后直接去和它聊天;用户已自动成为它的授权用户。

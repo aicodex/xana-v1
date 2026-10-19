@@ -35,8 +35,8 @@ _DESCRIPTION = (
     "(tools 缺省 [\"default\"],skills 缺省全部,[] 表示没有);instructions 可选:项目说明(Markdown),"
     "写进项目根目录的 AGENTS.md,该项目的每个会话都会读到(目录里已有 AGENTS.md 则不覆盖)。\n"
     "- configure:修改 name 项目的 agent_defaults;项目在运行时需要 stop 再 start 才生效。\n"
-    "- bind_feishu:为 name 项目创建并接入一个新的飞书机器人,返回授权链接。把链接发给用户,"
-    "用户在飞书里点开确认后,再调用 feishu_status。\n"
+    "- bind_feishu:为 name 项目创建并接入一个新的飞书机器人,返回授权链接。把链接发给用户;"
+    "用户在飞书里点开确认后,项目会自动启动(已在运行的会重启以连接新机器人)。\n"
     "- feishu_status:等待并返回绑定结果(最多约 2 分钟)。\n"
     "- start / stop:启动 / 停止 name 项目的 serve。default 项目不能在这里停止。"
 )
@@ -79,8 +79,11 @@ class ProjectManageTool(Tool):
     def __init__(self, *, tool_registry: ToolRegistry, skills: SkillRegistry,
                  begin: Callable[[], dict] | None = None,
                  poll: Callable[[dict], dict | None] | None = None,
-                 probe: Callable[[dict], dict] | None = None) -> None:
-        """begin / poll / probe:飞书扫码注册三步(缺省用 feishu_onboard,测试可替换)。"""
+                 probe: Callable[[dict], dict] | None = None,
+                 start: Callable[[str], int] | None = None) -> None:
+        """begin / poll / probe:飞书扫码注册三步(缺省用 feishu_onboard,测试可替换);start:启动项目 serve
+        (缺省 projects.start_project)。"""
+        self._start = start or projects.start_project
         from xana.agent_adapter.channels import feishu_onboard as fo
         self._tools = tool_registry
         self._skills = skills
@@ -179,7 +182,8 @@ class ProjectManageTool(Tool):
         self._bindings[name] = binding
         replace = f"(将替换已接的机器人 {info.feishu_bot})" if info.feishu_bot else ""
         return _ok(f"[project_manage] 请把这个授权链接发给用户{replace}:{binding.url}\n"
-                   f"用户在飞书里点开并确认创建机器人后(约 {begin['expire_in'] // 60} 分钟内有效),调用 feishu_status。")
+                   f"用户在飞书里点开并确认创建机器人后(约 {begin['expire_in'] // 60} 分钟内有效),项目会自动启动,"
+                   "约一分钟后用户就能直接在新机器人里聊天;用户回来时可调用 feishu_status 确认结果。")
 
     async def _finish_binding(self, name: str, begin: dict) -> None:
         binding_result: dict[str, Any] = {}
@@ -191,9 +195,16 @@ class ProjectManageTool(Tool):
                 creds.update(await asyncio.to_thread(self._probe, creds))
                 projects.set_feishu_bot(name, creds)
                 binding_result.update(status="done", bot=creds.get("bot_name") or creds["app_id"])
+                # 用户确认后就会直接去新机器人里发消息:不等模型再调 start,绑定完成即(重)启动该项目
+                binding_result["pid"] = await asyncio.to_thread(self._restart, name)
         except Exception as exc:  # 网络 / 飞书接口错误:记下来,由 feishu_status 报告
             binding_result.update(status="failed", error=str(exc))
         self._bindings[name].result.update(binding_result)
+
+    def _restart(self, name: str) -> int:
+        if projects.running_pid(name):
+            projects.stop_project(name)          # 换了机器人:重启才会连新机器人
+        return self._start(name)
 
     async def _feishu_status(self, name: str, context: ToolContext) -> ToolResult:
         binding = self._bindings.get(name)
@@ -208,9 +219,8 @@ class ProjectManageTool(Tool):
         result = binding.result
         if result.get("status") != "done":
             return _fail(f"飞书绑定失败:{result.get('error')}")
-        running = projects.running_pid(name)
-        tail = "项目正在运行:stop 再 start 后新机器人生效。" if running else "现在可以 start 启动该项目。"
-        return _ok(f"[project_manage] 已为 {name} 接入飞书机器人 {result['bot']},你已是它的授权用户。{tail}")
+        return _ok(f"[project_manage] 已为 {name} 接入飞书机器人 {result['bot']},用户已是它的授权用户;"
+                   f"项目已自动启动(pid {result['pid']}),约一分钟后即可在新机器人里聊天。")
 
 
 def _ok(text: str) -> ToolResult:
