@@ -44,11 +44,8 @@ from xana.harness_sdk.contracts import ProgressEvent
 class FeishuConfig:
     app_id: str
     app_secret: str
-    verification_token: str
-    encrypt_key: str | None = None
     api_base: str = "https://open.feishu.cn"
     bot_open_id: str | None = None
-    connection_mode: str = "ws"  # "ws" | "webhook"
 
 
 # ---------------------------------------------------------------------------
@@ -131,18 +128,17 @@ class FeishuAdapter(Adapter):
 
     async def start(self) -> None:
         if self._api_sender is None:
-            from xana.agent_adapter.channels.feishu_webhook import build_real_sender
+            from xana.agent_adapter.channels.feishu_api import build_real_sender
             self._api_sender = build_real_sender(self._config)
-        if self._config.connection_mode == "ws":
-            from xana.agent_adapter.channels.feishu_ws import FeishuWSClient
-            self._ws_client = FeishuWSClient(
-                self._config.app_id,
-                self._config.app_secret,
-                domain=self._config.api_base,
-                on_im_message=self._on_event,
-                on_card_action=self._on_card_action,
-            )
-            await self._ws_client.start(asyncio.get_running_loop())
+        from xana.agent_adapter.channels.feishu_ws import FeishuWSClient
+        self._ws_client = FeishuWSClient(
+            self._config.app_id,
+            self._config.app_secret,
+            domain=self._config.api_base,
+            on_im_message=self._on_event,
+            on_card_action=self._on_card_action,
+        )
+        await self._ws_client.start(asyncio.get_running_loop())
         self._status = "healthy"
 
     async def stop(self) -> None:

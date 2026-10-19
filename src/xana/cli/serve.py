@@ -2,14 +2,10 @@
 
 Config source: ~/.xana/config/system.json channels section.
 Env vars override system.json values:
-  FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFICATION_TOKEN /
-    FEISHU_ENCRYPT_KEY (optional) / FEISHU_CONNECTION_MODE ("ws" default |
-    "webhook") / FEISHU_WEBHOOK_PORT (default 8765, webhook mode only)
+  FEISHU_APP_ID / FEISHU_APP_SECRET
 
-Feishu inbound defaults to WebSocket long-connection mode (lark-oapi WS
-client; no public HTTPS URL needed). The aiohttp webhook server is only
-started when connection_mode == "webhook" (env FEISHU_CONNECTION_MODE or
-system.json channels.feishu.connection_mode).
+Feishu inbound uses the WebSocket long connection (lark-oapi WS client; no
+public HTTPS URL needed).
   TELEGRAM_BOT_TOKEN / TELEGRAM_ALLOWED_USER_IDS (csv)
 
 A shared PairingStore (backed by pairings.json) is wired into both adapters
@@ -46,29 +42,14 @@ def build_adapters(
     pairing = PairingStore(path=bindings_root / "pairings.json")
 
     fs = system.channels.feishu
-    fs_extra = fs.model_extra or {}
     app_id = env.get("FEISHU_APP_ID") or fs.app_id
     app_secret = env.get("FEISHU_APP_SECRET") or fs.app_secret_key
-    verification_token = env.get("FEISHU_VERIFICATION_TOKEN") or str(
-        fs_extra.get("verification_token") or ""
-    )
     if app_id and app_secret:
         api_base = "https://open.larksuite.com" if fs.domain == "lark" else "https://open.feishu.cn"
-        connection_mode = (
-            env.get("FEISHU_CONNECTION_MODE")
-            or str(fs_extra.get("connection_mode") or "")
-            or "ws"
-        ).strip().lower()
-        if connection_mode not in ("ws", "webhook"):
-            print(f"[feishu] unknown connection_mode '{connection_mode}' — falling back to ws")
-            connection_mode = "ws"
         cfg = FeishuConfig(
             app_id=app_id,
             app_secret=app_secret,
-            verification_token=verification_token,
-            encrypt_key=env.get("FEISHU_ENCRYPT_KEY") or None,
             api_base=api_base,
-            connection_mode=connection_mode,
         )
         adapters.append(FeishuAdapter(
             config=cfg, pairing=pairing,
@@ -263,7 +244,6 @@ async def _run_inner(argv: argparse.Namespace) -> int:
         print("[xana serve] no chat adapters configured — daemon only.")
 
     pumps: list[asyncio.Task] = []
-    webhook_runner = None
 
     # daemon_bridge needs an inbound pump just like feishu/tg adapters —
     # without it, /sessions/{sid}/submit POSTs land on bridge._inbound but
@@ -288,18 +268,7 @@ async def _run_inner(argv: argparse.Namespace) -> int:
                 [{"command": s.name, "description": s.description} for s in specs])
 
         if isinstance(adapter, FeishuAdapter):
-            if adapter._config.connection_mode == "webhook":
-                from aiohttp import web
-                from xana.agent_adapter.channels.feishu_webhook import build_webhook_app
-                app = build_webhook_app(config=adapter._config, on_event=adapter._on_event)
-                webhook_runner = web.AppRunner(app)
-                await webhook_runner.setup()
-                port = int(os.environ.get("FEISHU_WEBHOOK_PORT", "8765"))
-                site = web.TCPSite(webhook_runner, "0.0.0.0", port)
-                await site.start()
-                print(f"[feishu] webhook listening on :{port}/feishu/webhook")
-            else:
-                print("[feishu] websocket long-connection mode (no public URL needed)")
+            print("[feishu] websocket long-connection mode (no public URL needed)")
 
     runner = None
     if boot_result.scheduler is not None:
@@ -360,8 +329,6 @@ async def _run_inner(argv: argparse.Namespace) -> int:
         if daemon_tasks:
             await asyncio.gather(*daemon_tasks, return_exceptions=True)
         await daemon_bridge.stop()
-        if webhook_runner is not None:
-            await webhook_runner.cleanup()
         for adapter in adapters:
             await adapter.stop()
         if boot_result.main_writer is not None:

@@ -1,4 +1,4 @@
-"""Feishu event parsing + HMAC signature verification.
+"""Feishu event parsing.
 
 Targets the "v2" event format (header + event envelopes). Recognizes
 `im.message.receive_v1` messages of type `text` and `post` (rich text: Feishu sends
@@ -7,8 +7,6 @@ Anything else returns None from parse_message_event() and the adapter ignores it
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import logging
 from dataclasses import dataclass
@@ -16,21 +14,6 @@ from typing import Any
 
 _logger = logging.getLogger(__name__)
 TEXT_TYPES = ("text", "post")
-
-
-class FeishuVerifyError(Exception):
-    pass
-
-
-def verify_signature(*, timestamp: str, nonce: str, body: bytes,
-                     encrypt_key: str, signature: str) -> None:
-    """Raise FeishuVerifyError if `signature` doesn't match the canonical digest."""
-    if not (timestamp and nonce and encrypt_key and signature):
-        raise FeishuVerifyError("missing signature components")
-    to_sign = (timestamp + nonce + encrypt_key).encode("utf-8") + body
-    digest = hashlib.sha256(to_sign).hexdigest()
-    if not hmac.compare_digest(digest, signature):
-        raise FeishuVerifyError("signature mismatch")
 
 
 @dataclass(frozen=True)
