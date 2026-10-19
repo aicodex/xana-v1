@@ -22,7 +22,7 @@ status: active
 
 ## 现状：用户级 + 项目级按顶层键覆盖，再解析默认模型
 
-- 没有通用合并器 ABC。`DefaultConfigProvider(project_config=None)` 的 `project_config_path` 缺省为 `projects/<当前项目>/config.json`；`load()` 读用户级 system.json 后调 `merge_system_config(user, read_project_config(...))`：项目配置按**顶层键整体覆盖**用户配置（`{**user, **project}`，不做深合并），只允许 `PROJECT_KEYS`（channels / daemon / sessions / tools / agent_defaults）。合并结果缓存为 `SystemConfig`（`load_system_config()` 取）。
+- 没有通用合并器 ABC。`DefaultConfigProvider(project_config=None)` 的 `project_config_path` 缺省为 `projects/<当前项目>/config.json`；`load()` 读用户级 system.json 后调 `merge_system_config(user, read_project_config(...))`：项目配置按**顶层键整体覆盖**用户配置（`{**user, **project}`，不做深合并），只允许 `PROJECT_KEYS`（channels / daemon / sessions / tools / agent_defaults）。例外：`tools.disabled` 取并集——用户级禁用对所有项目生效，项目只能再多禁、不能放开。合并结果缓存为 `SystemConfig`（`load_system_config()` 取）。
 - 实际承担"merge"角色的是 `DefaultConfigProvider.load()` 内部的 `_resolve_default_model(system)`：
   1. 读 `system.default_model.chat` 指定的模型名；
   2. 命中 `models[]` 里的 entry → 产出 `ModelConfig(provider=entry.type, model=entry.name, context_window, force_compact)`；
