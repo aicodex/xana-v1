@@ -44,7 +44,7 @@ date: 2026-09-27
 | `subagent_type` | agent 名;默认 `chat` |
 | `resume` | 续接之前某个子 agent 的 agent_id(与 `subagent_type` 互斥):在同一子会话里继续,保留它的上下文 |
 
-- 同步执行,经 `AgentRunner` 跑子 agent 的完整 run,取回最终文本;执行中以 `report_progress` 上报子 agent 的工具调用次数。`concurrency="parallel"`,同一轮多个调用并发执行;进程内同时运行的委派上限 6,超出返回错误:"已达并发上限,不要重试,直接用自己的工具完成"。
+- 同步执行,经 `AgentRunner` 跑子 agent 的完整 run,取回最终文本;执行中以 `report_progress` 上报子 agent 的工具调用次数。`concurrency="parallel"`,同一轮多个调用并发执行;进程内同时运行的委派上限 6,超出的排队等空位(2026-10-19 改:原先超出直接返回错误,模型一次并行派出 7 个时第 7 个被拒)。
 - 结果:`agent_id`(子会话 id)、状态、用时、工具次数,加子 agent 的最终文本;末尾提示"需要继续这个子 agent 时用 resume=<agent_id>"。子 agent 失败时 `ok=False`,附原因。
 - **子 agent 的工具** = 子 agent 自己的 tools 表达式解析结果 ∩ 上限集合。上限集合 = 调用方本 run 可用的工具 − `agent_run` / `agent_define` − 会话控制类工具(EnterPlanMode、EnterWorktree、report_goal、Cron*)。
   - 上限通过 `AgentRequest.tool_ceiling`(新增类型化字段)传给子 agent,harness 在 `resolve_tools` 结果上再取交集;调用方可用工具经 `ToolContext.available_tools`(新增字段)拿到。

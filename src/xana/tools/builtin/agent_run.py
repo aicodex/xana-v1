@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 import uuid
@@ -64,7 +65,8 @@ class AgentRunTool(Tool):
         self._tools = tool_registry
         self._default_agent = default_agent
         self._max_concurrent = max_concurrent
-        self._running = 0
+        # 同时运行的子 agent 上限:超出的排队等空位(不拒绝,模型一次并行派出多个时也都能跑完)
+        self._slots = asyncio.Semaphore(max_concurrent)
 
     def spec(self) -> ToolSpec:
         return _SPEC
@@ -104,9 +106,6 @@ class AgentRunTool(Tool):
             await self._agent_registry.refresh()
         if name not in self._agents:
             return _fail(f"没有名为 {name!r} 的 agent,可委派的 agent 见「可委派的 agent」列表")
-        if self._running >= self._max_concurrent:
-            return _fail(f"同时运行的子 agent 已达上限 {self._max_concurrent} 个。不要重试,直接用自己的工具完成",
-                         retryable=False)
         ceiling = subagent_ceiling(context.available_tools, await self._tools.list_specs(),
                                    await self._tools.list_toolsets())
         progress = context.report_progress or (lambda _text: None)
@@ -125,16 +124,16 @@ class AgentRunTool(Tool):
                 activity(ToolActivity(lane="sub", lane_title=lane_title, kind=kind,
                                       text=f"{label}:{step.text}" if step.text else label))
 
-        self._running += 1
-        t0 = time.monotonic()
-        try:
+        if self._slots.locked():
+            progress(f"{name} 排队中:同时最多 {self._max_concurrent} 个子 agent,等前面的完成")
+            activity(ToolActivity(lane="sub", lane_title=lane_title, kind="note", text="排队等待空位"))
+        async with self._slots:
+            t0 = time.monotonic()
             progress(f"{name} 开始")
             activity(ToolActivity(lane="sub", lane_title=lane_title, kind="note", text="开始"))
             outcome = await self._runner.run(
                 agent_name=name, prompt=prompt, session_id=child, parent_run_id=context.run_id,
                 parent_session_id=context.session_id, tool_ceiling=ceiling, on_step=on_step)
-        finally:
-            self._running -= 1
         activity(ToolActivity(lane="sub", lane_title=lane_title,
                               kind="done" if outcome.status == "completed" else "error",
                               text=f"{'完成' if outcome.status == 'completed' else '未完成'} · 工具 {calls[0]} 次"))
