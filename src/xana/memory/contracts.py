@@ -208,6 +208,22 @@ class MemoryRecord:
     pinned: bool
     body: str
     mtime: float
+    topic: str = ""          # 可选主题(如 估值 / 产业链 / 选股),索引按 类型 → 主题 分组
+
+
+@dataclass(frozen=True)
+class ExtractionRequest:
+    """一轮结束后交给后台记忆提取的内容(docs/design/memory-dream-design.md §3.1)。
+    messages = 本轮的用户消息起到最终回答为止;interactive = 用户在线的聊天会话(否则是无人值守运行)。"""
+    session_id: str
+    agent_name: str
+    run_id: str
+    messages: "tuple[MemoryMessage, ...]"
+    interactive: bool
+
+
+# 后台记忆提取:harness 在一轮完成后以后台任务调用,实现由 runtime 注入(调用模型)。
+MemoryExtractor = Callable[[ExtractionRequest], Awaitable[None]]
 
 
 # 召回选择:输入(用户这句话, 候选记忆),返回选中的 slug(按相关度)。实现可调用模型(由 runtime 注入)。

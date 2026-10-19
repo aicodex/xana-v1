@@ -84,6 +84,7 @@ from xana.session_config.interfaces import SessionConfigStore
 from xana.tools.builtin._todo_store import TodoStore
 from xana.memory.recall import ProjectMemoryInjector
 from xana.memory.store import ProjectMemoryStore
+from xana.runtime.memory_extract import ModelMemoryExtractor
 from xana.runtime.memory_selector import ModelMemorySelector
 from xana.runtime.scheduler import FileSchedulerService, ScheduledTaskDispatcher
 from xana.runtime.session_resolver import SessionResolver
@@ -242,10 +243,32 @@ async def boot(
                                                            tool_registry=tools))
                               .build())
 
+    provider = runtime_config.default_model.provider
+    model = runtime_config.default_model.model
+    client = _build_model_client(provider, model, cp)
+    # §4.3: 消费 SystemConfig.limit().max_concurrent —— per-provider 并发位,
+    # InMemoryModelRegistry 外包 semaphore;未配置的 provider 不限制。
+    model_registry = InMemoryModelRegistry(concurrency_limits={
+        name: limit.max_concurrent for name, limit in system_cfg.limits.items()
+    })
+    await model_registry.register(provider, client)
+
+    # 记忆召回:快速模型(model_tiers.fast 且属于当前 provider)挑选,否则用当前模型;超时退回字面检索
+    _fast = system_cfg.model(system_cfg.model_tiers.fast) if system_cfg.model_tiers.fast else None
+    _memory_model = _fast.name if _fast is not None and _fast.type == provider else model
+    memory_selector = ModelMemorySelector(model_registry=model_registry, provider=provider, model=_memory_model)
+    await injector_registry.register(ProjectMemoryInjector(
+        memory_store, selector=memory_selector, mode=system_cfg.memory.recall,
+        timeout_s=system_cfg.memory.select_timeout_s), priority=100)
+    # 记忆的后台提取(docs/design/memory-dream-design.md §3.1):每轮结束后把漏记的写进记忆;0 = 关闭
+    memory_extractor = (ModelMemoryExtractor(
+        model_registry=model_registry, provider=provider, model=_memory_model,
+        store=memory_store, every=system_cfg.memory.extract_every) if system_cfg.memory.extract_every > 0 else None)
+
     # 扩展注册表须在构造 harness 之前组装完毕(harness 构造时即持有它)。
     # harness 提前构造:/clear 时经 on_clear 丢弃它记下的 prompt 占用
     # (docs/design/session-and-card-state.md §1.5)。
-    _harness = DefaultHarness(extension_registry=extension_registry)
+    _harness = DefaultHarness(extension_registry=extension_registry, memory_extractor=memory_extractor)
 
     active_ctx_inner = InMemoryActiveContextStore(
         context_sdk=context_sdk,
@@ -348,25 +371,6 @@ async def boot(
             session_config_store=session_config_store,
             brave_api_key=(system_cfg.web_search.brave_search_key or None)))
         await _register(WebFetchTool())
-    provider = runtime_config.default_model.provider
-    model = runtime_config.default_model.model
-    client = _build_model_client(provider, model, cp)
-    # §4.3: 消费 SystemConfig.limit().max_concurrent —— per-provider 并发位,
-    # InMemoryModelRegistry 外包 semaphore;未配置的 provider 不限制。
-    model_registry = InMemoryModelRegistry(concurrency_limits={
-        name: limit.max_concurrent for name, limit in system_cfg.limits.items()
-    })
-    await model_registry.register(provider, client)
-
-    # 记忆召回:快速模型(model_tiers.fast 且属于当前 provider)挑选,否则用当前模型;超时退回字面检索
-    _fast = system_cfg.model(system_cfg.model_tiers.fast) if system_cfg.model_tiers.fast else None
-    memory_selector = ModelMemorySelector(
-        model_registry=model_registry, provider=provider,
-        model=_fast.name if _fast is not None and _fast.type == provider else model)
-    await injector_registry.register(ProjectMemoryInjector(
-        memory_store, selector=memory_selector, mode=system_cfg.memory.recall,
-        timeout_s=system_cfg.memory.select_timeout_s), priority=100)
-
     # §4.3 预算护栏:concrete helper(boot 组装,不抽 ABC),注入 harness ctx.metadata。
     budget_tracker = BudgetTracker()
 

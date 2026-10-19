@@ -92,7 +92,8 @@ from xana.harness_sdk.verify import failure_text, passed_text, run_checks
 from xana.harness_sdk.usage import DefaultUsageAccumulator
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
 from xana.llm_driver.interfaces import ModelClient
-from xana.memory.contracts import ActiveContext, HistoryRow, MemoryMessage, Placeholder, ReplayResult
+from xana.memory.contracts import (ActiveContext, ExtractionRequest, HistoryRow, MemoryExtractor, MemoryMessage,
+                                   Placeholder, ReplayResult)
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror
 from xana.policy.contracts import PermissionContext, PermissionResult
 from xana.skills.contracts import SkillActivation
@@ -104,6 +105,7 @@ from xana.config.paths import project_home
 
 
 _logger = logging.getLogger(__name__)
+MEMORY_WRITE_TOOL = "memory_write"
 
 _DEFAULT_PROVIDER = "fake"
 _ANON_RUN_ID = "run-anon"
@@ -192,8 +194,11 @@ def _can_use(available: frozenset[str] | None, name: str) -> bool:
 
 class DefaultHarness(Harness):
     def __init__(self, extension_registry: "ExtensionRegistry | None" = None,
-                 today: Callable[[], str] | None = None) -> None:
-        """today:返回本地日期 YYYY-MM-DD(缺省系统时钟;测试可替换)。"""
+                 today: Callable[[], str] | None = None,
+                 memory_extractor: MemoryExtractor | None = None) -> None:
+        """today:返回本地日期 YYYY-MM-DD(缺省系统时钟;测试可替换)。
+        memory_extractor:每轮完成后在后台提取漏记的记忆(docs/design/memory-dream-design.md §3.1);None = 不提取。"""
+        self._memory_extractor = memory_extractor
         self._today = today or (lambda: date.today().isoformat())
         self.last_assembled_messages: tuple[ModelMessage, ...] | None = None
         self.usage_accumulator = DefaultUsageAccumulator()
@@ -220,6 +225,7 @@ class DefaultHarness(Harness):
         history: tuple[MemoryMessage, ...],
         *,
         memory: bool = False,
+        memory_saving: bool = False,
     ) -> tuple[str, list[MemoryMessage]]:
         """本会话固定的 system;会话内换模型时不改 system,改为追加 model_switch note。"""
         cached = self._session_systems.get((session_id, agent_name))
@@ -230,6 +236,7 @@ class DefaultHarness(Harness):
                 extension_sections=extension_system_text,
                 profile_tail=profile_sections(_profile(context)),
                 memory=memory,
+                memory_saving=memory_saving,
             )
             self._session_systems[(session_id, agent_name)] = (context.model, text)
             return text, []
@@ -427,6 +434,34 @@ class DefaultHarness(Harness):
                     status=status or "final", thread_store=thread_store, turn_store=turn_store)),
                 "on_turn_stop",
             )
+
+    async def _start_memory_extraction(self, context: HarnessContext, request: HarnessRequest,
+                                       session_id: str, agent_name: str, run_id: str) -> None:
+        """把本轮(用户消息起)交给后台记忆提取;本轮模型已经自己写过记忆就跳过(照 Claude Code)。
+        agent_run 派出的子 agent 不提取(调用方已排除),定时任务等无人值守运行照常提取。"""
+        if self._memory_extractor is None:
+            return
+        snap = await context.active_context_store.get(session_id, agent_name)
+        msgs = snap.messages if snap is not None else ()
+        start = next((i for i in range(len(msgs) - 1, -1, -1)
+                      if msgs[i].role == "user" and not msgs[i].metadata.get("note_kind")
+                      and msgs[i].content == request.user_input), None)
+        turn = tuple(msgs[start:]) if start is not None else ()
+        if not turn or any(tc.get("tool_name") == MEMORY_WRITE_TOOL
+                           for m in turn for tc in (m.metadata.get("tool_calls") or [])):
+            return
+        job = ExtractionRequest(session_id=session_id, agent_name=agent_name, run_id=run_id, messages=turn,
+                                interactive=_profile(context).mode == "interactive")
+
+        async def _run() -> None:
+            try:
+                await self._memory_extractor(job)
+            except Exception:
+                _logger.exception("记忆提取失败(会话 %s)", session_id)
+
+        task = asyncio.create_task(_run(), name=f"xana-memory-extract-{run_id}")
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def _report_compact(self, context: HarnessContext, session_id: str,
                               run_id: str, phase: str) -> None:
@@ -1344,7 +1379,8 @@ class DefaultHarness(Harness):
                     "enabled" if context.config_snapshot.get("thinking") else "disabled")
             tools_schema: tuple[dict, ...] = tuple(schemas)
             system_content, loop_notes = self._session_system(
-                context, session_id, agent_name, extension_system_text, history_msgs, memory=has_memory)
+                context, session_id, agent_name, extension_system_text, history_msgs, memory=has_memory,
+                memory_saving=has_memory and _profile(context).mode == "interactive")
             deferred_note = deferred_tools_note(tuple(deferred_names), history_msgs)
             if deferred_note is not None:
                 loop_notes.append(deferred_note)
@@ -1729,6 +1765,8 @@ class DefaultHarness(Harness):
                 ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
                 thread_store=thread_store, turn_store=turn_store, status="final",
             )
+        if has_memory and not request.metadata.get("parent_run_id"):
+            await self._start_memory_extraction(context, request, session_id, agent_name, run_id)
         yield HarnessEvent(
             kind="final",
             session_id=session_id,

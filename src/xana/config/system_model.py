@@ -79,6 +79,8 @@ class MemoryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     recall: Literal["select", "lexical", "off"] = "select"
     select_timeout_s: float = 3.0
+    # 后台提取漏记的记忆:每 N 轮一次(按会话计),0 = 关闭(docs/design/memory-dream-design.md §3.1)
+    extract_every: int = 1
 
 
 class WebSearch(BaseModel):

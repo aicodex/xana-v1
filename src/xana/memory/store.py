@@ -1,7 +1,7 @@
 """项目记忆:项目根目录下的 memory/,一条记忆一个文件(docs/design/memory-recall-design.md §3.1)。
 
 记忆文件是唯一权威;索引、置顶内容都由文件的 frontmatter 实时生成(可重建的视图,不落盘)。
-frontmatter:name / description / type(user | feedback | project | reference)/ pinned / updated。
+frontmatter:name / description / type(user | feedback | project | reference)/ topic / pinned / updated。
 手工编辑的文件加载时容错:缺 description 取正文第一句,缺 type 记为 project。
 """
 from __future__ import annotations
@@ -61,7 +61,11 @@ class ProjectMemoryStore:
             if not group:
                 continue
             lines.append(f"## {_TYPE_TITLES[mtype]}({mtype})")
-            lines.extend(f"- {r.name}({r.path})— {r.description}{'  [置顶]' if r.pinned else ''}" for r in group)
+            for topic in dict.fromkeys(r.topic for r in sorted(group, key=lambda r: (r.topic == "", r.topic))):
+                if topic:
+                    lines.append(f"### {topic}")
+                lines.extend(f"- {r.name}({r.path})— {r.description}{'  [置顶]' if r.pinned else ''}"
+                             for r in group if r.topic == topic)
         text, total = [], 0
         for i, line in enumerate(lines):
             if i >= INDEX_MAX_LINES or total + len(line) > INDEX_MAX_CHARS:
@@ -110,7 +114,7 @@ class ProjectMemoryStore:
     # ---------- 写 ----------
 
     def write(self, slug: str, *, name: str, description: str, mtype: str, body: str,
-              pinned: bool = False) -> MemoryRecord:
+              pinned: bool = False, topic: str = "") -> MemoryRecord:
         slug = _slug(slug)
         if mtype not in MEMORY_TYPES:
             raise ValueError(f"type 只能是 {list(MEMORY_TYPES)}")
@@ -118,6 +122,8 @@ class ProjectMemoryStore:
             raise ValueError("name 与 description 不能为空")
         front: dict[str, Any] = {"name": name.strip(), "description": " ".join(description.split()),
                                  "type": mtype, "updated": date.today().isoformat()}
+        if topic.strip():
+            front["topic"] = topic.strip()
         if pinned:
             front["pinned"] = True
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -125,6 +131,14 @@ class ProjectMemoryStore:
         path.write_text("---\n" + yaml.safe_dump(front, allow_unicode=True, sort_keys=False)
                         + "---\n\n" + body.strip() + "\n", encoding="utf-8")
         return _parse(path, self._root)
+
+    def append(self, slug: str, text: str) -> MemoryRecord:
+        """在已有记忆正文后追加一段(不改原有内容与 frontmatter,只更新 updated)。"""
+        old = self.get(slug)
+        if old is None:
+            raise ValueError(f"记忆 {slug} 不存在")
+        return self.write(old.slug, name=old.name, description=old.description, mtype=old.type,
+                          body=f"{old.body}\n\n{text.strip()}", pinned=old.pinned, topic=old.topic)
 
     def delete(self, slug: str) -> bool:
         path = self.dir / f"{_slug(slug)}.md"
@@ -151,7 +165,7 @@ def _parse(path: Path, root: Path) -> MemoryRecord:
     return MemoryRecord(
         slug=path.stem, path=str(path.relative_to(root)), name=name, description=desc,
         type=mtype if mtype in MEMORY_TYPES else "project", pinned=bool(front.get("pinned")),
-        body=body.strip(), mtime=path.stat().st_mtime)
+        body=body.strip(), mtime=path.stat().st_mtime, topic=str(front.get("topic") or "").strip())
 
 
 def _first_sentence(body: str) -> str:

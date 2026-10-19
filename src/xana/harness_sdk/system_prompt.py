@@ -95,22 +95,32 @@ COMMUNICATING = """\
 
 STATIC_TAIL = (USING_TOOLS, TONE, COMMUNICATING, OUTPUT, ANSWER_FORMAT)
 
-# 改写自 Claude Code auto memory 段(docs/design/memory-recall-design.md §3.5);只在 agent 有 memory 工具组时加入
+# 改写自 Claude Code auto memory 段(docs/design/memory-recall-design.md §3.5、memory-dream-design.md §3.1):
+# MEMORY 给所有有 memory 工具组的 agent;MEMORY_SAVING(什么时候主动存)只给用户在线的聊天会话,
+# 无人值守运行由后台提取兜底。
 MEMORY = """\
 # 记忆
 
-本项目有跨会话保留的记忆,放在项目目录的 memory/ 下,一条记忆一个文件。
+本项目有跨会话保留的记忆,放在项目目录的 memory/ 下,一条记忆一个文件,按类型和主题分组。
 
 - 你会自动看到:会话开始时的记忆索引(每条一行)和置顶记忆的全文;每条用户消息后,可能附上与之相关的记忆全文。它们都以 <system-reminder> 出现。需要索引里某条的全文时用 Read 查看;索引里没有的,可以用 memory_search 检索项目文档。
-- 用 memory_write 存记忆,分四类:
-  - user:用户是谁、偏好、专长,例如关注的方向、习惯的表达方式。
-  - feedback:用户纠正了你的做法,或认可了一个不显而易见的做法。写清规则本身、原因和适用场景。
-  - project:进行中的工作、目标、约束和决定。相对日期改写成绝对日期。
-  - reference:外部资源在哪,例如文档、看板、数据目录。
-- 不要存能从文件或工具直接查到的东西,也不要存只对本次对话有用的东西。存之前先看索引:已有的就更新,不要重复建;发现记忆错了或过时了,就更新或删除。
-- 用户要你记住什么就存,要你忘掉什么就删。
 - 记忆是写下时的记录,可能已经过时。根据记忆回答或行动前,涉及具体文件、数字、状态的先核实。
+- 每轮结束后,系统会在后台把漏记的内容补进记忆。
 - 用户问你记得什么、记忆怎么运作时,按上面如实回答。"""
+
+MEMORY_SAVING = """\
+## 什么时候存记忆
+
+用 memory_write 主动存,不用等用户说"记住"。四类:
+
+- user:了解到用户是谁、偏好、专长、关注的方向时。
+- feedback:用户纠正你的做法时("不是这样""别这么做""你错在……"),或认可了一个不显而易见的做法时("对,就这样",或接受了一个不寻常的选择没有反对)。纠正容易注意到,认可更安静,要留意。正文先写规则本身,再写**原因**(用户给的理由,常常是一次教训)和**怎么用**(什么场合适用)。
+- project:知道了进行中的工作、目标、约束、决定时。相对日期改写成绝对日期。
+- reference:知道了外部资源在哪、做什么用时(数据目录、文档、看板)。
+
+- 描述要写清这条记忆**在什么情况下有用**,召回靠它;同一类的记忆用同一个主题(topic),如 估值、产业链、选股。
+- 不要存能从文件或工具直接查到的东西、实时数据、只对本次对话有用的东西。存之前先看索引:已有的就更新,不要重复建;发现记忆错了或过时了,就更新或删除。
+- 用户要你记住什么就存,要你忘掉什么就删。"""
 
 
 def env_section(*, cwd: str | None, model: str, model_display: str | None = None) -> str:
@@ -142,19 +152,22 @@ def build_system_prompt(
     extension_sections: str = "",
     profile_tail: str = "",
     memory: bool = False,
+    memory_saving: bool = False,
 ) -> str:
     """system 拼装(PROMPT_ASSEMBLY_ORDER.md)。
 
     template=None → xana 默认提示词;否则 template 即系统提示词(docs/design/agent-composition-design.md §3.4):
     ``${base_prompt}`` 嵌入默认提示词,``${env}`` 环境段,``${extensions}`` 扩展片段,未知占位符原样保留;
     不含占位符 = 完全替换。PromptProfile 尾段(agent 显式配置的会话开关)总在最末。
-    memory=True(agent 有 memory 工具组)时默认提示词在环境段后加入"记忆"一段。
+    memory=True(agent 有 memory 工具组)时默认提示词在环境段后加入"记忆"一段;memory_saving=True
+    (用户在线的聊天会话)时再加"什么时候存记忆"。
 
     system 会话内固定:只含静态段、身份、环境与会话内稳定的扩展片段。
     每轮变化的上下文(记忆召回、技能列表、按需工具、todo)以 ContextNote
     追加进历史,见 ``harness_sdk.context_notes``。"""
     base = "\n\n".join(p for p in (
-        INTRO, SYSTEM, DOING_TASKS, ACTIONS, env, MEMORY if memory else "", tools_section(),
+        INTRO, SYSTEM, DOING_TASKS, ACTIONS, env, MEMORY if memory else "",
+        MEMORY_SAVING if memory and memory_saving else "", tools_section(),
         extension_sections, *STATIC_TAIL) if p)
     if template is None:
         body = base

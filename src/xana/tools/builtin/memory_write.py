@@ -26,6 +26,7 @@ _DESCRIPTION = (
     "- delete:删除错误或过时的记忆。\n"
     "type:user(用户是谁、偏好)/ feedback(用户对做法的纠正或认可,写清原因与适用场景)/ "
     "project(进行中的工作、目标、约束,日期写绝对日期)/ reference(外部资源在哪)。"
+    "topic 是可选主题(如 估值、产业链、选股),同类记忆用同一个主题,索引按它分组。"
     "pinned=true 表示每个会话都注入全文,只给短而关键、必须一直遵守的规则。"
 )
 
@@ -42,6 +43,7 @@ _SPEC = ToolSpec(
             "name": {"type": "string"},
             "description": {"type": "string"},
             "type": {"type": "string", "enum": list(MEMORY_TYPES)},
+            "topic": {"type": "string", "description": "可选主题,如 估值 / 产业链 / 选股;同类记忆用同一个主题"},
             "content": {"type": "string", "description": "正文(Markdown)"},
             "pinned": {"type": "boolean"},
         },
@@ -95,7 +97,8 @@ class MemoryWriteTool(Tool):
         if near is not None and near[1] >= DUPLICATE_THRESHOLD:
             return _fail(f"已有相近的记忆 {near[0].path}(相似度 {near[1]:.2f}),改用 update 更新它")
         record = self._store.write(slug, name=name, description=desc, mtype=str(data["type"]),
-                                   body=str(data["content"]), pinned=bool(data.get("pinned")))
+                                   body=str(data["content"]), pinned=bool(data.get("pinned")),
+                                   topic=str(data.get("topic") or ""))
         await self._reindex(record.path)
         return _ok(f"[memory_write] 已新建记忆 {record.path}({record.type}{',置顶' if record.pinned else ''})")
 
@@ -106,7 +109,8 @@ class MemoryWriteTool(Tool):
         record = self._store.write(
             old.slug, name=str(data.get("name") or old.name), description=str(data.get("description") or old.description),
             mtype=str(data.get("type") or old.type), body=str(data["content"]) if data.get("content") else old.body,
-            pinned=bool(data["pinned"]) if "pinned" in data else old.pinned)
+            pinned=bool(data["pinned"]) if "pinned" in data else old.pinned,
+            topic=str(data["topic"]) if "topic" in data else old.topic)
         await self._reindex(record.path)
         return _ok(f"[memory_write] 已更新记忆 {record.path}")
 
