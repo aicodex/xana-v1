@@ -13,23 +13,5 @@
   },
   "mcp": {
     "servers": []
-  },
-  "policy": {
-    "default_mode": "workspace_gated",
-    "egress_tools": [
-      "web_browser"
-    ],
-    "secret_markers": [
-      "api_key",
-      "api-key",
-      "secret",
-      "password",
-      "passwd",
-      "token",
-      "private key",
-      "begin rsa",
-      "begin openssh"
-    ],
-    "exfil_payload_bytes": 50000
   }
 }

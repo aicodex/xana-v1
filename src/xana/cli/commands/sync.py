@@ -106,6 +106,7 @@ def run(args: argparse.Namespace, *, out: TextIO) -> int:
             return 1
         _migrate_memories(home, out)
         _migrate_session_keys(out)
+        _drop_retired_config(home, out)
     else:
         print("[xana sync] serve 仍在运行(--no-restart),跳过项目初始化 / 迁移", file=out)
     for pid in stopped:
@@ -125,6 +126,37 @@ def _migrate_session_keys(out: TextIO) -> None:
         if renamed != sessions:
             update_project_config(path, sessions=renamed)
             print(f"[xana sync] 项目 {info.id} 的 Telegram 会话映射已改用 telegram 键", file=out)
+
+
+def _drop_retired_config(home: Path, out: TextIO) -> None:
+    """删掉已不再读取的旧配置,原件先备份到 ~/.xana-config-backup/(2026-10-19)。幂等。
+    - 用户级 system.json 的 policy 段:PolicyConfig 已删,留着会让配置校验失败;
+    - 各项目 channels/{feishu,telegram}.bindings.json:会话映射只由 SessionResolver 维护。"""
+    import json
+
+    from xana.config.loader import user_config_dir
+    from xana.config.paths import project_home
+    from xana.runtime.projects import all_projects
+    backup = home.parent / f"{home.name}-config-backup"
+    system = user_config_dir() / "system.json"
+    raw = json.loads(system.read_text(encoding="utf-8")) if system.exists() else {}
+    if "policy" in raw:
+        backup.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(system, backup / "system.json")                     # 含密钥,copy2 保留 600 权限
+        raw.pop("policy")
+        tmp = system.parent / (system.name + ".tmp")
+        tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.chmod(system.stat().st_mode & 0o777)
+        os.replace(tmp, system)
+        print(f"[xana sync] system.json 删去了不再使用的 policy 段(原文件备份在 {backup})", file=out)
+    for info in all_projects():
+        for name in ("feishu.bindings.json", "telegram.bindings.json"):
+            path = project_home(info.id) / "channels" / name
+            if path.exists():
+                dest = backup / info.id
+                dest.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), dest / name)
+                print(f"[xana sync] 项目 {info.id} 的旧会话绑定 {name} 已移到 {dest}", file=out)
 
 
 def _migrate_memories(home: Path, out: TextIO) -> None:

@@ -9,11 +9,8 @@ from typing import Any, Literal
 
 from xana.component.contracts import ComponentSpec
 from xana.harness_sdk.contracts import HarnessEvent, PromptProfile, VerifyCheck
-from xana.policy.contracts import SandboxPolicySpec
 
 AgentEventKind = Literal["draft", "tool", "final", "control_result", "error", "cancelled"]
-MemoryScope = Literal["user", "project", "agent", "session"]
-IsolationMode = Literal["none", "worktree", "process", "remote"]
 
 
 @dataclass(frozen=True)
@@ -27,15 +24,8 @@ class AgentSpec:
     disallowed_tools: tuple[str, ...] = ()
     # 技能选择(docs/design/project-design.md §8):None = 全部可见;() = 没有技能;名单 = 只这些;含 "*" = 全部
     skills: tuple[str, ...] | None = None
-    hooks: tuple[str, ...] = ()
     model: str | None = None
     effort: str | int | None = None
-    permission_policy: str | None = None
-    sandbox_policy: SandboxPolicySpec | None = None
-    memory_scope: MemoryScope | None = None
-    isolation: IsolationMode = "none"
-    background: bool = False
-    parent_agent: str | None = None
     max_turns: int | None = None
     # None → xana 默认系统提示词;字符串 → 系统提示词模板(§3.4):${base_prompt} 嵌入默认提示词,
     # ${env} 环境段,${extensions} 扩展片段;不含占位符 = 完全替换

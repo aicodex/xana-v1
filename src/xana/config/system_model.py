@@ -122,30 +122,6 @@ class Mcp(BaseModel):
         return next((s for s in self.servers if s.name == name), None)
 
 
-_POLICY_MODES = ("default", "gated", "auto", "workspace_gated")
-
-
-class PolicyConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    default_mode: str = "default"
-    egress_tools: list[str] = ["web_browser"]
-    secret_markers: list[str] = [
-        "api_key", "api-key", "secret", "password", "passwd",
-        "token", "private key", "begin rsa", "begin openssh",
-    ]
-    exfil_payload_bytes: int = 50_000
-
-    @field_validator("default_mode")
-    @classmethod
-    def _known_mode(cls, v: str) -> str:
-        if v not in _POLICY_MODES:
-            raise ValueError(
-                f"unknown policy default_mode {v!r}; known: {list(_POLICY_MODES)}"
-            )
-        return v
-
-
 class DaemonConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -189,7 +165,6 @@ class SystemConfig(BaseModel):
     tools: ToolsConfig = ToolsConfig()
     agent_defaults: AgentDefaults = AgentDefaults()
     mcp: Mcp = Mcp()
-    policy: PolicyConfig = PolicyConfig()
     daemon: DaemonConfig = DaemonConfig()
     sessions: dict[str, str] = {}
 
