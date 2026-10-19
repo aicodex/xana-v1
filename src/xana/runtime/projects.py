@@ -112,12 +112,22 @@ def set_feishu_bot(pid: str, creds: dict[str, Any]) -> None:
             "feishu", creds["open_id"], note="扫码创建机器人的主人")
 
 
+def serve_pidfile(pid: str) -> Path:
+    """serve 拿到单实例锁后写入自己的 pid,退出时删除(cli/serve.py)。"""
+    return project_home(pid) / "run" / "serve.pid"
+
+
 def running_pid(pid: str) -> int | None:
+    return live_serve_pid(serve_pidfile(pid))
+
+
+def live_serve_pid(pidfile: Path) -> int | None:
+    """pidfile 记录的进程仍存活且是 serve 时返回其 pid(含启动中的 serve);否则 None。"""
     try:
-        n = int((project_home(pid) / "run" / "serve.pid").read_text(encoding="utf-8").strip())
+        n = int(pidfile.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None
-    return n if _alive(n) else None
+    return n if _alive(n) and _looks_like_serve(n) else None
 
 
 def _alive(n: int) -> bool:
@@ -132,15 +142,22 @@ def _alive(n: int) -> bool:
     try:
         os.kill(n, 0)
         return True
+    except PermissionError:
+        return True                                # 存在,只是不属于当前用户
     except OSError:
         return False
 
 
-def start_project(pid: str) -> int:
-    """后台启动该项目的 serve,返回进程 pid;已在运行抛 RuntimeError。"""
-    project_root(pid)
-    if running_pid(pid):
-        raise RuntimeError(f"项目 {pid} 已在运行(pid {running_pid(pid)})")
+def _looks_like_serve(n: int) -> bool:
+    """崩溃后 pid 可能被别的进程复用:按命令行确认是 serve(仅 Linux /proc,读不到时不拦)。"""
+    try:
+        return b"serve" in Path(f"/proc/{n}/cmdline").read_bytes()
+    except OSError:
+        return True
+
+
+def spawn_serve(pid: str) -> int:
+    """后台拉起该项目的 serve(输出追加到 logs/serve.log),返回进程 pid。不检查是否已在运行。"""
     log = project_home(pid) / "logs" / "serve.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     xana_bin = xana_home() / "bin" / "xana"
@@ -150,20 +167,43 @@ def start_project(pid: str) -> int:
     return proc.pid
 
 
+def start_project(pid: str) -> int:
+    """后台启动该项目的 serve,返回进程 pid;已在运行抛 RuntimeError。"""
+    project_root(pid)
+    if running_pid(pid):
+        raise RuntimeError(f"项目 {pid} 已在运行(pid {running_pid(pid)})")
+    return spawn_serve(pid)
+
+
 def stop_project(pid: str, *, timeout: float = 10.0) -> bool:
     """停止该项目的 serve;不在运行返回 False。default 项目不能从自己内部停止(调用方负责拦截)。"""
     n = running_pid(pid)
     if n is None:
         return False
-    os.kill(n, signal.SIGTERM)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not _alive(n):
-            return True
-        time.sleep(0.2)
-    os.kill(n, signal.SIGKILL)
-    _alive(n)                                      # 回收
+    terminate_serve(n, serve_pidfile(pid), timeout=timeout)
     return True
+
+
+def terminate_serve(n: int, pidfile: Path, *, timeout: float = 10.0) -> None:
+    """SIGTERM(serve 优雅收尾),超时 SIGKILL;之后删掉仍记录着它的 pidfile(被 KILL 的 serve 来不及自己删)。"""
+    try:
+        os.kill(n, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    deadline = time.monotonic() + timeout
+    while _alive(n) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if _alive(n):
+        try:
+            os.kill(n, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        _alive(n)                                  # 回收
+    try:
+        if pidfile.read_text(encoding="utf-8").strip() == str(n):
+            pidfile.unlink()
+    except OSError:
+        pass
 
 
 def free_port(start: int) -> int:
@@ -188,5 +228,6 @@ def _port_free(port: int) -> bool:
             return False
 
 
-__all__ = ["DEFAULT_PROJECT", "ProjectInfo", "all_projects", "create_project", "project_info", "register",
-           "running_pid", "set_agent_defaults", "set_feishu_bot", "start_project", "stop_project"]
+__all__ = ["DEFAULT_PROJECT", "ProjectInfo", "all_projects", "create_project", "live_serve_pid", "project_info",
+           "register", "running_pid", "serve_pidfile", "set_agent_defaults", "set_feishu_bot", "spawn_serve",
+           "start_project", "stop_project", "terminate_serve"]

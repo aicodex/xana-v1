@@ -35,6 +35,7 @@ from xana.config.loader import DefaultConfigProvider
 from xana.config.system_model import SystemConfig
 from xana.runtime.boot import boot
 from xana.runtime.daemon_http import build_daemon_app, run_tcp, run_unix_socket
+from xana.runtime.projects import serve_pidfile
 
 
 def build_adapters(
@@ -143,16 +144,13 @@ def _acquire_instance_lock(home: Path):
     return fd
 
 
-def _write_pidfile(home: Path) -> Path:
-    """Record this process pid in <home>/run/serve.pid so `xana sync` can restart us."""
-    pidfile = home / "run" / "serve.pid"
+def _write_pidfile(pidfile: Path) -> None:
+    """记下本进程 pid(runtime.projects.serve_pidfile),`xana sync` / `xana project` 据此找到并停止 serve。"""
     pidfile.parent.mkdir(parents=True, exist_ok=True)
     pidfile.write_text(str(os.getpid()) + "\n", encoding="utf-8")
-    return pidfile
 
 
-def _remove_pidfile(home: Path) -> None:
-    pidfile = home / "run" / "serve.pid"
+def _remove_pidfile(pidfile: Path) -> None:
     try:
         if pidfile.read_text(encoding="utf-8").strip() == str(os.getpid()):
             pidfile.unlink()
@@ -202,11 +200,12 @@ async def _run(argv: argparse.Namespace) -> int:
     lock = _acquire_instance_lock(home)
     # 拿到单实例锁即写 pidfile(启动中也能被 xana sync 找到并重启);拿不到锁的进程根本走不到这里,
     # 不会覆盖或删掉存活实例的 pidfile。
-    _write_pidfile(home)
+    pidfile = serve_pidfile(project_id())
+    _write_pidfile(pidfile)
     try:
         return await _run_inner(argv)
     finally:
-        _remove_pidfile(home)  # 只删记录着本进程 pid 的 pidfile
+        _remove_pidfile(pidfile)  # 只删记录着本进程 pid 的 pidfile
         lock.close()
 
 

@@ -3,7 +3,7 @@
 Replaces the previous in-process `boot()`-per-call architecture. xanac now:
   1. Resolves the daemon endpoint from ~/.xana/config/system.json (unix
      socket preferred, falls back to TCP).
-  2. If not listening: subprocess.Popen("xana serve") and poll healthz.
+  2. If not listening: start the project serve (runtime.projects.spawn_serve) and poll healthz.
   3. Oneshot path: POST /submit + consume SSE events, accumulate into a
      UnifiedCardState, print once on terminal event (final/error/cancelled).
   4. Interactive path: delegate to xana.cli.xanac_textual.run_textual_with_daemon
@@ -16,20 +16,20 @@ import asyncio
 import os
 import secrets
 import socket
-import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import TextIO
 
 from xana.agent_adapter.channels.daemon_bridge import agent_event_from_wire
-from xana.config.paths import project_home, project_id, xana_home
+from xana.config.paths import project_home, project_id
 from xana.config.project_config import daemon_socket, load_system_config
 from xana.agent_adapter.channels.unified_card import UnifiedCardState
 from xana.agent_adapter.channels.unified_card_events import apply_event
 from xana.agent_adapter.channels.unified_card_cli import render as render_card
 from xana.cli._daemon_client import DaemonClient
 from xana.config.system_model import SystemConfig
+from xana.runtime.projects import running_pid, spawn_serve
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -90,8 +90,9 @@ def _ensure_serve_running() -> None:
     if _is_listening(unix, host, int(port_s)):
         return
     log = project_home() / "logs" / "serve.log"
-    if not _serve_starting():   # 已有 serve 在启动中(boot 可能要一两分钟)就等它,不再另起一个
-        _spawn_serve(log)
+    # pidfile 指向存活的 serve = 已在运行或启动中(boot 可能要一两分钟,serve 拿到单实例锁后才写 pidfile):等它,不再另起一个
+    if running_pid(project_id()) is None:
+        spawn_serve(project_id())
     deadline = time.monotonic() + _SERVE_START_TIMEOUT_S
     while time.monotonic() < deadline:
         if _is_listening(unix, host, int(port_s)):
@@ -107,30 +108,6 @@ def _ensure_serve_running() -> None:
 
 
 _SERVE_START_TIMEOUT_S = 120.0
-
-
-def _serve_starting() -> bool:
-    """pidfile 指向一个存活进程 = 有 serve 已在运行或启动中(serve 拿到单实例锁后才写 pidfile)。"""
-    try:
-        pid = int((project_home() / "run" / "serve.pid").read_text(encoding="utf-8").strip())
-        os.kill(pid, 0)
-        return True
-    except (OSError, ValueError):
-        return False
-
-
-def _spawn_serve(log: Path) -> None:
-    log.parent.mkdir(parents=True, exist_ok=True)
-    f = open(log, "a")
-    xana_bin = xana_home() / "bin" / "xana"
-    if not xana_bin.exists():
-        xana_bin_str = "xana"
-    else:
-        xana_bin_str = str(xana_bin)
-    subprocess.Popen(
-        [xana_bin_str, "serve", "--project", project_id()],
-        stdout=f, stderr=f, start_new_session=True,
-    )
 
 
 def _progress_from_wire(data: dict):
