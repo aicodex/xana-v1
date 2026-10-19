@@ -46,6 +46,8 @@ _DETACHED_RENDER_KINDS = frozenset({
     "compact_started", "compact_progress", "compact_finalized",
 })
 _FINALIZE_HARNESS_KINDS = frozenset({"final", "error", "cancelled"})
+# 切回前台(/attach)的事件:detached 卡收到后恢复为前台卡
+_REATTACH_KINDS = frozenset({"attached", "foreground_changed"})
 
 
 def _event_kind(event: Any) -> str:
@@ -127,6 +129,7 @@ class Card:
             not was_detached
             or kind in _THAW_KINDS
             or kind in _DETACHED_RENDER_KINDS
+            or kind in _REATTACH_KINDS          # 切回前台:立即重绘(去掉"后台"脚标),之后照常刷新
         )
         if not should_render:
             return None

@@ -194,8 +194,10 @@ class DefaultAgentGateway(AgentGateway):
             # 跳过预建(预建发生在路由前,故按命令名提前 gate)。
             # /compact 也跳过预建 — 当有 in-flight 时它要挂在 PH 卡前,
             # 自建命令卡会导致 spec §3 违反(同时有 cmd 卡 + PH 卡)。
-            text_head = inbound.text.strip().split(" ", 1)[0]
-            silent_cmd = text_head in ("/compact_cancel", "/compact")
+            # /attach <run_id>(菜单"切回"按钮)直接切回原卡片继续刷新,也不预建命令卡。
+            text_head, _, text_args = inbound.text.strip().partition(" ")
+            silent_cmd = text_head in ("/compact_cancel", "/compact") or (
+                text_head == "/attach" and bool(text_args.strip()))
             if is_command and not silent_cmd:
                 self._cmd_seq += 1
                 run_id = f"cmd-{inbound.session_id}-{self._cmd_seq}"

@@ -609,8 +609,8 @@ class DefaultCommandRouter(CommandRouter):
         )
 
     async def _cmd_attach(self, inbound: InboundMessage, args: str) -> CommandResult:
-        """列出当前 session 所有 running Placeholder,渲染为菜单(payload.attach_choices)。
-        点击 attach_run 按钮 → adapter 调用 gateway.attach(sid, run_id),自动 detach 当前 fg。"""
+        """/attach(无参):列出当前 session 所有 running Placeholder,渲染为菜单(payload.attach_choices);
+        菜单按钮发 /attach <run_id> → gateway.attach(sid, run_id) 切回前台(自动 detach 当前 fg)。"""
         from xana.memory.contracts import Placeholder
         if self.active_context_store is None:
             return CommandResult(ok=False, message="active_context_store 未配置")
@@ -619,6 +619,17 @@ class DefaultCommandRouter(CommandRouter):
         for m in snap:
             if isinstance(m, Placeholder) and m.status == "running":
                 choices.append({"run_id": m.run_id, "label": m.label})
+        target = args.strip()
+        if target:
+            # 菜单按钮"切回 X"发的是 /attach <run_id>:直接切回前台,原卡片继续刷新,不再发菜单
+            # (2026-10-19:以前忽略参数,点了只会再弹一次菜单)
+            if self.gateway is None:
+                return CommandResult(ok=False, message="gateway 未注入,无法切回")
+            if target not in {c["run_id"] for c in choices}:
+                return CommandResult(ok=True, message="这个后台运行已经结束,不用切回了",
+                                     payload={"triggers_turn": False})
+            await self.gateway.attach(inbound.session_id, target)
+            return CommandResult(ok=True, message="", payload={"triggers_turn": False, "silent": True})
         if not choices:
             return CommandResult(
                 ok=True, message="没有后台运行可切换",
