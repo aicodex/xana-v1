@@ -42,7 +42,8 @@ _SPEC = ToolSpec(
         description=(
             "深度研究:把研究问题拆成若干子课题,由多个子研究员并行联网检索、阅读原文核实,再汇总成带出处的报告"
             "(同步返回,需要几分钟到十几分钟)。适合需要大量检索和交叉核实的问题,如产业链梳理、多家公司对比。\n"
-            "effort:low 3 个子研究员,medium 4 个(默认),high 6 个。question 写清研究目标、范围和需要的证据。"),
+            f"effort:low {SUBAGENTS['low']} 个子研究员,medium {SUBAGENTS['medium']} 个(默认),"
+            f"high {SUBAGENTS['high']} 个。question 写清研究目标、范围和需要的证据。"),
         source=ComponentSource(source_type="builtin", scope="system")),
     input_schema={
         "type": "object",

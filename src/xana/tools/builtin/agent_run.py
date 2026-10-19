@@ -30,29 +30,33 @@ _DESCRIPTION = (
     "写任务说明(prompt)要像给刚走进房间的同事交代工作:子 agent 看不到当前对话,说明目标、已知信息、"
     "需要交付什么、范围边界。不要把「理解问题」也委派出去——先自己弄清楚要什么,再写具体的任务。\n\n"
     "- 子 agent 的回答用户看不到,需要的内容要由你转述给用户。\n"
-    "- 互不依赖的多个子任务,在同一条消息里发出多个 agent_run 调用,它们会并行执行。\n"
+    "- 互不依赖的多个子任务,在同一条消息里发出多个 agent_run 调用,它们会并行执行;同时最多运行 {max_concurrent} 个"
+    "子 agent,超出的排队等前面的完成后再开始,所以子任务多时按重要性排好先后,一次发出不超过 {max_concurrent} 个最省时间。\n"
     "- 需要让同一个子 agent 接着做时,用 resume 传入它上次返回的 agent_id,它会保留之前的上下文。\n"
     "- 子 agent 的回答是它对自己工作的描述,关键结论需要时自行核实;不要编造尚未返回的结果。"
 )
 
-_SPEC = ToolSpec(
-    toolset="agents",
-    component=ComponentSpec(
-        kind="tool", name=AGENT_RUN_TOOL, qualified_name="builtin.agent_run", description=_DESCRIPTION,
-        source=ComponentSource(source_type="builtin", scope="system")),
-    input_schema={
-        "type": "object",
-        "properties": {
-            "description": {"type": "string", "description": "3–8 个字的任务标题,用于显示进度"},
-            "prompt": {"type": "string", "description": "给子 agent 的完整任务说明"},
-            "subagent_type": {"type": "string", "description": "要委派的 agent 名;默认 chat。与 resume 二选一"},
-            "resume": {"type": "string", "description": "要继续的子 agent 的 agent_id(上次 agent_run 返回);与 subagent_type 二选一"},
+def _spec(max_concurrent: int) -> ToolSpec:
+    """描述里的并发上限取自实际参数(工具描述中的限制都从行为参数生成,不手写数字)。"""
+    return ToolSpec(
+        toolset="agents",
+        component=ComponentSpec(
+            kind="tool", name=AGENT_RUN_TOOL, qualified_name="builtin.agent_run",
+            description=_DESCRIPTION.format(max_concurrent=max_concurrent),
+            source=ComponentSource(source_type="builtin", scope="system")),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "description": "3–8 个字的任务标题,用于显示进度"},
+                "prompt": {"type": "string", "description": "给子 agent 的完整任务说明"},
+                "subagent_type": {"type": "string", "description": "要委派的 agent 名;默认 chat。与 resume 二选一"},
+                "resume": {"type": "string", "description": "要继续的子 agent 的 agent_id(上次 agent_run 返回);与 subagent_type 二选一"},
+            },
+            "required": ["description", "prompt"],
         },
-        "required": ["description", "prompt"],
-    },
-    open_world=True, concurrency="parallel",
-    display=ToolDisplay(category="delegate", verb="委派", summary_args=("description",)),
-)
+        open_world=True, concurrency="parallel",
+        display=ToolDisplay(category="delegate", verb="委派", summary_args=("description",)),
+    )
 
 
 class AgentRunTool(Tool):
@@ -67,9 +71,10 @@ class AgentRunTool(Tool):
         self._max_concurrent = max_concurrent
         # 同时运行的子 agent 上限:超出的排队等空位(不拒绝,模型一次并行派出多个时也都能跑完)
         self._slots = asyncio.Semaphore(max_concurrent)
+        self._spec = _spec(max_concurrent)
 
     def spec(self) -> ToolSpec:
-        return _SPEC
+        return self._spec
 
     async def validate(self, invocation: ToolInvocation) -> None:
         if not str(invocation.input.get("prompt") or "").strip():

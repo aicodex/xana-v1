@@ -22,6 +22,9 @@ from xana.tools.interfaces import Tool
 
 _BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 
+DEFAULT_RESULTS = 10
+MAX_RESULTS = 20
+
 _SPEC = ToolSpec(
     toolset="web",
     component=ComponentSpec(
@@ -35,7 +38,7 @@ _SPEC = ToolSpec(
         "properties": {
             "query": {"type": "string", "description": "搜索查询词"},
             "max_results": {"type": "number",
-                            "description": "最多返回条数(默认 10,上限 20)"},
+                            "description": f"最多返回条数(默认 {DEFAULT_RESULTS},上限 {MAX_RESULTS})"},
         },
         "required": ["query"],
     },
@@ -61,7 +64,7 @@ class WebSearchTool(Tool):
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         query = str(invocation.input.get("query", "")).strip()
-        max_results = min(int(invocation.input.get("max_results", 10) or 10), 20)
+        max_results = min(int(invocation.input.get("max_results", DEFAULT_RESULTS) or DEFAULT_RESULTS), MAX_RESULTS)
         cfg = await self.session_config_store.get(context.session_id)
         provider = (cfg.search_provider or "native").lower()
         if provider == "native":

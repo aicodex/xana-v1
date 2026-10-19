@@ -8,14 +8,14 @@ from __future__ import annotations
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.harness_sdk.contracts import NOTIFY_USER_TOOL
 from xana.policy.contracts import PermissionResult
-from xana.runtime.scheduler import ScheduledTaskDispatcher
+from xana.runtime.scheduler import MAX_INFO_NOTICES, ScheduledTaskDispatcher
 from xana.tools.contracts import ToolContext, ToolDisplay, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
 _DESCRIPTION = (
     "定时任务运行时通知用户(没人在实时看)。用户不需要的通知会越积越烦,宁可不发:日常进度、按计划完成的"
     "小步骤都不要通知;只在发现用户需要知道的实质变化,或必须由用户拍板时使用。\n"
-    "- kind=\"info\":告知一件事,立即送到用户的聊天,任务继续。不要用它提问或要决定。每次任务最多 3 条。\n"
+    f"- kind=\"info\":告知一件事,立即送到用户的聊天,任务继续。不要用它提问或要决定。每次任务最多 {MAX_INFO_NOTICES} 条。\n"
     "- kind=\"decision\":必须由用户决定才能继续时使用,写清问题,options 列出可选项。调用后结束本次执行:"
     "最后一条消息写清做到了哪里、在等什么决定;用户答复后会在本会话里接着做。"
 )

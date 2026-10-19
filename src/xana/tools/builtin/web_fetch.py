@@ -29,6 +29,10 @@ _STRIP_TAGS_RE = re.compile(
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
+DEFAULT_TIMEOUT_S = 10
+DEFAULT_MAX_CHARS = 20000
+MAX_REDIRECTS = 10
+
 _SPEC = ToolSpec(
     toolset="web",
     component=ComponentSpec(
@@ -36,7 +40,7 @@ _SPEC = ToolSpec(
         description=(
             "抓取指定 URL 的内容并抽取可读正文。返回标题、状态码与正文文本"
             "(超长截断,保留首尾)。URL 必须是完整合法的 http/https 地址;"
-            "重定向自动跟随(至多 10 次)。本工具只读,不修改任何文件。"),
+            f"重定向自动跟随(至多 {MAX_REDIRECTS} 次)。本工具只读,不修改任何文件。"),
         source=ComponentSource(source_type="builtin", scope="system")),
     input_schema={
         "type": "object",
@@ -44,9 +48,9 @@ _SPEC = ToolSpec(
             "url": {"type": "string",
                     "description": "要抓取的完整 http/https URL"},
             "timeout": {"type": "number",
-                        "description": "请求超时秒数(默认 10)"},
+                        "description": f"请求超时秒数(默认 {DEFAULT_TIMEOUT_S})"},
             "max_chars": {"type": "number",
-                          "description": "正文最大字符数,超出则头尾各半截断(默认 20000)"},
+                          "description": f"正文最大字符数,超出则头尾各半截断(默认 {DEFAULT_MAX_CHARS})"},
             "extract": {"type": "string",
                         "enum": ["readable", "html", "both"],
                         "description": "抽取模式:readable=可读正文(默认),"
@@ -104,8 +108,8 @@ class WebFetchTool(Tool):
             return ToolResult(ok=False, content=None, failure_kind="validation",
                               error=f"url 必须是 http/https 地址: {url!r}",
                               rendered=f"[web_fetch 失败: url 必须是 http/https 地址: {url!r}]")
-        timeout = float(invocation.input.get("timeout", 10) or 10)
-        max_chars = max(2, int(invocation.input.get("max_chars", 20000) or 20000))
+        timeout = float(invocation.input.get("timeout", DEFAULT_TIMEOUT_S) or DEFAULT_TIMEOUT_S)
+        max_chars = max(2, int(invocation.input.get("max_chars", DEFAULT_MAX_CHARS) or DEFAULT_MAX_CHARS))
         extract = str(invocation.input.get("extract", "readable") or "readable").lower()
         if extract not in {"readable", "html", "both"}:
             return ToolResult(ok=False, content=None, failure_kind="validation",
@@ -157,7 +161,7 @@ class WebFetchTool(Tool):
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
         }
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True,
-                                     max_redirects=10, headers=headers) as client:
+                                     max_redirects=MAX_REDIRECTS, headers=headers) as client:
             r = await client.get(url)
         try:
             body = r.text

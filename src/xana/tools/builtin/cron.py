@@ -23,6 +23,8 @@ from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolR
 from xana.tools.interfaces import Tool
 
 
+HISTORY_DEFAULT = 20
+
 _CREATE_SPEC = ToolSpec(
     toolset="schedule",
     component=ComponentSpec(
@@ -67,7 +69,7 @@ _LIST_SPEC = ToolSpec(
         source=ComponentSource(source_type="builtin", scope="system")),
     input_schema={"type": "object", "properties": {
         "history": {"type": "boolean", "description": "true = 查看执行历史;默认 false = 等待执行的任务"},
-        "limit": {"type": "number", "description": "history 时最多列几条(默认 20)"},
+        "limit": {"type": "number", "description": f"history 时最多列几条(默认 {HISTORY_DEFAULT})"},
     }, "required": []},
     read_only=True,
     defer=True,
@@ -142,7 +144,7 @@ class CronListTool(_CronToolBase):
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         if invocation.input.get("history"):
-            runs = await self.scheduler.history(int(invocation.input.get("limit") or 20))
+            runs = await self.scheduler.history(int(invocation.input.get("limit") or HISTORY_DEFAULT))
             rendered = "\n".join(_render_run(r) for r in runs) or "(还没有执行历史)"
             return ToolResult(ok=True, content={"runs": list(runs)}, rendered=rendered)
         last: dict[str, dict] = {}

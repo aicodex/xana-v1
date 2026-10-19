@@ -37,7 +37,7 @@ _DESCRIPTION = (
     "- configure:修改 name 项目的 agent_defaults;项目在运行时需要 stop 再 start 才生效。\n"
     "- bind_feishu:为 name 项目创建并接入一个新的飞书机器人,返回授权链接。把链接发给用户;"
     "用户在飞书里点开确认后,项目会自动启动(已在运行的会重启以连接新机器人)。\n"
-    "- feishu_status:等待并返回绑定结果(最多约 2 分钟)。\n"
+    f"- feishu_status:等待并返回绑定结果(最多约 {int(DEFAULT_WAIT_S // 60)} 分钟)。\n"
     "- start / stop:启动 / 停止 name 项目的 serve。default 项目不能在这里停止。"
 )
 
