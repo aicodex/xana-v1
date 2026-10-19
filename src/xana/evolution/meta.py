@@ -108,7 +108,7 @@ class MetaEvolutionService:
         sections.append("\n## 上轮评估结果(可见集)")
         sections.append(self._render_last_eval())
         sections.append(
-            "\n按 episode 闭环提案:变更单(假设→diff→证据)→ 冻结 → 评估 → 判决;"
+            "\n按 episode 闭环:提出假设 → 冻结 → 评估 → 判决;"
             "不要直接改 Agent 文档(被 policy 拦截)。"
         )
         return "\n".join(sections)
@@ -159,56 +159,6 @@ class MetaEvolutionService:
         scores = {str(k): float(v) for k, v in (raw.get("scores") or {}).items()}
         eval_set = load_eval_set(self._home)
         return render_eval_summary(eval_set, scores, include_held_out=False)
-
-    # ------------------------------------------------------------------
-    # 提案:元 agent 改 Agent 文档的唯一路径(§6.3 机制兜底)
-    # ------------------------------------------------------------------
-
-    async def propose_doc_change(
-        self,
-        new_text: str,
-        *,
-        change_writer: Any = None,
-        hypothesis: str = "",
-        diff_summary: str = "",
-        evidence: str = "",
-        change_id: str | None = None,
-    ) -> Any:
-        """提案 → 冻结 → 评估 → 接受/回滚 的"提案"步。
-
-        元 agent(模型侧)不能裸 Write AGENT.md(policy 拦截,§6.3);
-        这里 harness 侧先落变更单(L2/changes 门禁,可选)再应用文档,
-        episode 闭合时按判决 keep/rollback。"""
-        result = None
-        if change_writer is not None and hypothesis:
-            from xana.policy.contracts import PermissionContext
-            from xana.tools.contracts import ToolContext, ToolInvocation
-
-            result = await change_writer.propose(
-                ToolInvocation(
-                    tool_name="memory_write",
-                    input={
-                        "path": change_id or f"{self._runner_state_episode()}-change",
-                        "hypothesis": hypothesis,
-                        "diff_summary": diff_summary,
-                        "evidence": evidence,
-                    },
-                    call_id="meta-propose", session_id=META_SESSION_ID,
-                ),
-                ToolContext(
-                    session_id=META_SESSION_ID, agent_name="meta",
-                    cwd=str(self._agents_root) if self._agents_root else None,
-                    permission=PermissionContext(mode="default", session_id=META_SESSION_ID),
-                ),
-            )
-        if self._agents_root is not None:
-            doc = self._agents_root / self._agent_name / "AGENT.md"
-            doc.parent.mkdir(parents=True, exist_ok=True)
-            doc.write_text(new_text, encoding="utf-8")
-        return result
-
-    def _runner_state_episode(self) -> str:
-        return self._runner.current_episode_id() or "ep"
 
     # ------------------------------------------------------------------
     # fire:cron 到点 → 产出 episode + 全新窗口注入

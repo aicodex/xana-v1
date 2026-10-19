@@ -1,9 +1,7 @@
 """进化迭代数据合约（计划 §6)——纯数据(dataclass/Literal/常量)。
 
 - LedgerEntry(§6.1):append-only 账本条目,verdict ∈ {kept, rolled_back, abandoned}
-- ChangeSpec(§6.1):变更单 schema 常量(假设→diff 摘要→证据指针→判决)
 - EvalCase/EvalSet(§6.2):评估集两账(visible 迭代用 / held-out 选择用)
-- ChangeBody(§6.1):变更单正文四段(假设/diff 摘要/证据指针/判决)
 - LintViolation(§6.1):账本 lint 违例
 
 EpisodeGateError 是类型化错误(Exception 非 dataclass),按 checker 规则
@@ -74,21 +72,6 @@ class LintViolation:
 
     line_no: int
     reason: str
-
-
-@dataclass(frozen=True)
-class ChangeBody:
-    """变更单正文四段(§6.1 schema):假设 → diff 摘要 → 证据指针 → 判决。"""
-
-    hypothesis: str = ""
-    diff_summary: str = ""
-    evidence: str = ""
-    verdict: str = "pending"
-
-
-# 变更单 schema(§6.1):假设 → diff 摘要 → 证据指针 → 判决
-CHANGE_SCHEMA_VERSION = "v1"
-CHANGE_VERDICTS: tuple[str, ...] = ("pending", "accepted", "rejected")
 
 
 @dataclass(frozen=True)
