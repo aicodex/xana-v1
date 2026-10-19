@@ -19,7 +19,7 @@ status: active
 
 ## 职责
 
-生成会话内固定的 system prompt（agent 有 memory 组工具时在环境段后加"记忆"一段：记忆在哪、会自动看到什么、四类何时存、不存什么、可能过时），并把每轮变化的上下文（记忆索引 / 置顶 / 召回、技能、按需工具、todo 提醒）以 ContextNote 追加进历史；tools_schema 每轮组装，deferred 工具被揭示后下一轮即生效；`report_goal` 只在目标模式会话、`notify_user` 只在无人值守会话（`PromptProfile.mode == "unattended"`）的 tools_schema 中出现。
+生成会话内固定的 system prompt（agent 有 memory 组工具时在环境段后加"记忆"一段：记忆在哪、会自动看到什么、可能过时、后台会补记；交互会话（`PromptProfile.mode == "interactive"`）再加"什么时候存记忆"：四类各在何时存、纠正与认可都要记并写明原因、描述写清适用场合、同类用同一主题、不存什么。无人值守运行不教主动存，由[后台提取](memory_extract.md)兜底），并把每轮变化的上下文（记忆索引 / 置顶 / 召回、技能、按需工具、todo 提醒）以 ContextNote 追加进历史；tools_schema 每轮组装，deferred 工具被揭示后下一轮即生效；`report_goal` 只在目标模式会话、`notify_user` 只在无人值守会话（`PromptProfile.mode == "unattended"`）的 tools_schema 中出现。
 
 ## system prompt 结构
 

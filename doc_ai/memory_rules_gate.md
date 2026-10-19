@@ -27,6 +27,7 @@ status: active
 name: 选股偏好
 description: 偏好量价齐升、困境反转;推荐时按想象空间排序
 type: user          # user | feedback | project | reference
+topic: 选股         # 可选主题,索引按 类型 → 主题 分组
 pinned: true        # 可选:每个会话注入全文
 updated: 2026-10-19
 ---
@@ -40,10 +41,10 @@ updated: 2026-10-19
 | action | 语义 |
 |---|---|
 | `create` | name / description / type / content 必填;同名文件已存在,或与已有记忆的名称 + 描述相似度(两字片段 Jaccard)≥0.6 → 拒绝并提示 update |
-| `update` | 只改给出的字段(name / description / type / content / pinned),其余保持 |
+| `update` | 只改给出的字段(name / description / type / topic / content / pinned),其余保持 |
 | `delete` | 删除文件 |
 
-写入 / 删除后 `tree.reindex_paths` 增量更新 memory_search 索引。`memory/` 对 Write / Edit 受保护(policy 检查点拒绝,提示改用 memory_write),保证 frontmatter 完整。
+写入 / 删除后 `tree.reindex_paths` 增量更新 memory_search 索引。后台提取([memory_extract](memory_extract.md))不经本工具,直接用 `ProjectMemoryStore` 的 write / append,只新建或追加。`memory/` 对 Write / Edit 受保护(policy 检查点拒绝,提示改用 memory_write),保证 frontmatter 完整。
 
 ## 迁移(一次性)
 

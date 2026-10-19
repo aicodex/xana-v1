@@ -10,7 +10,7 @@ status: active
 
 `memory` owns runtime context authority, durable history mirror, persistent knowledge tree, and memory retrieval/injection contracts.
 
-项目记忆(跨会话的长期记忆)在项目目录的 `memory/`:一条记忆一个文件(name / description / type / pinned);每个会话强制注入索引与置顶记忆,每条消息由选择模型召回相关记忆的全文;唯一写入口 `memory_write`。设计见 [memory-recall-design](../docs/design/memory-recall-design.md)。
+项目记忆(跨会话的长期记忆)在项目目录的 `memory/`:一条记忆一个文件(name / description / type / topic / pinned);每个会话强制注入索引与置顶记忆,每条消息由选择模型召回相关记忆的全文;模型侧写入口是 `memory_write`,每轮结束后另有后台提取兜底漏记。设计见 [memory-recall-design](../docs/design/memory-recall-design.md)、[memory-dream-design](../docs/design/memory-dream-design.md)。
 
 ## 详细设计
 
@@ -22,6 +22,7 @@ status: active
 - [memory_injector](memory_injector.md) — `ProjectMemoryInjector`:记忆索引 / 置顶 / 每轮召回
 - [memory_markdown_backend](memory_markdown_backend.md) — markdown + SQLite concrete backend
 - [memory_rules_gate](memory_rules_gate.md) — `memory_write`:项目记忆(`memory/`)唯一写入口、存储格式、旧记忆迁移
+- [memory_extract](memory_extract.md) — 每轮结束后的后台记忆提取(所有运行,子 agent 除外)
 
 ## 全局合约
 
@@ -47,7 +48,7 @@ Agent behavior, LLM calls, adapter protocol, or tool execution.
 - Cold start may replay history to rebuild active context.
 - Markdown memory content is source of truth; SQLite/search indexes are rebuildable views.
 - `todo_ai/` is a special memory tree for pending work, not design truth.
-- 项目记忆(`memory/*.md`)是记忆的唯一权威,索引由它实时生成;唯一写入口是 `memory_write`,裸 Write/Edit 进 `memory/` 被 policy 拒绝。
+- 项目记忆(`memory/*.md`)是记忆的唯一权威,索引由它实时生成;模型侧唯一写入口是 `memory_write`(裸 Write/Edit 进 `memory/` 被 policy 拒绝),后台提取经 `ProjectMemoryStore` 只新建或追加。
 - 记忆召回只看 `memory/`;项目里的其他 Markdown 只经 `memory_search` 检索。
 
 ## Inputs
