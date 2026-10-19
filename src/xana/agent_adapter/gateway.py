@@ -1,12 +1,11 @@
 """DefaultAgentGateway: wires Adapter <-> Agent."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 import uuid as _uuid
 from dataclasses import replace
-from typing import Any, AsyncGenerator, AsyncIterator, Callable, TYPE_CHECKING
+from typing import Any, AsyncGenerator, AsyncIterator, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -23,17 +22,9 @@ from xana.agent_adapter.interfaces import (
     AgentRequestRouter,
     CommandRouter,
 )
-from xana.agents.contracts import AgentEvent, DelegationPolicy, SubagentRequest, SubagentResult
-from xana.agents.interfaces import Agent, AgentRegistry, SubagentDispatcher
-from xana.extension_api.capabilities import AgentSpawner
+from xana.agents.contracts import AgentEvent
+from xana.agents.interfaces import Agent, AgentRegistry
 from xana.harness_sdk.contracts import AbortSignal
-from xana.memory.contracts import MemoryMessage
-from xana.state.contracts import SessionRecord
-
-if TYPE_CHECKING:
-    from xana.context.sdk import ContextSDK
-    from xana.memory.interfaces import ActiveContextStore
-    from xana.state.interfaces import SessionStore
 
 
 class DefaultAgentGateway(AgentGateway):
@@ -235,16 +226,10 @@ class DefaultAgentGateway(AgentGateway):
 
         self._run_seq += 1
         # seq + uuid 后缀:seq 保证可读顺序,uuid 避免重启后 RunRecord 文件名冲突。
-        # spawn 路径预分配 run_id(metadata["spawn_run_id"])以维持 lineage 可寻址。
         new_run = InflightRun(
             session_id=inbound.session_id,
-            run_id=(
-                str(inbound.metadata.get("spawn_run_id") or "")
-                or f"run-{inbound.session_id}-{self._run_seq}-{_uuid.uuid4().hex[:8]}"
-            ),
+            run_id=f"run-{inbound.session_id}-{self._run_seq}-{_uuid.uuid4().hex[:8]}",
             label=(inbound.text or "").strip()[:40] or "run",
-            # spawn 的子 run 是后台子任务,不抢占用户前台。
-            is_attached=not inbound.metadata.get("spawn_background", False),
         )
         self._inflight.setdefault(inbound.session_id, []).insert(0, new_run)
         # P5 fix — register a live AbortSignal for this run BEFORE handing off
@@ -445,193 +430,3 @@ class DefaultAgentGateway(AgentGateway):
         metadata = dict(rendered.metadata)
         metadata.setdefault("event_kind", event.kind)
         return replace(rendered, metadata=metadata)
-
-
-# ----------------------------------------------------------------------
-# §4.2 lineage + spawn:AgentSpawner / SubagentDispatcher 的首个实现
-# ----------------------------------------------------------------------
-
-def _fork_message_to_memory(msg: Any) -> MemoryMessage | None:
-    """ContextSDK Message → MemoryMessage(fork 种子转换)。
-
-    RegularPlaceholder/CompactPlaceholder 是 run 级占位,跨会话 fork 不带;
-    CompactSummary 代表全部被压缩历史,以渲染文本形式带入。
-    """
-    from xana.context.message import (
-        AssistantMessage,
-        CompactSummary,
-        ToolResultMessage,
-        UserMessage,
-    )
-    if isinstance(msg, UserMessage):
-        return MemoryMessage(role="user", content=msg.text)
-    if isinstance(msg, AssistantMessage):
-        return MemoryMessage(role="assistant", content=msg.text)
-    if isinstance(msg, ToolResultMessage):
-        return MemoryMessage(role="tool", content=msg.content)
-    if isinstance(msg, CompactSummary):
-        return MemoryMessage(role="user", content=msg._render())
-    return None
-
-
-class GatewayAgentSpawner(AgentSpawner):
-    """AgentSpawner 首个实现(§4.2):走 gateway._submit 同款链路。
-
-    - 写 SessionRecord.parent_*(dispatcher 预写完整 lineage 时保留,缺失时补齐)
-    - RunRecord.parent_run_id 经 inbound.metadata → harness RunRecord
-    - fork=True:ContextSDK.snapshot_for_fork 拷贝父上下文前缀到子 session
-      (只读共享——父缓冲不被子写入;子 run 只 append 私有后缀,结果只经
-      账本/变更单回流(阶段四),不做上下文物理合并,防分支污染)
-    """
-
-    def __init__(
-        self,
-        *,
-        gateway: DefaultAgentGateway,
-        session_store: "SessionStore | None" = None,
-        context_sdk: "ContextSDK | None" = None,
-        active_context_store: "ActiveContextStore | None" = None,
-    ) -> None:
-        self._gateway = gateway
-        self._session_store = session_store
-        self._context_sdk = context_sdk
-        self._active_context_store = active_context_store
-
-    async def spawn(
-        self,
-        *,
-        agent_name: str,
-        prompt: str,
-        session_id: str,
-        parent_run_id: str | None = None,
-        fork: bool = False,
-    ) -> str:
-        gw = self._gateway
-        if agent_name not in gw.agents:
-            raise LookupError(f"unknown agent {agent_name!r}")
-        if self._session_store is not None:
-            existing = await self._session_store.get(session_id)
-            if existing is None:
-                await self._session_store.upsert(SessionRecord(
-                    session_id=session_id,
-                    current_agent=agent_name,
-                    parent_run_id=parent_run_id,
-                    depth=0,
-                ))
-            else:
-                # dispatcher 已写入完整 lineage(depth/parent_*)→ 只补可派生字段。
-                from dataclasses import replace as _replace
-                await self._session_store.upsert(_replace(
-                    existing,
-                    current_agent=agent_name,
-                    parent_run_id=parent_run_id or existing.parent_run_id,
-                ))
-        if fork:
-            await self._seed_fork(session_id, agent_name)
-        gw._run_seq += 1
-        run_id = f"run-{session_id}-{gw._run_seq}-{_uuid.uuid4().hex[:8]}"
-        adapter_id = next(iter(gw.adapters), "spawn")
-        inbound = InboundMessage(
-            adapter_id=adapter_id,
-            session_id=session_id,
-            text=prompt,
-            metadata={
-                "spawn_run_id": run_id,
-                "spawn_background": True,
-                "target_agent": agent_name,
-                "parent_run_id": parent_run_id,
-            },
-        )
-        # spawn 是后台子任务:fire-and-forget 排干 _submit,run_id 立即返回。
-        asyncio.create_task(self._drain(gw._submit(inbound)))
-        return run_id
-
-    async def _seed_fork(self, session_id: str, agent_name: str) -> None:
-        """fork 纪律:父上下文快照(拷贝)作为子 run 的初始前缀。
-
-        父 session 从子 SessionRecord.parent_* 解析(dispatcher 预写);
-        直接 spawn 且无 lineage 记录时退回自身 session(退化自拷贝)。
-        """
-        if self._context_sdk is None or self._active_context_store is None:
-            return
-        parent_sid, parent_agent = session_id, agent_name
-        if self._session_store is not None:
-            rec = await self._session_store.get(session_id)
-            if rec is not None:
-                parent_sid = rec.parent_session_id or session_id
-                parent_agent = rec.parent_agent or agent_name
-        msgs = await self._context_sdk.snapshot_for_fork(parent_sid, parent_agent)
-        for m in msgs:
-            mm = _fork_message_to_memory(m)
-            if mm is not None:
-                await self._active_context_store.append_message(session_id, agent_name, mm)
-
-    @staticmethod
-    async def _drain(gen: AsyncIterator[RenderedMessage]) -> None:
-        try:
-            async for _ in gen:
-                pass
-        except Exception:
-            logger.exception("spawned run drain failed")
-
-
-class GatewaySubagentDispatcher(SubagentDispatcher):
-    """SubagentDispatcher 首个实现(§2.5):DelegationPolicy 门禁 + spawn。
-
-    拒绝(deepth 超限)返回类型化错误 SubagentResult(ok=False,
-    metadata["error"]="max_depth_exceeded"),不抛异常。
-    """
-
-    def __init__(
-        self,
-        *,
-        spawner: AgentSpawner,
-        session_store: "SessionStore",
-        policy: DelegationPolicy | None = None,
-    ) -> None:
-        self._spawner = spawner
-        self._session_store = session_store
-        self._policy = policy or DelegationPolicy()
-
-    async def dispatch(self, request: SubagentRequest) -> SubagentResult:
-        parent = await self._session_store.get(request.parent_session_id)
-        depth = parent.depth if parent is not None else 0
-        if depth >= self._policy.max_depth:
-            return SubagentResult(
-                parent_session_id=request.parent_session_id,
-                child_session_id=request.new_session_id,
-                target_agent=request.target_agent,
-                ok=False,
-                result="delegation rejected: max_depth exceeded",
-                metadata={
-                    "error": "max_depth_exceeded",
-                    "max_depth": self._policy.max_depth,
-                    "depth": depth,
-                },
-            )
-        # lineage 落库(dispatcher 持有完整 SubagentRequest,是 lineage 权威写点)。
-        await self._session_store.upsert(SessionRecord(
-            session_id=request.new_session_id,
-            current_agent=request.target_agent,
-            cwd=parent.cwd if parent is not None else None,
-            parent_session_id=request.parent_session_id,
-            parent_agent=request.parent_agent,
-            parent_run_id=request.parent_run_id,
-            depth=depth + 1,
-        ))
-        run_id = await self._spawner.spawn(
-            agent_name=request.target_agent,
-            prompt=request.task,
-            session_id=request.new_session_id,
-            parent_run_id=request.parent_run_id,
-            fork=request.fork_context_messages,
-        )
-        return SubagentResult(
-            parent_session_id=request.parent_session_id,
-            child_session_id=request.new_session_id,
-            target_agent=request.target_agent,
-            ok=True,
-            result="",
-            transcript_ref=f"runs/{run_id}.jsonl",
-            metadata={"run_id": run_id},
-        )

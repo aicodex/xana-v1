@@ -149,8 +149,6 @@ class BootResult:
     write_consumer: WriteQueueConsumer | None = None
     write_consumer_task: asyncio.Task | None = None
     budget_tracker: BudgetTracker | None = None
-    agent_spawner: Any = None
-    subagent_dispatcher: Any = None
     agent_registry: Any = None
     ledger: Any = None
     episode_runner: Any = None
@@ -391,28 +389,12 @@ async def boot(
     # P5: wire RunStore + RunJsonlWriter so /resume + cancel_all have backing.
     gateway.run_store = run_store
     gateway.run_jsonl_writer = run_jsonl_writer
-    # §4.2: spawn/lineage 首个实现(gateway 内),构造注入。
-    from xana.agent_adapter.gateway import GatewayAgentSpawner, GatewaySubagentDispatcher
-    agent_spawner = GatewayAgentSpawner(
-        gateway=gateway,
-        session_store=state.sessions(),
-        context_sdk=context_sdk,
-        active_context_store=active_ctx,
-    )
     # §6.1/§6.2: 进化账本 + episode 状态机(boot 组装的 concrete helper,
     # 不抽 ABC)。Ledger 落当前项目的 projects/<id>/evolution/ledger.jsonl。
-    from xana.evolution.episode import EpisodeGatedSpawner, EpisodeRunner
+    from xana.evolution.episode import EpisodeRunner
     from xana.evolution.ledger import Ledger
     ledger = Ledger()
     episode_runner = EpisodeRunner(ledger=ledger, run_store=run_store)
-    # spawn/分叉门禁(§6.2 机制兜底):landing/closing/closed 期类型化拒绝。
-    gated_spawner = EpisodeGatedSpawner(inner=agent_spawner, runner=episode_runner)
-    subagent_dispatcher = GatewaySubagentDispatcher(
-        spawner=gated_spawner,
-        session_store=state.sessions(),
-    )
-    gateway.agent_spawner = gated_spawner
-    gateway.subagent_dispatcher = subagent_dispatcher
 
     # P5.5/5.6: after replay, scan runs/ dir → PH-replace completed, mark
     # unfinished as resumable (exit_reason=shutdown_force).
@@ -507,7 +489,9 @@ async def boot(
     await agent_registry.load()   # 坏文档记 warning 不阻塞 boot;之后按需热加载
 
     # 子 agent 运行器:agent_run 委派与 deep_research 共用(同步跑完子 run 取回最终文本,不触碰渠道)。
-    agent_runner = GatewayAgentRunner(agents=gateway.agents, session_store=state.sessions())
+    # episode landing/closing/closed 期拒绝派生子 run(§6.2 机制兜底)。
+    agent_runner = GatewayAgentRunner(agents=gateway.agents, session_store=state.sessions(),
+                                      gate=episode_runner.ensure_gate)
 
     # agent 委派与创建(docs/design/agent-delegation-design.md):agent_run 同步委派;agent_define 写 / 删 AGENT.md
     # 后刷新注册表,立即生效。
@@ -629,8 +613,6 @@ async def boot(
         write_consumer=write_consumer,
         write_consumer_task=write_consumer_task,
         budget_tracker=budget_tracker,
-        agent_spawner=gated_spawner,
-        subagent_dispatcher=subagent_dispatcher,
         agent_registry=agent_registry,
         ledger=ledger,
         episode_runner=episode_runner,

@@ -23,29 +23,8 @@ class SchedulerService(ABC):
     async def list_all(self) -> tuple[dict[str, Any], ...]: ...
 
 
-class AgentSpawner(ABC):
-    @abstractmethod
-    async def spawn(
-        self,
-        *,
-        agent_name: str,
-        prompt: str,
-        session_id: str,
-        parent_run_id: str | None = None,
-        fork: bool = False,
-    ) -> str:
-        """Spawn a new agent run attached to session_id (the caller-provided session).
-
-        session_id is the existing session the spawned run joins; returns the
-        new run_id assigned to the spawned run. ``parent_run_id`` records
-        lineage on the child's RunRecord/SessionRecord (§4.2); ``fork=True``
-        copies the parent's context prefix into the child session before the
-        run starts (read-only share — the child only appends a private suffix).
-        """
-
-
 class AgentRunner(ABC):
-    """同步运行一个子 agent 直到结束并取回最终文本(AgentSpawner 是发射后不管)。
+    """同步运行一个子 agent 直到结束并取回最终文本。
 
     用于主 agent 派出子 agent 并等待结果的场景(agent_run 委派、deep_research 的并行子研究员)。
     实现不得触碰渠道(不发卡片、不切换前台);取消等待中的任务即中止子 run。

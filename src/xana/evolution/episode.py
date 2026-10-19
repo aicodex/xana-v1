@@ -456,27 +456,3 @@ def _read_entries_sync(ledger: Ledger) -> list[LedgerEntry]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-
-
-class EpisodeGatedSpawner:
-    """spawn/分叉门禁包装(§6.2 机制兜底):landing/closing/closed 期拒绝,
-    其余原样委托内层 AgentSpawner。concrete helper,不抽 ABC。"""
-
-    def __init__(self, *, inner: Any, runner: EpisodeRunner) -> None:
-        self._inner = inner
-        self._runner = runner
-
-    async def spawn(
-        self,
-        *,
-        agent_name: str,
-        prompt: str,
-        session_id: str,
-        parent_run_id: str | None = None,
-        fork: bool = False,
-    ) -> str:
-        self._runner.ensure_gate("fork" if fork else "spawn")
-        return await self._inner.spawn(
-            agent_name=agent_name, prompt=prompt, session_id=session_id,
-            parent_run_id=parent_run_id, fork=fork,
-        )

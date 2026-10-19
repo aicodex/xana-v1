@@ -1,7 +1,6 @@
 """GatewayAgentRunner:AgentRunner 的实现——直接调用已注册 agent 的 ``send()`` 跑完一个子 run 并取回最终文本。
 
-与 GatewayAgentSpawner 的区别:不走 gateway._submit,因此不发渠道通知、不建卡片、不切换前台;
-调用方 await 结果。等待中的任务被取消时触发子 run 的 AbortSignal(异步模式下子 run 在后台任务里跑,
+不走 gateway._submit,因此不发渠道通知、不建卡片、不切换前台;调用方 await 结果。等待中的任务被取消时触发子 run 的 AbortSignal(异步模式下子 run 在后台任务里跑,
 不中止就会继续跑完)。
 """
 from __future__ import annotations
@@ -30,9 +29,12 @@ SUBAGENT_PREAMBLE = (
 
 
 class GatewayAgentRunner(AgentRunner):
-    def __init__(self, *, agents: Mapping[str, Agent], session_store=None) -> None:
+    def __init__(self, *, agents: Mapping[str, Agent], session_store=None,
+                 gate: Callable[[str], None] | None = None) -> None:
+        """gate:开跑前调用,抛异常即拒绝本次 run(进化 episode 收尾期禁止派生新 run,EpisodeRunner.ensure_gate)。"""
         self._agents = agents
         self._session_store = session_store
+        self._gate = gate
 
     async def run(
         self,
@@ -49,6 +51,11 @@ class GatewayAgentRunner(AgentRunner):
         agent = self._agents.get(agent_name)
         if agent is None:
             raise LookupError(f"unknown agent {agent_name!r}")
+        if self._gate is not None:
+            try:
+                self._gate("spawn")
+            except Exception as exc:
+                return AgentRunOutcome(run_id="", status="error", text="", tool_counts={}, error=str(exc))
         fresh = self._session_store is None or await self._session_store.get(session_id) is None
         if fresh:
             prompt = f"{preamble or SUBAGENT_PREAMBLE}\n\n{prompt}"

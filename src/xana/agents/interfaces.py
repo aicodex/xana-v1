@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import AsyncIterator
 
-from xana.agents.contracts import AgentControlRequest, AgentEvent, AgentRequest, AgentSpec, SubagentRequest, SubagentResult
+from xana.agents.contracts import AgentControlRequest, AgentEvent, AgentRequest, AgentSpec
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest
 
 
@@ -20,11 +20,6 @@ class AgentRequestMapper(ABC):
 class AgentEventMapper(ABC):
     @abstractmethod
     async def map(self, session_id: str, event: HarnessEvent) -> AgentEvent: ...
-
-
-class SubagentDispatcher(ABC):
-    @abstractmethod
-    async def dispatch(self, request: SubagentRequest) -> SubagentResult: ...
 
 
 class Agent(ABC):

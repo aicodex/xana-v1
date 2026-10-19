@@ -14,7 +14,6 @@ from xana.policy.contracts import SandboxPolicySpec
 AgentEventKind = Literal["draft", "tool", "final", "control_result", "error", "cancelled"]
 MemoryScope = Literal["user", "project", "agent", "session"]
 IsolationMode = Literal["none", "worktree", "process", "remote"]
-DelegationMode = Literal["inline", "background", "isolated"]
 
 
 @dataclass(frozen=True)
@@ -65,44 +64,6 @@ class AgentControlRequest:
     session_id: str
     op: str
     args: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class SubagentRequest:
-    parent_session_id: str
-    parent_agent: str
-    parent_run_id: str | None
-    target_agent: str
-    task: str
-    new_session_id: str
-    mode: DelegationMode = "isolated"
-    fork_context_messages: bool = False
-    inherit_cwd: bool = True
-    isolation: IsolationMode = "none"
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class SubagentResult:
-    parent_session_id: str
-    child_session_id: str
-    target_agent: str
-    ok: bool
-    result: str
-    transcript_ref: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class DelegationPolicy:
-    allow_subagents: bool = True
-    max_depth: int = 1
-    allowed_agents: tuple[str, ...] = ()
-    permission_inheritance: Literal["inherit", "override", "intersect"] = "intersect"
-    tool_inheritance: Literal["inherit", "override", "intersect"] = "intersect"
-    context_fork: Literal["none", "messages", "full"] = "none"
-    avoid_prompts_for_background: bool = True
-    bubble_prompts_to_parent: bool = False
 
 
 @dataclass(frozen=True)

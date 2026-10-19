@@ -14,7 +14,6 @@ from xana.agents.interfaces import (
     AgentEventMapper,
     AgentRegistry,
     AgentRequestMapper,
-    SubagentDispatcher,
 )
 from xana.config.interfaces import (
     ConfigProvider,
@@ -63,7 +62,6 @@ __all__ = [
     "AgentEventMapper",
     "AgentRegistry",
     "AgentRequestMapper",
-    "SubagentDispatcher",
     "ConfigProvider",
     "ConfigReader",
     "Harness",
