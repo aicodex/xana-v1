@@ -49,7 +49,7 @@ extension_api `AgentSpawner` 的首个实现 `GatewayAgentSpawner` 与 dispatche
 
 - **子 agent 工具** = 它自己的工具选择解析结果 ∩ 上限；上限 = 调用方本 run 可用工具（`ToolContext.available_tools`，None = 目录全部）− `SUBAGENT_EXCLUDED`（`agent_run` / `agent_define` / `EnterPlanMode` / `EnterWorktree` / `report_goal` / `schedule` 组）。子 agent 永远拿不到 `agent_run`，委派深度固定为 1，不做深度计数。harness 端同样取交集（见 [harness_tool_dispatch](harness_tool_dispatch.md)）。
 - **子会话 id**：`{父会话}-agent-{agent 名}-{hex6}`，结果里作为 `agent_id` 返回；`resume=<agent_id>` 在同一子会话继续，只接受本会话派出的子会话。
-- **并发**：进程内同时运行的委派上限 6，超出返回 `retryable=False` 错误（"不要重试,直接用自己的工具完成"）。
+- **并发**：进程内同时运行的委派上限 6（`MAX_CONCURRENT`，构造参数 `max_concurrent`），超出的排队等空位（`asyncio.Semaphore`，排队时上报"排队中"进度），不拒绝。工具描述里写明这个上限，且从 `max_concurrent` 生成；工具描述里的限制一律从工具实际使用的参数生成，不手写数字（`tests/test_tool_description_limits.py` 守护）。
 - **结果**：头行含 agent_id、状态、用时、工具次数，接子 agent 最终文本，末尾提示可 resume；子 agent 非 completed 时 `ok=False` 附原因。执行中经 `report_progress` 上报子 agent 工具调用次数；父 run 取消时经 AbortSignal 中止子 run。
 - **可委派列表**：`AgentListingContributor`（`TurnInputContributor`）在本 agent 可用 `agent_run` 时，每条用户消息把委派引导 `DELEGATION_GUIDE` + 可委派 agent 列表作为 note 追加（内容不变不重复注入），不写进工具描述以保持 schema 稳定。每行 `- 名字: description｜when_to_use(工具: …)`，工具按子 agent 实际会拿到的有效工具展开（与 `agent_run` 共用 `agents/delegation.py` 的规则）；与调用方上限相同时显示"与你相同,不含委派与会话控制类"，不逐个列。
 - **实验**（Kimi k2.8，单次运行）：可用命令压缩的任务三种提示词都不委派；需大量阅读且可拆分的任务，无引导时模型先自己读一大圈再委派（用时约 2.5–3.5 倍），有引导时直接委派；引导放 note 与放系统提示词效果相当，采用 note。详见设计 §6。
