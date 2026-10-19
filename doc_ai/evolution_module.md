@@ -48,7 +48,7 @@ status: active
 
 ## changes.py — ChangeWriter
 
-- **复用不重写**：`ChangeWriter` 内部持有一个 `MemoryWriteTool(tree=tree, engine=engine, rules_dir="L2/changes")` 实例，create 查重门禁、supersede 取代链、frontmatter（status/evidence）全部走 `memory_write` 的同款语义（见 [memory_rules_gate](memory_rules_gate.md)），本模块未复制任何门禁实现。
+- **门禁写入**：`ChangeWriter` 内部持有 `GatedEntryWriter(tree=tree, engine=engine, rules_dir="L2/changes")`（`evolution/change_gate.py`）：create 查重、supersede 取代链、frontmatter（status/evidence）。它原是 L2 规则的 memory_write 实现，记忆改为 `memory/` 后只剩变更单在用，移到本模块。
 - 变更单目录固定为 `L2/changes`。
 - schema（contracts `ChangeBody` 四段）：假设 → diff 摘要 → 证据指针 → 判决。`render_change_body` 渲染、`parse_change_body` 读回。
 - `propose`：input 为 `path` / `hypothesis` / `diff_summary` / `evidence` [/ `supersedes`]，无 `supersedes` 走 create、有则走 supersede。
@@ -118,7 +118,7 @@ verdict 规则：canary 失败，或 Δ ≤ 0（有评估时）→ `rolled_back`
 
 `WriteTool` / `EditTool` 的 `protected_dir` 接受 `Path | tuple[Path, ...] | list[Path]`。boot 注入双目录：
 
-- `{project_root}/L2`（规则目录，唯一写入口 `memory_write`）；
+- `{project_root}/memory`（项目记忆，唯一写入口 `memory_write`）；
 - `~/.xana/agents`（用户级 Agent 文档目录，元 agent 的 `agents_root`；唯一变更路径 = episode 提案→评估→判决闭环。项目级 `<project_root>/.xana/agents` 同样对 Write / Edit 受保护，写入口是 `agent_define`）。
 
 目标路径落在任一受保护目录内 → `decision="deny"`。详见 [tools_permission_sandbox](tools_permission_sandbox.md)。
@@ -130,7 +130,7 @@ verdict 规则：canary 失败，或 Δ ≤ 0（有评估时）→ `rolled_back`
 ## 不变量
 
 - 账本 append-only：无 verdict 不落盘；lint 能抓缺 verdict / 非法 verdict / 损坏行。
-- 变更单与 L2 规则同门禁（查重 / supersede / refine），不复制实现。
+- 变更单的门禁（查重 / supersede / refine）只在 `change_gate.py` 一处。
 - 软阈值只拒新支线（spawn / 分叉 / 新评估），不杀在途；硬阈值才强制 closing。
 - held-out 评估分数不回流给元 prompt（两账纪律贯穿 close / last_eval.json / assemble_prompt）。
 - 元 agent 不能裸改 Agent 文档：protected_dir 拦截 + propose_doc_change 唯一路径。
@@ -144,7 +144,7 @@ verdict 规则：canary 失败，或 Δ ≤ 0（有评估时）→ `rolled_back`
 ## 相关模块
 
 - [evolution](evolution.md) — 设计方向共识（本模块的需求来源）
-- [memory_rules_gate](memory_rules_gate.md) — memory_write 门禁（ChangeWriter 复用对象）
+- [memory_rules_gate](memory_rules_gate.md) — 项目记忆写入（memory_write）
 - [agents_registry](agents_registry.md) — FileAgentRegistry（元 agent 的 agent_name 来源）
 - [agent_adapter_gateway](agent_adapter_gateway.md) — gateway.submit / AgentSpawner（门禁包装对象）
 - [tools_permission_sandbox](tools_permission_sandbox.md) — protected_dir 门禁

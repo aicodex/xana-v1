@@ -13,7 +13,7 @@ status: active
 一条命令完成新机引导，顺序固定：
 
 1. **seed 配置**：`ensure_user_system_json()` 确保 `~/.xana/config/system.json` 存在（api key 只进这里，不进项目仓库）。
-2. **跑 sync**：直接内联调用 `sync_cmd.run()`（见下文），物化 `~/.xana/code/` + `~/.xana/mem/`，并经 `ensure_default_project()` 创建默认项目 `default`（`~/.xana/projects/default/`：`project.json`、`config.json`、`workspace/README_ai.md`），旧布局就地迁移。
+2. **跑 sync**：直接内联调用 `sync_cmd.run()`（见下文），物化 `~/.xana/code/` + `~/.xana/mem/`，并经 `ensure_default_project()` 创建默认项目 `default`（`~/.xana/projects/default/`：`project.json`、`config.json`、`workspace/AGENTS.md`），旧布局就地迁移；之后对所有项目执行一次性记忆迁移（旧的 `memory/*.md` 与 `L2/rules/*.md` → `memory/` 新格式，先备份到 `~/.xana-memory-backup/<时间>/`，幂等，见 [memory_rules_gate](memory_rules_gate.md)）。
 3. **写 launcher**：`~/.xana/bin/xana` 与 `~/.xana/bin/xanac`，自包含 Python 脚本——运行时解析 `$XANA_HOME`（默认 `~/.xana`），把 `~/.xana/code` 插入 `sys.path` 后调 `xana.cli.<cmd>.main()`。内容不变则保留（kept），变了才重写。
 4. **配 PATH**：向 `~/.zshrc` 或 `~/.bashrc`（按 `$SHELL`）追加 `export PATH="<bin>:$PATH"`，包在 `# >>> xana bin path >>>` / `# <<< xana bin path <<<` marker block 里，重跑幂等；未知 shell 只打印提示。
 5. **wizard**（可选）：`--no-wizard` 或 stdin 非 TTY 时跳过，否则进入 `run_wizard()`。

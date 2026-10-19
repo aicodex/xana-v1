@@ -29,10 +29,10 @@ status: active
 
 实现是 **`FileSchedulerService`**（runtime/scheduler.py）：
 
-- 持久化 `~/.xana/projects/<id>/scheduled_tasks.json`（boot 注入路径），每条任务 `{id, cron, prompt, recurring, session_id, route, agent, notify, created_at, next_fire, last_run}`；`next_fire` 由 croniter 按本地时区算出。文件损坏（半写/非法 JSON）记警告、从空重建，不杀死进程。
+- 持久化 `~/.xana/projects/<id>/scheduled_tasks.json`（boot 注入路径），每条任务 `{id, cron, prompt, recurring, session_id, route, agent, notify, created_at, next_fire}`；执行历史另记在同目录的 `scheduled_runs.jsonl`（每次执行一行：任务 id、cron、prompt、agent、通知方式、时间、状态、记录路径；保留最近 200 条），是执行结果的唯一权威；`next_fire` 由 croniter 按本地时区算出。文件损坏（半写/非法 JSON）记警告、从空重建，不杀死进程。
 - `add(..., agent=None, notify="report")`：`agent` = 到点运行的 agent（None = 会话绑定的 agent，缺省 chat）；`notify` ∈ `report`（每次插回结果）/ `silent`（只在失败、请求决策或运行中 `notify_user` 时插入）。
 - `route`：构造注入 `route_of=SessionResolver.route_of`，`add()` 记下创建会话所在的外部会话 `[adapter_id, thread_id]`（反查不到为 null）。公有可变属性 `session_id` 由 `CronCreateTool.execute` 在 `add` 前用 `ToolContext.session_id` 覆写（同一事件循环内串行）。
-- `pop_due(now_epoch)`：到点任务一次性删除、循环任务滚动 `next_fire`；`record_run(task_id, at, status, transcript)` 写 `last_run`（一次性任务已删除时跳过）。
+- `pop_due(now_epoch)`：到点的一次性任务删除、循环任务滚动 `next_fire`；`record_run(job, at, status, transcript)` 追加一条执行历史，`history(limit)` 新的在前读取。
 
 ## SchedulerRunner
 
@@ -51,10 +51,10 @@ boot 构造（唯一组合点，`BootResult.scheduler_dispatch`），依赖 gate
 
 ## cron 工具、notify_user 与 schedule skill
 
-- **cron_create / cron_list / cron_delete**（tools/builtin/cron.py）：`defer=True`，permission 恒 allow。create 校验 cron 合法性、`notify` 取值，`agent` 须在活的 agent 表中（构造注入 `agents`）；list 显示 agent、通知方式与最近一次执行（时间、状态、记录路径）。
+- **cron_create / cron_list / cron_delete**（tools/builtin/cron.py）：`defer=True`，permission 恒 allow。create 校验 cron 合法性、`notify` 取值，`agent` 须在活的 agent 表中（构造注入 `agents`）；list 默认只列等待执行的任务（未触发的一次性任务与循环任务，循环任务附最近一次执行，取自执行历史），`history=true` 列最近的执行历史（含已触发并删除的一次性任务）。
 - **notify_user**（tools/builtin/notify_user.py，工具组 schedule）：只在无人值守会话中可见（harness 按 `PromptProfile.mode` 过滤）；`kind=info` 立即告知、任务继续，`kind=decision` 写清问题与选项后结束本次执行（不在调度器执行中时，让模型把问题写进最后一条消息由调用方转告）。描述照 CC PushNotification：宁可不发。
 - **agent_run** 的 `resume` 接受本会话派出的定时子会话（见 [agents_subagents](agents_subagents.md)）。
-- **ScheduleSkill**（skills/bundled/schedule.py）：弄清意图 → 定时间并用人话复述 → 选 agent 与通知方式 → cron_create → 告知任务 ID；查看/修改/删除对应 cron_list / delete+create / cron_delete。
+- **ScheduleSkill**（skills/bundled/schedule.py）：弄清意图 → 定时间并用人话复述 → 选 agent 与通知方式 → cron_create → 告知任务 ID；查看/修改/删除对应 cron_list / delete+create / cron_delete，问到跑过的任务与结果时用 cron_list(history=true)。
 
 ## 不变量
 

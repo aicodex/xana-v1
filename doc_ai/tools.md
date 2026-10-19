@@ -48,8 +48,8 @@ status: active
 | `Write` | `write.py` | 新建/覆盖文件 | destructive |
 | `Glob` | `glob_tool.py` | 模式匹配，按 mtime 新→旧 | read_only |
 | `Grep` | `grep_tool.py` | 正则内容搜索（纯 Python re，无 ripgrep 依赖） | read_only |
-| `memory_search` | `memory_search.py` | 模型侧 L2 查询，走共享 `MemorySearchEngine` | read_only |
-| `memory_write` | `memory_write.py` | L2 规则唯一写入口：create/refine/supersede + 查重门禁 | destructive |
+| `memory_search` | `memory_search.py` | 检索本项目的记忆与文档（项目目录下的 Markdown），走共享 `MemorySearchEngine` | read_only |
+| `memory_write` | `memory_write.py` | 项目记忆（`memory/`）唯一写入口：create（name / description / type / content 必填，相近记忆拒绝）/ update / delete | destructive |
 | `TodoWrite` | `todo_write.py` | 全量覆盖式会话 todo 列表，磁盘持久化 | destructive |
 | `tool_search` | `tool_search.py` | 揭示 deferred 工具完整 schema | read_only |
 | `report_goal` | `report_goal.py` | 目标模式下声明目标终态（done / blocked / failed + 原因）；只在 `goal_mode` 会话的 schema 中出现 | read_only |
@@ -57,7 +57,7 @@ status: active
 | `EnterPlanMode` | `enter_plan_mode.py` | 写 `SessionConfig.metadata["mode"]="plan"`（enforcement 见下） | read_only |
 | `EnterWorktree` | `enter_worktree.py` | `git worktree add` 并把路径写进 session metadata | destructive |
 | `cron_create` | `cron.py` | 调度定时任务：`agent` 指定运行的 agent，`notify` = report / silent；到点在无人值守的独立子会话执行，结果按通知方式插回当前聊天（见 [runtime_scheduler](runtime_scheduler.md)） | defer |
-| `cron_list` | `cron.py` | 列出定时任务（agent、通知方式、最近一次执行的时间 / 状态 / 记录路径） | read_only, defer |
+| `cron_list` | `cron.py` | 列出等待执行的定时任务（agent、通知方式，循环任务附最近一次执行）；`history=true` 查执行历史（时间 / 任务 / 状态 / 记录路径） | read_only, defer |
 | `notify_user` | `notify_user.py` | 只在无人值守会话可见：`info` 立即告知用户（每次任务 ≤3 条），`decision` 请用户决策并结束本次执行，答复后经 `agent_run` resume 继续 | open_world |
 | `cron_delete` | `cron.py` | 按 ID 删除定时任务 | defer |
 | `web_search` | `xana_search.py` | 配置了 xana-search 服务（`system.json` `web_search.xana_search_url/token`）时注册：1–4 条查询并行，只返回标题/链接/日期/搜索引擎摘要 | read_only, open_world, parallel |
@@ -72,7 +72,7 @@ status: active
 
 辅助文件（非工具）：`_path.py`（相对 cwd 路径解析）、`_reindex.py`（写后 markdown 增量 reindex）、`_todo_store.py`（`TodoStore` 磁盘持久化）。
 
-**memory_write（L2 规则写门禁）** 详见 [memory_rules_gate](memory_rules_gate.md)：L2/rules/*.md 的唯一写入口，create 强制 token 重叠 ≥0.6 查重，supersede 翻旧条目 `status: deprecated` + `superseded_by` 不删文件，deprecated 从搜索过滤。
+**memory_write（项目记忆写入）** 详见 [memory_rules_gate](memory_rules_gate.md)：`memory/*.md` 的唯一写入口（Write / Edit 写 `memory/` 被拒），create 时与已有记忆的名称 + 描述相似度 ≥0.6 即拒绝并提示 update；写后增量更新 memory_search 索引。
 
 ## 关键工具行为
 

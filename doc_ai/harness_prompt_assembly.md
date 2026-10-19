@@ -19,7 +19,7 @@ status: active
 
 ## 职责
 
-生成会话内固定的 system prompt，并把每轮变化的上下文（记忆召回、技能、按需工具、todo 提醒）以 ContextNote 追加进历史；tools_schema 每轮组装，deferred 工具被揭示后下一轮即生效；`report_goal` 只在目标模式会话、`notify_user` 只在无人值守会话（`PromptProfile.mode == "unattended"`）的 tools_schema 中出现。
+生成会话内固定的 system prompt（agent 有 memory 组工具时在环境段后加"记忆"一段：记忆在哪、会自动看到什么、四类何时存、不存什么、可能过时），并把每轮变化的上下文（记忆索引 / 置顶 / 召回、技能、按需工具、todo 提醒）以 ContextNote 追加进历史；tools_schema 每轮组装，deferred 工具被揭示后下一轮即生效；`report_goal` 只在目标模式会话、`notify_user` 只在无人值守会话（`PromptProfile.mode == "unattended"`）的 tools_schema 中出现。
 
 ## system prompt 结构
 
@@ -62,7 +62,9 @@ status: active
 |---|---|
 | `date` | 与环境段同条件（`_has_env`）：会话开始给一次"今天是 YYYY-MM-DD"，跨天追加"日期已变更"（CC 同款，只给日期） |
 | `project_instructions` | 与环境段同条件：项目根目录（`context.cwd`）有 `AGENTS.md` 时，每条用户消息前读一次，内容变化才注入；空文件不注入，超过 2 万字截断并提示用 Read 看全文；措辞译自 CC 的 CLAUDE.md 注入 |
-| `memory_recall` | agent 可用 memory 组工具时，每条新用户消息之后，有未注入过的命中时。截断提示"用 Read 查看"仅在可用 Read 时出现。按文件路径去重，跳过模型已 Read 的文件；单次 ≤5 个文件、每个 ≤4KB / 200 行；会话累计 60KB 后停止；检索词少于 2 个不召回（中文不以空格判断） |
+| `memory_index` | agent 可用 memory 组工具且与环境段同条件：项目记忆（`memory/`）的索引，按类型分组每条一行；会话开始注入，记忆增删改后下一条消息重新注入，记忆被删光时注明"没有记忆"（见 [memory_injector](memory_injector.md)） |
+| `memory_pinned` | 同上：置顶记忆的全文（≤2000 字），变化才注入 |
+| `memory_recall` | agent 可用 memory 组工具时，每条新用户消息之后：选择模型挑出的相关记忆**全文**（每条 ≤2000 字、本次 ≤6000 字，超过 1 天的附过时提示）。按文件路径去重，跳过模型已 Read 的文件；会话累计 60KB 后停止；检索词少于 2 个不召回 |
 | `turn_input` | 技能 prompt blocks + extension `contribute_turn_input` 片段，内容变化时。贡献者经 `TurnInputContext.available_tools` 得知本 agent 的可用工具（技能列表仅在可用 `skill_load` 时列出），经 `TurnInputContext.visible_skills`（`_visible_skills(context)` 取 `config_snapshot["skills"]`，None = 全部）得知可见技能（技能列表只列这些） |
 | `deferred_tools` | 未揭示的 defer 工具名单（名字: 描述）变化时；名单清空且曾列出过时追加"均已加载"。agent 不可用 `tool_search` 时不隐藏任何工具（全部给完整 schema），也就没有这条 |
 | `todo_reminder` | agent 可用 TodoWrite 时，距上次 TodoWrite 与距上次提醒都满 10 个 assistant 轮次，附当前清单（CC `TODO_REMINDER_CONFIG`） |

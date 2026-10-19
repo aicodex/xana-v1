@@ -10,6 +10,8 @@ status: active
 
 `memory` owns runtime context authority, durable history mirror, persistent knowledge tree, and memory retrieval/injection contracts.
 
+项目记忆(跨会话的长期记忆)在项目目录的 `memory/`:一条记忆一个文件(name / description / type / pinned);每个会话强制注入索引与置顶记忆,每条消息由选择模型召回相关记忆的全文;唯一写入口 `memory_write`。设计见 [memory-recall-design](../docs/design/memory-recall-design.md)。
+
 ## 详细设计
 
 - [memory_active_context](memory_active_context.md) — `ActiveContextStore`，当前 turn 可见上下文的运行时权威
@@ -17,9 +19,9 @@ status: active
 - [memory_history_mirror](memory_history_mirror.md) — `HistoryMirror` / `MemoryReplayer`，history 只是副本写和恢复输入
 - [memory_tree](memory_tree.md) — `MemoryTree`，知识树节点和原子变更操作
 - [memory_search_engine](memory_search_engine.md) — `MemorySearchEngine`，统一检索接口
-- [memory_injector](memory_injector.md) — `MemoryInjector` / registry，L1 prompt 注入
+- [memory_injector](memory_injector.md) — `ProjectMemoryInjector`:记忆索引 / 置顶 / 每轮召回
 - [memory_markdown_backend](memory_markdown_backend.md) — markdown + SQLite concrete backend
-- [memory_rules_gate](memory_rules_gate.md) — `memory_write`，L2 规则唯一写入口（查重门禁 + supersede 链）
+- [memory_rules_gate](memory_rules_gate.md) — `memory_write`:项目记忆(`memory/`)唯一写入口、存储格式、旧记忆迁移
 
 ## 全局合约
 
@@ -45,7 +47,8 @@ Agent behavior, LLM calls, adapter protocol, or tool execution.
 - Cold start may replay history to rebuild active context.
 - Markdown memory content is source of truth; SQLite/search indexes are rebuildable views.
 - `todo_ai/` is a special memory tree for pending work, not design truth.
-- L2 规则条目唯一写入口是 `memory_write` 工具（查重门禁 + supersede 链）；裸 Write/Edit 进 `L2/` 被 policy 拒绝。
+- 项目记忆(`memory/*.md`)是记忆的唯一权威,索引由它实时生成;唯一写入口是 `memory_write`,裸 Write/Edit 进 `memory/` 被 policy 拒绝。
+- 记忆召回只看 `memory/`;项目里的其他 Markdown 只经 `memory_search` 检索。
 
 ## Inputs
 
