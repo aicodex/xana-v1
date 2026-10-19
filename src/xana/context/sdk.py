@@ -182,22 +182,3 @@ class ContextSDK:
             # loop and re-check (event could have been set, then a new
             # compact appended).
 
-    # ------------------------------------------------------------------
-    # Serialization
-    # ------------------------------------------------------------------
-
-    def to_anthropic(
-        self, sid: str, agent: str, *, system_content: str
-    ) -> list[dict]:
-        out: list[dict] = [{"role": "system", "content": system_content}]
-        for m in self._store.buffer(sid, agent):
-            out.extend(m.to_anthropic())
-        return out
-
-    def to_openai(
-        self, sid: str, agent: str, *, system_content: str
-    ) -> list[dict]:
-        out: list[dict] = [{"role": "system", "content": system_content}]
-        for m in self._store.buffer(sid, agent):
-            out.extend(m.to_openai())
-        return out

@@ -38,7 +38,7 @@ def memory_message_to_sdk(mm: MemoryMessage) -> Message | None:
 
     Returns ``None`` for roles that the SDK does not represent (currently
     ``"system"`` — the SDK treats the system content as a separate string
-    passed into ``to_anthropic`` / ``to_openai``).
+    rendered for the model).
     """
     role = mm.role
     if role == "user" and mm.metadata.get("note_kind"):

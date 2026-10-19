@@ -1,13 +1,11 @@
-"""Message ABC + public subclasses (§1.9).
+"""SDK 缓冲里的消息类型(§1.9)。
 
-These classes are the ONLY way context flows into model prompts. Private
-metadata (run_id / ph_id / call_id) lives in ``_internal`` dataclasses
-that never appear in serialized output (I18).
+私有元数据(run_id / ph_id / call_id)放在 ``_internal`` 里,不进模型可见内容(I18)。
+发给模型的形态由 harness 生成:SDK 缓冲 → memory._message_bridge → harness_sdk.ph_expand → 拼提示词
+→ provider;这里只保留模型可见文本的唯一定义(regular_placeholder_text、CompactSummary.render)。
 """
 from __future__ import annotations
 
-import json
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -15,25 +13,13 @@ if TYPE_CHECKING:
     from xana.context._internal import _PlaceholderInternal, _ToolCallInternal
 
 
-class Message(ABC):
-    @abstractmethod
-    def to_anthropic(self) -> list[dict]:  # empty list = filter
-        ...
-
-    @abstractmethod
-    def to_openai(self) -> list[dict]:
-        ...
+class Message:
+    """SDK 缓冲中一条消息的基类(类型标记)。"""
 
 
 @dataclass(frozen=True)
 class UserMessage(Message):
     text: str
-
-    def to_anthropic(self) -> list[dict]:
-        return [{"role": "user", "content": self.text}]
-
-    def to_openai(self) -> list[dict]:
-        return [{"role": "user", "content": self.text}]
 
 
 @dataclass(frozen=True)
@@ -41,41 +27,8 @@ class AssistantMessage(Message):
     text: str
     tool_calls: tuple["_ToolCallInternal", ...] = ()
     # 模型本轮的思考文本。DeepSeek / Kimi 要求原样回传(保留思考),
-    # 必须随历史穿过 SDK;Anthropic thinking 需签名,to_anthropic 不发。
+    # 必须随历史穿过 SDK(provider 各自决定怎么回传)。
     reasoning: str = ""
-
-    def to_anthropic(self) -> list[dict]:
-        blocks: list[dict] = []
-        if self.text:
-            blocks.append({"type": "text", "text": self.text})
-        for tc in self.tool_calls:
-            blocks.append(
-                {
-                    "type": "tool_use",
-                    "id": tc.call_id,
-                    "name": tc.name,
-                    "input": tc.arguments,
-                }
-            )
-        return [{"role": "assistant", "content": blocks}]
-
-    def to_openai(self) -> list[dict]:
-        msg: dict = {"role": "assistant", "content": self.text}
-        if self.reasoning:
-            msg["reasoning_content"] = self.reasoning
-        if self.tool_calls:
-            msg["tool_calls"] = [
-                {
-                    "id": tc.call_id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.name,
-                        "arguments": json.dumps(tc.arguments),
-                    },
-                }
-                for tc in self.tool_calls
-            ]
-        return [msg]
 
 
 @dataclass(frozen=True)
@@ -87,30 +40,6 @@ class ToolResultMessage(Message):
     # 不进 prompt。
     tool_name: str = ""
     revealed_tools: tuple[str, ...] = ()
-
-    def to_anthropic(self) -> list[dict]:
-        return [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": self.tool_use_id,
-                        "content": self.content,
-                        "is_error": not self.ok,
-                    }
-                ],
-            }
-        ]
-
-    def to_openai(self) -> list[dict]:
-        return [
-            {
-                "role": "tool",
-                "tool_call_id": self.tool_use_id,
-                "content": self.content,
-            }
-        ]
 
 
 def regular_placeholder_text(label: str) -> str:
@@ -124,32 +53,10 @@ class RegularPlaceholder(Message):
     label: str  # public: original user question
     _internal: "_PlaceholderInternal"  # private: run_id / ph_id
 
-    def to_anthropic(self) -> list[dict]:
-        return [
-            {
-                "role": "assistant",
-                "content": regular_placeholder_text(self.label),
-            }
-        ]
-
-    def to_openai(self) -> list[dict]:
-        return [
-            {
-                "role": "assistant",
-                "content": regular_placeholder_text(self.label),
-            }
-        ]
-
 
 @dataclass(frozen=True)
 class CompactPlaceholder(Message):
     _internal: "_PlaceholderInternal"
-
-    def to_anthropic(self) -> list[dict]:
-        return []  # invisible
-
-    def to_openai(self) -> list[dict]:
-        return []  # invisible
 
 
 @dataclass(frozen=True)
@@ -176,7 +83,7 @@ class CompactSummary(Message):
         """Single-source renderer — same string for model prompt + card body.
 
         Used by both CompactSummary._render() (model side, via
-        to_anthropic/to_openai) and the UI side (commands._cmd_compact
+        memory._message_bridge) and the UI side (commands._cmd_compact
         fires this rendered text in the compact_finalized progress event,
         so the card panel body matches what the model will see)."""
         return cls.POST_COMPACT_TEMPLATE.format(
@@ -188,12 +95,6 @@ class CompactSummary(Message):
             summary=self.summary,
             transcript=self._internal.transcript_path,
         )
-
-    def to_anthropic(self) -> list[dict]:
-        return [{"role": "user", "content": self._render()}]
-
-    def to_openai(self) -> list[dict]:
-        return [{"role": "user", "content": self._render()}]
 
 
 @dataclass(frozen=True)
@@ -228,9 +129,3 @@ class ContextNote(Message):
             key=str(md.get("note_key", "")), paths=tuple(md.get("note_paths", ())),
             size=int(md.get("note_size", 0)),
         )
-
-    def to_anthropic(self) -> list[dict]:
-        return [{"role": "user", "content": self.wrap(self.text)}]
-
-    def to_openai(self) -> list[dict]:
-        return [{"role": "user", "content": self.wrap(self.text)}]

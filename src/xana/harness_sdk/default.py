@@ -1794,7 +1794,7 @@ def _assemble_for_model(system_content: str, history: tuple[MemoryMessage, ...])
     assistant/tool metadata that round-trip the tool_use cycle."""
     msgs: list[ModelMessage] = [ModelMessage(role="system", content=system_content)]
     for m in history:
-        # compact 摘要按会话规格 §1.9 以 user 角色出现(CompactSummary.to_anthropic 同);其余未知角色归 system
+        # compact 摘要按会话规格 §1.9 以 user 角色出现;其余未知角色归 system
         role = "user" if m.role == "compact" else m.role if m.role in ("user", "assistant", "system", "tool") else "system"
         msgs.append(ModelMessage(role=role, content=m.content, metadata=dict(m.metadata)))
     return tuple(msgs)

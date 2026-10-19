@@ -385,7 +385,7 @@ class DefaultCommandRouter(CommandRouter):
                     inbound.session_id, await self._session_agent(inbound.session_id), run_id, (cs,))
                 sdk_ph_acquired = False
             # §1.9 single-source render: same string the model will see
-            # (CompactSummary.to_anthropic/openai) is what the card panel
+            # (CompactSummary.render, via the bridge) is what the card panel
             # shows. Without this, the card body was the raw model output
             # (no template prefix/suffix), while the model context had the
             # full templated form — visible divergence between front-end
