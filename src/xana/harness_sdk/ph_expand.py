@@ -1,43 +1,27 @@
-"""Placeholder → synthetic user/assistant pair expansion for LLM prompt.
+"""其他并发 run 的 Placeholder 在提示词里的展开(docs/design/session-and-card-state.md §1.3)。
 
-When the per-run prompt assembler receives a mixed sequence of MemoryMessage
-and Placeholder (representing OTHER concurrent runs whose answers aren't ready
-yet), each Placeholder becomes:
-
-    user:      {ph.label}
-    assistant: [此问题正在后台处理中,请基于其他可用上下文继续。]
-
-The run never sees its OWN Placeholder (the fork snapshot is taken BEFORE the
-PH is appended to main). MemoryMessage entries pass through unchanged.
+每轮拼提示词时,混合快照里可能有其他并发 run 的 PH(它们的回答还没好):
+- 普通 PH → 1 条 assistant 消息(用户原话已在它前面,不再重复);
+- compact PH → 0 条(完全隐身)。
+文本的唯一定义在 ``xana.context.message.regular_placeholder_text``,与 SDK 的 Message 序列化共用。
+本 run 自己的 PH 永远不出现(fork 快照取于追加 PH 之前)。
 """
 from __future__ import annotations
 
 from typing import Iterable
 
+from xana.context.message import regular_placeholder_text
 from xana.memory.contracts import MemoryMessage, Placeholder
 
-PH_ASSISTANT_REPLY = (
-    "[此问题正在后台处理中,请基于其他可用上下文继续。"
-    "不要重复尝试运行此任务。]"
-)
 
-
-def expand_placeholders(
-    msgs: Iterable[MemoryMessage | Placeholder],
-) -> tuple[MemoryMessage, ...]:
-    """Replace Placeholder nodes with synthetic user/assistant pairs.
-
-    Fast-path: if the input has no Placeholder, returns the original tuple
-    (or a tuple constructed from the iterable) untouched.
-    """
+def expand_placeholders(msgs: Iterable[MemoryMessage | Placeholder]) -> tuple[MemoryMessage, ...]:
     items = tuple(msgs)
     if not any(isinstance(m, Placeholder) for m in items):
         return items  # type: ignore[return-value]
     out: list[MemoryMessage] = []
     for m in items:
-        if isinstance(m, Placeholder):
-            out.append(MemoryMessage(role="user", content=m.label))
-            out.append(MemoryMessage(role="assistant", content=PH_ASSISTANT_REPLY))
-        else:
+        if not isinstance(m, Placeholder):
             out.append(m)
+        elif not m.metadata.get("compact_placeholder"):
+            out.append(MemoryMessage(role="assistant", content=regular_placeholder_text(m.label)))
     return tuple(out)

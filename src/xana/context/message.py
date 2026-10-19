@@ -113,6 +113,12 @@ class ToolResultMessage(Message):
         ]
 
 
+def regular_placeholder_text(label: str) -> str:
+    """普通 PH 的模型可见文本(docs/design/session-and-card-state.md §1.3,逐字);唯一定义,
+    SDK 序列化与 harness 拼提示词共用。"""
+    return f"正在后台回答你的问题{label}，请勿重试此请求。"
+
+
 @dataclass(frozen=True)
 class RegularPlaceholder(Message):
     label: str  # public: original user question
@@ -122,7 +128,7 @@ class RegularPlaceholder(Message):
         return [
             {
                 "role": "assistant",
-                "content": f"正在后台回答你的问题{self.label}，请勿重试此请求。",
+                "content": regular_placeholder_text(self.label),
             }
         ]
 
@@ -130,7 +136,7 @@ class RegularPlaceholder(Message):
         return [
             {
                 "role": "assistant",
-                "content": f"正在后台回答你的问题{self.label}，请勿重试此请求。",
+                "content": regular_placeholder_text(self.label),
             }
         ]
 

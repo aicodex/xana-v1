@@ -88,6 +88,7 @@ from xana.harness_sdk.context_notes import (
     todo_reminder_note,
 )
 from xana.harness_sdk.system_prompt import BASE_PROMPT_VAR, ENV_VAR, build_system_prompt, env_section, profile_sections
+from xana.harness_sdk.ph_expand import expand_placeholders
 from xana.harness_sdk.verify import failure_text, passed_text, run_checks
 from xana.harness_sdk.usage import DefaultUsageAccumulator
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
@@ -751,7 +752,7 @@ class DefaultHarness(Harness):
 
         # a) Snapshot REAL store BEFORE appending the user_msg. Keep
         # Placeholders (from OTHER concurrent runs) in the seed so the LLM
-        # prompt can render them via ph_expand. This run's own PH is
+        # prompt can render them (ph_expand). This run's own PH is
         # appended AFTER snapshot, so it's never seen here.
         pre_snapshot = await context.active_context_store.snapshot(session_id, agent_name)
         pre_msgs = tuple(pre_snapshot)
@@ -1399,12 +1400,10 @@ class DefaultHarness(Harness):
                                         note, f"{turn_index}:{n_idx}")
 
             # PH-first: re-read mixed snapshot (may contain Placeholders from
-            # other concurrent runs) and expand them into synthetic
-            # user/assistant pairs before sending to the LLM. The run never
-            # sees its own PH (fork snapshot was taken pre-append).
-            from xana.harness_sdk.ph_expand import expand_placeholders as _expand_ph
+            # other concurrent runs) and render them per §1.3 before sending to
+            # the LLM. The run never sees its own PH (fork snapshot was taken pre-append).
             _mixed_snap = await context.active_context_store.snapshot(session_id, agent_name)
-            _prompt_msgs = _expand_ph(_mixed_snap) if _mixed_snap else history_msgs
+            _prompt_msgs = expand_placeholders(_mixed_snap) if _mixed_snap else history_msgs
             assembled = _assemble_for_model(system_content, _prompt_msgs)
             self.last_assembled_messages = assembled
 
@@ -1893,7 +1892,7 @@ class _ForkedActiveContextStore(ActiveContextStore):
         self._session_id = session_id
         self._agent_name = agent_name
         # Mixed list: other runs' Placeholders may be seeded from pre_snapshot
-        # so the LLM prompt can show them via ph_expand. ActiveContext.messages
+        # so the LLM prompt can show them (ph_expand). ActiveContext.messages
         # (returned by _ctx) stays pure MemoryMessage per the contract.
         self._messages: list[MemoryMessage | Placeholder] = list(seed_messages)
         self._produced: list[MemoryMessage] = []
