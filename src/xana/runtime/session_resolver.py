@@ -32,7 +32,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from xana.config.loader import write_system_config
+from xana.config.project_config import write_project_sessions
 from xana.config.system_model import SystemConfig
 
 _logger = logging.getLogger(__name__)
@@ -54,11 +54,11 @@ class SessionResolver:
         ``system_config.sessions`` in place before each mirror write so
         the serialised file always reflects the canonical map.
     system_json_path:
-        Path to ``system.json`` for mirror writes. Parent dir is created
-        on demand by :func:`write_system_config`.
+        Path to the project's ``config.json`` for mirror writes.
     writer:
         Optional injection point for tests; defaults to
-        :func:`xana.config.loader.write_system_config`.
+        :func:`xana.config.project_config.write_project_sessions`, which writes only the
+        session map (never the full config with credentials).
     """
 
     def __init__(
@@ -70,7 +70,7 @@ class SessionResolver:
     ) -> None:
         self._system = system_config
         self._path = Path(system_json_path)
-        self._writer = writer if writer is not None else write_system_config
+        self._writer = writer if writer is not None else write_project_sessions
         # Seed in-memory map from the SystemConfig snapshot (read-once at boot).
         self._map: dict[str, str] = dict(system_config.sessions)
         self._lock = threading.Lock()

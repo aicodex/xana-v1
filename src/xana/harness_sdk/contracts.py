@@ -19,7 +19,6 @@ if TYPE_CHECKING:
         MemorySearchEngine,
         MemoryTree,
     )
-    from xana.skills.interfaces import SkillRegistry
     from xana.state.interfaces import StateRepository
     from xana.tools.interfaces import ToolRegistry
 
@@ -138,7 +137,6 @@ class HarnessContext:
     memory_search_engine: "MemorySearchEngine | None" = None
     memory_injector_registry: "MemoryInjectorRegistry | None" = None
     tool_registry: "ToolRegistry | None" = None
-    skill_registry: "SkillRegistry | None" = None
     model_registry: "ModelRegistry | None" = None
     progress_sink: "ProgressSink | None" = None
     abort: AbortSignal = field(default_factory=AbortSignal)

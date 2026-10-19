@@ -97,7 +97,6 @@ from xana.memory.contracts import (ActiveContext, ExtractionRequest, HistoryRow,
                                    Placeholder, ReplayResult)
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror
 from xana.policy.contracts import PermissionContext, PermissionResult
-from xana.skills.contracts import SkillActivation
 from xana.state.contracts import RunRecord, UsageSnapshot
 from xana.tools.contracts import ToolActivity, ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset
 from xana.tools.interfaces import Tool
@@ -1083,18 +1082,6 @@ class DefaultHarness(Harness):
             if recall is not None:
                 pending_notes.append(recall)
         turn_input_parts: list[str] = []
-        if context.skill_registry is not None:
-            activation = SkillActivation(
-                kind="model",
-                session_id=session_id,
-                agent_name=agent_name,
-                run_id=run_id,
-                cwd=Path(context.cwd) if context.cwd else None,
-            )
-            skills = await context.skill_registry.discover(activation)
-            for skill in skills:
-                contribution = await skill.activate(activation)
-                turn_input_parts.extend(contribution.prompt_blocks)
         if ext is not None and ext.turn_input:
             tic = TurnInputContext(
                 session_id=session_id, agent_name=agent_name, run_id=run_id,

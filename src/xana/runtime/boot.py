@@ -199,7 +199,6 @@ async def boot(
     # reads are served from the SDK (canonical). P3-D.
     from xana.context.sdk import ContextSDK
     context_sdk = ContextSDK()
-    skills = InMemorySkillRegistry()
 
     # bundled skills:独立 registry,零每轮注入;全文经 skill_load 按需取,
     # 列表段由 SkillsListingContributor 注入(仅当调用方未传 extension_registry)。
@@ -387,6 +386,7 @@ async def boot(
         agents=agents,
         router=DefaultAgentRequestRouter(default_agent="chat", session_config_store=session_config_store),
         agent_registry=agent_registry,
+        route_of=session_resolver.route_of,
     )
     # P5: wire RunStore + RunJsonlWriter so /resume + cancel_all have backing.
     gateway.run_store = run_store
@@ -453,7 +453,6 @@ async def boot(
         history_mirror=mirror,
         memory_injector_registry=injector_registry,
         tool_registry=tools,
-        skill_registry=skills,
         model_registry=model_registry,
         state_repository=state,
         cwd=str(project_root),
@@ -487,7 +486,6 @@ async def boot(
             history_mirror=mirror,
             memory_injector_registry=injector_registry,
             tool_registry=tools,
-            skill_registry=skills,
             model_registry=model_registry,
             state_repository=state,
             cwd=str(project_root),
@@ -614,7 +612,7 @@ async def boot(
         history_mirror=mirror,
         memory_injector_registry=injector_registry,
         tool_registry=tools,
-        skill_registry=skills,
+        skill_registry=bundled_skills,
         model_registry=model_registry,
         state_repository=state,
         session_config_store=session_config_store,

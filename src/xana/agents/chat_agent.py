@@ -34,7 +34,6 @@ from xana.memory.interfaces import (
 )
 from xana.policy.contracts import PermissionContext
 from xana.session_config.interfaces import SessionConfigStore
-from xana.skills.interfaces import SkillRegistry
 from xana.state.interfaces import StateRepository
 from xana.tools.interfaces import ToolRegistry
 
@@ -65,7 +64,6 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         history_mirror: HistoryMirror,
         memory_injector_registry: MemoryInjectorRegistry,
         tool_registry: ToolRegistry,
-        skill_registry: SkillRegistry,
         model_registry: ModelRegistry,
         state_repository: StateRepository,
         cwd: str,
@@ -96,7 +94,6 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         self.history_mirror = history_mirror
         self.memory_injector_registry = memory_injector_registry
         self.tool_registry = tool_registry
-        self.skill_registry = skill_registry
         self.model_registry = model_registry
         self.state_repository = state_repository
         self.cwd = cwd
@@ -214,7 +211,6 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             history_mirror=self.history_mirror,
             memory_injector_registry=self.memory_injector_registry,
             tool_registry=self.tool_registry,
-            skill_registry=self.skill_registry,
             model_registry=self.model_registry,
             config_snapshot=config_snapshot,
             progress_sink=self.progress_sink,
@@ -252,7 +248,6 @@ class ChatAgent(Agent):
         history_mirror: HistoryMirror,
         memory_injector_registry: MemoryInjectorRegistry,
         tool_registry: ToolRegistry,
-        skill_registry: SkillRegistry,
         model_registry: ModelRegistry,
         state_repository: StateRepository,
         cwd: str,
@@ -278,7 +273,6 @@ class ChatAgent(Agent):
             history_mirror=history_mirror,
             memory_injector_registry=memory_injector_registry,
             tool_registry=tool_registry,
-            skill_registry=skill_registry,
             model_registry=model_registry,
             state_repository=state_repository,
             cwd=cwd,

@@ -6,7 +6,7 @@ import logging
 import time
 import uuid as _uuid
 from dataclasses import replace
-from typing import Any, AsyncGenerator, AsyncIterator, TYPE_CHECKING
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +42,11 @@ class DefaultAgentGateway(AgentGateway):
         agents: dict[str, Agent],
         router: AgentRequestRouter,
         agent_registry: AgentRegistry | None = None,
+        route_of: Callable[[str], tuple[str, str] | None] | None = None,
     ) -> None:
-        """agent_registry:文件 agent 的热加载来源(路由前刷新 agents 表);None = agents 表固定。"""
+        """agent_registry:文件 agent 的热加载来源(路由前刷新 agents 表);None = agents 表固定。
+        route_of:会话 id → (adapter_id, thread_id)(SessionResolver.route_of),/resume 用它找回原渠道。"""
+        self._route_of = route_of
         self.agents = agents
         self.router = router
         self._agent_registry = agent_registry
@@ -398,13 +401,10 @@ class DefaultAgentGateway(AgentGateway):
             if self.run_jsonl_writer is not None:
                 self.run_jsonl_writer.rename_to_aborted(run_id)
             text = rec.input_request.get("text", "") if rec.input_request else ""
-            # Fork a new run via the normal submit path. Adapter routing is
-            # picked from any registered adapter for this session — fallback
-            # to the first adapter we know about.
-            adapter_id = ""
-            for aid in self.adapters:
-                adapter_id = aid
-                break
+            # Fork a new run via the normal submit path, on the session's own channel
+            # (resolver route); first registered adapter only when the session has no route.
+            route = self._route_of(session_id) if self._route_of is not None else None
+            adapter_id = route[0] if route and route[0] in self.adapters else next(iter(self.adapters), "")
             inbound = InboundMessage(
                 adapter_id=adapter_id, session_id=session_id, text=text,
             )

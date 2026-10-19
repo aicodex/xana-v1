@@ -226,7 +226,7 @@ class DefaultCommandRouter(CommandRouter):
             return CommandResult(ok=False, message="active_context_store 未配置")
         if self.model_registry is None:
             return CommandResult(ok=False, message="model_registry 未配置,无法压缩")
-        snapshot = await self.active_context_store.get(inbound.session_id, "chat")
+        snapshot = await self.active_context_store.get(inbound.session_id, await self._session_agent(inbound.session_id))
         live = messages_since_boundary(snapshot.messages) if snapshot else ()
         if not live:
             # 空上下文(常见于 /clear 之后)→ 给个 run_id 让 gateway 渲菜单卡,
@@ -313,7 +313,7 @@ class DefaultCommandRouter(CommandRouter):
         if self.context_sdk is not None:
             try:
                 await self.context_sdk.append_compact_placeholder(
-                    inbound.session_id, "chat",
+                    inbound.session_id, await self._session_agent(inbound.session_id),
                     run_id=run_id, ph_id=run_id,
                     transcript_path=f"runs/{run_id}.jsonl",
                 )
@@ -331,7 +331,7 @@ class DefaultCommandRouter(CommandRouter):
                 # 用户取消:停流、不写回。仍需 finalize 防止 PH 卡片永久停在 running。
                 if sdk_ph_acquired and self.context_sdk is not None:
                     await self.context_sdk.cancel_compact_placeholder(
-                        inbound.session_id, "chat", run_id)
+                        inbound.session_id, await self._session_agent(inbound.session_id), run_id)
                     sdk_ph_acquired = False
                 if ph_note is not None:
                     ph_note({
@@ -346,7 +346,7 @@ class DefaultCommandRouter(CommandRouter):
             if summary is None:
                 if sdk_ph_acquired and self.context_sdk is not None:
                     await self.context_sdk.cancel_compact_placeholder(
-                        inbound.session_id, "chat", run_id)
+                        inbound.session_id, await self._session_agent(inbound.session_id), run_id)
                     sdk_ph_acquired = False
                 if ph_note is not None:
                     ph_note({
@@ -382,7 +382,7 @@ class DefaultCommandRouter(CommandRouter):
                     revealed_tools=revealed,
                 )
                 await self.context_sdk.replace_placeholder(
-                    inbound.session_id, "chat", run_id, (cs,))
+                    inbound.session_id, await self._session_agent(inbound.session_id), run_id, (cs,))
                 sdk_ph_acquired = False
             # §1.9 single-source render: same string the model will see
             # (CompactSummary.to_anthropic/openai) is what the card panel
@@ -414,7 +414,7 @@ class DefaultCommandRouter(CommandRouter):
             if sdk_ph_acquired and self.context_sdk is not None:
                 try:
                     await self.context_sdk.cancel_compact_placeholder(
-                        inbound.session_id, "chat", run_id)
+                        inbound.session_id, await self._session_agent(inbound.session_id), run_id)
                 except Exception:
                     pass
                 sdk_ph_acquired = False
@@ -434,7 +434,7 @@ class DefaultCommandRouter(CommandRouter):
             if sdk_ph_acquired and self.context_sdk is not None:
                 try:
                     await self.context_sdk.cancel_compact_placeholder(
-                        inbound.session_id, "chat", run_id)
+                        inbound.session_id, await self._session_agent(inbound.session_id), run_id)
                 except Exception:
                     pass
 
@@ -454,6 +454,11 @@ class DefaultCommandRouter(CommandRouter):
         new = dataclasses.replace(current, **changes)
         await self.session_config_store.save(new)
         return new
+
+    async def _session_agent(self, session_id: str) -> str:
+        """会话当前绑定的 agent(/agent 设置),没有则默认 agent;上下文按 (会话, agent) 存放。"""
+        cfg = await self._current_config(session_id)
+        return (cfg.agent if cfg is not None and cfg.agent else None) or self.default_agent
 
     async def _current_config(self, session_id: str) -> "SessionConfig | None":
         if self.session_config_store is None:
@@ -531,7 +536,7 @@ class DefaultCommandRouter(CommandRouter):
         # on→off guard: 若仍有 running placeholder,拒绝
         if current.async_mode and not new_val and self.active_context_store is not None:
             from xana.memory.contracts import Placeholder
-            snap = await self.active_context_store.snapshot(inbound.session_id, "chat")
+            snap = await self.active_context_store.snapshot(inbound.session_id, await self._session_agent(inbound.session_id))
             for item in snap:
                 if isinstance(item, Placeholder) and item.status == "running":
                     return CommandResult(
@@ -586,7 +591,7 @@ class DefaultCommandRouter(CommandRouter):
         if self.active_context_store is None:
             return CommandResult(ok=False, message="active_context_store 未配置")
         snap = await self.active_context_store.snapshot(
-            inbound.session_id, "chat")
+            inbound.session_id, await self._session_agent(inbound.session_id))
         sends: list[dict[str, Any]] = []
         labels: list[str] = []
         for m in snap:
@@ -614,7 +619,7 @@ class DefaultCommandRouter(CommandRouter):
         from xana.memory.contracts import Placeholder
         if self.active_context_store is None:
             return CommandResult(ok=False, message="active_context_store 未配置")
-        snap = await self.active_context_store.snapshot(inbound.session_id, "chat")
+        snap = await self.active_context_store.snapshot(inbound.session_id, await self._session_agent(inbound.session_id))
         choices: list[dict[str, Any]] = []
         for m in snap:
             if isinstance(m, Placeholder) and m.status == "running":

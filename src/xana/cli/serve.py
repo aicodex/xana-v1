@@ -181,35 +181,23 @@ def _make_daemon_on_action(gateway):
     return on_action
 
 
-async def _start_daemon_in_process(
-    *,
-    project_root: Path,
-    port: int | None,
-    token: str,
-    unix_socket: str | None = None,
-):
-    """boot + register DaemonBridgeAdapter + start HTTP server.
-
-    Returns (bridge, gateway, runner_task). Cancel runner_task to shut down.
-    Used by tests; serve_main uses the same building blocks inline.
-    """
-    boot_result = await boot(
-        project_root=project_root,
-        history_root=project_home() / "sessions",
-    )
-    bridge = DaemonBridgeAdapter()
-    await bridge.start()
-    await boot_result.gateway.register_adapter("cli", bridge)
-
-    on_action = _make_daemon_on_action(boot_result.gateway)
-    app = build_daemon_app(bridge=bridge, token=token, on_action=on_action)
-
-    if unix_socket:
-        Path(unix_socket).parent.mkdir(parents=True, exist_ok=True)
-        task = asyncio.create_task(run_unix_socket(app, unix_socket))
-    else:
-        task = asyncio.create_task(run_tcp(app, "127.0.0.1", port or 17777))
-    return bridge, boot_result.gateway, task
+async def _start_daemon(boot_result, daemon_cfg) -> tuple[DaemonBridgeAdapter, list[asyncio.Task]]:
+    """注册 xanac 用的 DaemonBridgeAdapter,并起 unix socket(无鉴权,本机)与 TCP(token 鉴权)两路 HTTP。"""
+    daemon_bridge = DaemonBridgeAdapter(session_resolver=boot_result.session_resolver)
+    await daemon_bridge.start()
+    await boot_result.gateway.register_adapter("cli", daemon_bridge)
+    on_daemon_action = _make_daemon_on_action(boot_result.gateway)
+    tasks: list[asyncio.Task] = []
+    # 每个项目一个 unix socket(未配置时取 projects/<id>/run/serve.sock)
+    unix_path = daemon_socket(daemon_cfg)
+    unix_path.parent.mkdir(parents=True, exist_ok=True)
+    unix_app = build_daemon_app(bridge=daemon_bridge, token="", on_action=on_daemon_action)
+    tasks.append(asyncio.create_task(run_unix_socket(unix_app, str(unix_path))))
+    print(f"[daemon] unix socket {unix_path}")
+    tcp_app = build_daemon_app(bridge=daemon_bridge, token=daemon_cfg.token, on_action=on_daemon_action)
+    tasks.append(asyncio.create_task(run_tcp(tcp_app, daemon_cfg.bind, daemon_cfg.port)))
+    print(f"[daemon] tcp {daemon_cfg.bind}:{daemon_cfg.port}")
+    return daemon_bridge, tasks
 
 
 async def _run(argv: argparse.Namespace) -> int:
@@ -268,30 +256,7 @@ async def _run_inner(argv: argparse.Namespace) -> int:
         ) from None
     _preflight.close()
 
-    daemon_bridge = DaemonBridgeAdapter(
-        session_resolver=boot_result.session_resolver,
-    )
-    await daemon_bridge.start()
-    await boot_result.gateway.register_adapter("cli", daemon_bridge)
-    on_daemon_action = _make_daemon_on_action(boot_result.gateway)
-    daemon_tasks: list[asyncio.Task] = []
-    # 每个项目一个 unix socket(未配置时取 projects/<id>/run/serve.sock)
-    unix_path = daemon_socket(daemon_cfg)
-    unix_path.parent.mkdir(parents=True, exist_ok=True)
-    unix_app = build_daemon_app(
-        bridge=daemon_bridge, token="", on_action=on_daemon_action,
-    )
-    daemon_tasks.append(
-        asyncio.create_task(run_unix_socket(unix_app, str(unix_path)))
-    )
-    print(f"[daemon] unix socket {unix_path}")
-    tcp_app = build_daemon_app(
-        bridge=daemon_bridge, token=daemon_cfg.token, on_action=on_daemon_action,
-    )
-    daemon_tasks.append(
-        asyncio.create_task(run_tcp(tcp_app, daemon_cfg.bind, daemon_cfg.port))
-    )
-    print(f"[daemon] tcp {daemon_cfg.bind}:{daemon_cfg.port}")
+    daemon_bridge, daemon_tasks = await _start_daemon(boot_result, daemon_cfg)
     if daemon_cfg.bind == "0.0.0.0":
         import logging as _logging
         _logging.getLogger(__name__).warning(
