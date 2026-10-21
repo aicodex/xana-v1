@@ -11,6 +11,7 @@ Three substrates, in order of distance from the conversation:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from xana.memory.contracts import (
     ActiveContext,
@@ -25,8 +26,17 @@ from xana.memory.contracts import (
     SearchQuery,
 )
 
+if TYPE_CHECKING:
+    from xana.context.sdk import ContextSDK
+
 
 class ActiveContextStore(ABC):
+    """会话上下文读写接口;权威数据在 ContextSDK 缓冲里(docs/design/session-and-card-state.md §3)。"""
+
+    @abstractmethod
+    def sdk(self) -> "ContextSDK":
+        """背后的 ContextSDK:auto-compact / 手动 /compact 经它拿 per-sid compact 锁(§1.5 c3/c4)。"""
+
     @abstractmethod
     async def get(self, session_id: str, agent_name: str) -> ActiveContext | None: ...
 
@@ -35,9 +45,6 @@ class ActiveContextStore(ABC):
 
     @abstractmethod
     async def append_message(self, session_id: str, agent_name: str, message: MemoryMessage) -> ActiveContext: ...
-
-    @abstractmethod
-    async def compact(self, session_id: str, agent_name: str, summary: str) -> ActiveContext: ...
 
     @abstractmethod
     async def clear(self, session_id: str, agent_name: str) -> None: ...
@@ -59,17 +66,6 @@ class ActiveContextStore(ABC):
         replace_with: tuple[MemoryMessage, ...],
     ) -> ActiveContext | None: ...
 
-    @abstractmethod
-    async def replace_range(
-        self,
-        session_id: str,
-        agent_name: str,
-        start_idx: int,
-        end_idx: int,
-        summary_message: MemoryMessage,
-    ) -> ActiveContext | None: ...
-
-
 class HistoryMirror(ABC):
     @abstractmethod
     async def append(self, row: HistoryRow) -> None: ...
@@ -86,17 +82,6 @@ class HistoryMirror(ABC):
     async def replace_placeholder(
         self, run_id: str, messages: tuple[MemoryMessage, ...]
     ) -> None: ...
-
-    @abstractmethod
-    async def replace_range(
-        self,
-        session_id: str,
-        agent_name: str,
-        start_idx: int,
-        end_idx: int,
-        summary_message: MemoryMessage,
-    ) -> None: ...
-
 
 class MemoryReplayer(ABC):
     @abstractmethod

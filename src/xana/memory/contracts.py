@@ -48,7 +48,6 @@ class ActiveContext:
     session_id: str
     agent_name: str
     messages: tuple[MemoryMessage, ...] = ()
-    summary: str = ""
     pinned_facts: tuple[str, ...] = ()
     token_estimate: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)

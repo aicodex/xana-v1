@@ -95,17 +95,6 @@ class FileHistoryMirror(HistoryMirror):
     ) -> None:
         raise NotImplementedError("Group B/C")
 
-    async def replace_range(
-        self,
-        session_id: str,
-        agent_name: str,
-        start_idx: int,
-        end_idx: int,
-        summary_message: MemoryMessage,
-    ) -> None:
-        raise NotImplementedError("Group H")
-
-
 class FileMemoryReplayer(MemoryReplayer):
     """读 mirror 全部行，按 (session_id, agent_name) 分组重建 ActiveContext。
 

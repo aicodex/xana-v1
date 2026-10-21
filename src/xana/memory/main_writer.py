@@ -12,10 +12,13 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Coroutine, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Sequence
 
 from xana.memory.contracts import ActiveContext, HistoryKind, HistoryRow, MemoryMessage, Placeholder
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror
+
+if TYPE_CHECKING:
+    from xana.context.sdk import ContextSDK
 
 _ROLE_TO_KIND: dict[str, HistoryKind] = {"user": "user", "assistant": "assistant", "tool": "tool", "system": "system"}
 
@@ -37,21 +40,8 @@ class _QueuedActiveContextStore(ActiveContextStore):
         await self._enqueue(_WriteOp(coro_factory=factory, fut=fut))
         return await fut
 
-    def sdk(self):
-        """Passthrough to inner store's ``sdk()`` if present.
-
-        Bug C fix: harness uses this to drive auto-compact through the
-        ContextSDK (same compact_lock as manual /compact). Returns None if
-        the inner store does not back onto a ContextSDK.
-        See docs/design/session-and-card-state.md §1.5.
-        """
-        getter = getattr(self._inner, "sdk", None)
-        if callable(getter):
-            try:
-                return getter()
-            except Exception:
-                return None
-        return None
+    def sdk(self) -> "ContextSDK":
+        return self._inner.sdk()
 
     async def get(self, session_id: str, agent_name: str) -> ActiveContext | None:
         return await self._inner.get(session_id, agent_name)
@@ -69,9 +59,6 @@ class _QueuedActiveContextStore(ActiveContextStore):
             lambda: self._inner.append_message(session_id, agent_name, message)
         )
 
-    async def compact(self, session_id: str, agent_name: str, summary: str) -> ActiveContext:
-        return await self._run(lambda: self._inner.compact(session_id, agent_name, summary))
-
     async def clear(self, session_id: str, agent_name: str) -> None:
         await self._run(lambda: self._inner.clear(session_id, agent_name))
 
@@ -84,20 +71,6 @@ class _QueuedActiveContextStore(ActiveContextStore):
         self, run_id: str, replace_with: tuple[MemoryMessage, ...]
     ) -> ActiveContext | None:
         return await self._run(lambda: self._inner.replace_placeholder(run_id, replace_with))
-
-    async def replace_range(
-        self,
-        session_id: str,
-        agent_name: str,
-        start_idx: int,
-        end_idx: int,
-        summary_message: MemoryMessage,
-    ) -> ActiveContext | None:
-        return await self._run(
-            lambda: self._inner.replace_range(
-                session_id, agent_name, start_idx, end_idx, summary_message
-            )
-        )
 
 
 class _QueuedHistoryMirror(HistoryMirror):
@@ -135,26 +108,6 @@ class _QueuedHistoryMirror(HistoryMirror):
         await self._enqueue(
             _WriteOp(
                 coro_factory=lambda: self._inner.replace_placeholder(run_id, messages),
-                fut=fut,
-            )
-        )
-        await fut
-
-    async def replace_range(
-        self,
-        session_id: str,
-        agent_name: str,
-        start_idx: int,
-        end_idx: int,
-        summary_message: MemoryMessage,
-    ) -> None:
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future = loop.create_future()
-        await self._enqueue(
-            _WriteOp(
-                coro_factory=lambda: self._inner.replace_range(
-                    session_id, agent_name, start_idx, end_idx, summary_message
-                ),
                 fut=fut,
             )
         )

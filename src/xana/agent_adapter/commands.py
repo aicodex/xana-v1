@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
 
 from xana.config.paths import project_home, project_id, project_root
@@ -26,6 +27,9 @@ if TYPE_CHECKING:
 
 
 _HandlerFn = Callable[["DefaultCommandRouter", InboundMessage, str], Awaitable[CommandResult]]
+
+
+_logger = logging.getLogger(__name__)
 
 
 _VIEW_MODES = ("detailed", "grouped", "summary")
@@ -51,8 +55,6 @@ class DefaultCommandRouter(CommandRouter):
         provider: str = "",
         model: str = "",
         progress_sink: Any = None,
-        write_queue: Any = None,
-        context_sdk: Any = None,
         default_agent: str = "chat",
         agent_registry: Any = None,   # AgentRegistry | None — /agent 前刷新(热加载)
     ) -> None:
@@ -68,8 +70,6 @@ class DefaultCommandRouter(CommandRouter):
         self.provider = provider
         self.model = model
         self.progress_sink = progress_sink
-        self.write_queue = write_queue
-        self.context_sdk = context_sdk
         self._compact_seq = 0
         self._compact_cancels: dict[str, asyncio.Event] = {}
 
@@ -218,7 +218,7 @@ class DefaultCommandRouter(CommandRouter):
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
         from xana.harness_sdk.compact import (
             _CompactCancelled,
-            generate_summary, messages_since_boundary, partial_summary, persist_compact_transcript,
+            generate_summary, partial_summary, persist_compact_transcript,
             revealed_tools_from_messages, summary_progress,
         )
         from xana.harness_sdk.contracts import ProgressEvent
@@ -227,7 +227,7 @@ class DefaultCommandRouter(CommandRouter):
         if self.model_registry is None:
             return CommandResult(ok=False, message="model_registry 未配置,无法压缩")
         snapshot = await self.active_context_store.get(inbound.session_id, await self._session_agent(inbound.session_id))
-        live = messages_since_boundary(snapshot.messages) if snapshot else ()
+        live = snapshot.messages if snapshot else ()
         if not live:
             # 空上下文(常见于 /clear 之后)→ 给个 run_id 让 gateway 渲菜单卡,
             # 否则 /compact 是 silent_cmd 不预建卡,error 路径会 card_id 空 → 用户看不到。
@@ -309,18 +309,18 @@ class DefaultCommandRouter(CommandRouter):
         # writeback are serialized; the summary replaces ONLY the
         # CompactPlaceholder (by run_id), never "all messages including the
         # freshly-arrived answer".
-        sdk_ph_acquired = False
-        if self.context_sdk is not None:
-            try:
-                await self.context_sdk.append_compact_placeholder(
-                    inbound.session_id, await self._session_agent(inbound.session_id),
-                    run_id=run_id, ph_id=run_id,
-                    transcript_path=f"runs/{run_id}.jsonl",
-                )
-                sdk_ph_acquired = True
-            except Exception:
-                # Lock release handled inside SDK on failure; continue best-effort.
-                sdk_ph_acquired = False
+        sdk = self.active_context_store.sdk()
+        agent = await self._session_agent(inbound.session_id)
+        try:
+            await sdk.append_compact_placeholder(
+                inbound.session_id, agent, run_id=run_id, ph_id=run_id,
+                transcript_path=f"runs/{run_id}.jsonl",
+            )
+        except Exception:
+            # 锁已由 SDK 在失败时释放;没有占位符就无法写回,直接报失败
+            _logger.exception("/compact: append_compact_placeholder failed")
+            return CommandResult(ok=False, message="压缩失败:无法开始压缩,请重试")
+        sdk_ph_acquired = True
         try:
             await _emit("")  # 立即出卡:空进度条 + 取消按钮
             try:
@@ -329,10 +329,8 @@ class DefaultCommandRouter(CommandRouter):
                     on_progress=_emit)
             except _CompactCancelled:
                 # 用户取消:停流、不写回。仍需 finalize 防止 PH 卡片永久停在 running。
-                if sdk_ph_acquired and self.context_sdk is not None:
-                    await self.context_sdk.cancel_compact_placeholder(
-                        inbound.session_id, await self._session_agent(inbound.session_id), run_id)
-                    sdk_ph_acquired = False
+                await sdk.cancel_compact_placeholder(inbound.session_id, agent, run_id)
+                sdk_ph_acquired = False
                 if ph_note is not None:
                     ph_note({
                         "kind": "compact_finalized",
@@ -344,10 +342,8 @@ class DefaultCommandRouter(CommandRouter):
                 return CommandResult(
                     ok=False, message="🛑 压缩已取消", payload={"run_id": run_id})
             if summary is None:
-                if sdk_ph_acquired and self.context_sdk is not None:
-                    await self.context_sdk.cancel_compact_placeholder(
-                        inbound.session_id, await self._session_agent(inbound.session_id), run_id)
-                    sdk_ph_acquired = False
+                await sdk.cancel_compact_placeholder(inbound.session_id, agent, run_id)
+                sdk_ph_acquired = False
                 if ph_note is not None:
                     ph_note({
                         "kind": "compact_finalized",
@@ -361,29 +357,23 @@ class DefaultCommandRouter(CommandRouter):
             # we appended above with a CompactSummary. SDK serializes this
             # under its write_lock, so a racing ph_replaced cannot stomp on
             # the freshly-arrived answer (the previous race source — see
-            # §11.3 / B3). The legacy active_context_store path is
-            # intentionally NOT updated here: until P3-D migrates harness
-            # prompt building to the SDK, the legacy store is the truth for
-            # prompt assembly. /compact is now SDK-truth for the compact
-            # write coordination.
+            # §11.3 / B3).
             # 摘要引用的"完整记录"要真实存在(与 auto-compact 同一落盘函数);压缩前已揭示的工具随摘要保留
             transcript = (persist_compact_transcript(project_home() / "sessions", inbound.session_id, live)
                           or f"runs/{run_id}.jsonl")
             revealed = tuple(sorted(revealed_tools_from_messages(snapshot.messages))) if snapshot else ()
-            if sdk_ph_acquired and self.context_sdk is not None:
-                from xana.context._internal import _PlaceholderInternal
-                from xana.context.message import CompactSummary
-                cs = CompactSummary(
-                    summary=summary,
-                    _internal=_PlaceholderInternal(
-                        run_id=run_id, ph_id=run_id,
-                        transcript_path=transcript,
-                    ),
-                    revealed_tools=revealed,
-                )
-                await self.context_sdk.replace_placeholder(
-                    inbound.session_id, await self._session_agent(inbound.session_id), run_id, (cs,))
-                sdk_ph_acquired = False
+            from xana.context._internal import _PlaceholderInternal
+            from xana.context.message import CompactSummary
+            cs = CompactSummary(
+                summary=summary,
+                _internal=_PlaceholderInternal(
+                    run_id=run_id, ph_id=run_id,
+                    transcript_path=transcript,
+                ),
+                revealed_tools=revealed,
+            )
+            await sdk.replace_placeholder(inbound.session_id, agent, run_id, (cs,))
+            sdk_ph_acquired = False
             # §1.9 single-source render: same string the model will see
             # (CompactSummary.render, via the bridge) is what the card panel
             # shows. Without this, the card body was the raw model output
@@ -411,10 +401,9 @@ class DefaultCommandRouter(CommandRouter):
             return CommandResult(
                 ok=True, message="", payload={"silent": True})
         except Exception:
-            if sdk_ph_acquired and self.context_sdk is not None:
+            if sdk_ph_acquired:
                 try:
-                    await self.context_sdk.cancel_compact_placeholder(
-                        inbound.session_id, await self._session_agent(inbound.session_id), run_id)
+                    await sdk.cancel_compact_placeholder(inbound.session_id, agent, run_id)
                 except Exception:
                     pass
                 sdk_ph_acquired = False
@@ -431,10 +420,9 @@ class DefaultCommandRouter(CommandRouter):
             self._compact_cancels.pop(run_id, None)
             # Safety: if for any reason we still hold the SDK compact lock
             # (e.g. an early `return` path skipped release), let it go.
-            if sdk_ph_acquired and self.context_sdk is not None:
+            if sdk_ph_acquired:
                 try:
-                    await self.context_sdk.cancel_compact_placeholder(
-                        inbound.session_id, await self._session_agent(inbound.session_id), run_id)
+                    await sdk.cancel_compact_placeholder(inbound.session_id, agent, run_id)
                 except Exception:
                     pass
 

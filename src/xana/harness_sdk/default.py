@@ -29,7 +29,7 @@ import time
 from datetime import date
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, AsyncGenerator, AsyncIterator, Callable, Sequence
+from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Callable, Sequence
 
 from xana.extension_api.assembler import PromptAssembler as ExtensionPromptAssembler
 from xana.extension_api.contracts import (
@@ -46,8 +46,8 @@ from xana.extension_api.contracts import (
 )
 from xana.extension_api.registry import ExtensionRegistry
 from xana.harness_sdk.compact import (
-    BLOCKING_HEADROOM, build_post_compact_context, estimate_tokens,
-    generate_summary, messages_since_boundary, persist_compact_transcript, revealed_tools_from_messages,
+    BLOCKING_HEADROOM, estimate_tokens,
+    generate_summary, persist_compact_transcript, revealed_tools_from_messages,
 )
 from xana.harness_sdk.contracts import (
     HarnessContext,
@@ -103,6 +103,9 @@ from xana.tools.interfaces import Tool
 from xana.tools.toolsets import resolve_tools
 from xana.config.paths import project_home
 
+
+if TYPE_CHECKING:
+    from xana.context.sdk import ContextSDK
 
 _logger = logging.getLogger(__name__)
 MEMORY_WRITE_TOOL = "memory_write"
@@ -773,12 +776,10 @@ class DefaultHarness(Harness):
         await context.active_context_store.append_placeholder(session_id, agent_name, ph)
 
         # c) Build forked store seeded with pre_snapshot + user_msg.
-        parent_sdk_getter = getattr(context.active_context_store, "sdk", None)
-        parent_sdk = parent_sdk_getter() if callable(parent_sdk_getter) else None
         fork_store = _ForkedActiveContextStore(
             session_id=session_id, agent_name=agent_name,
             seed_messages=pre_msgs + (user_msg,),
-            sdk=parent_sdk,
+            sdk=context.active_context_store.sdk(),
         )
 
         # d) per-run JSONL mirror when wired (async writers ok), else keep
@@ -890,10 +891,11 @@ class DefaultHarness(Harness):
                 finally:
                     await event_queue.put(_SENTINEL)
                     produced = fork_store.produced_messages()
-                    if status != "completed" and not _has_answer(produced):
+                    if status not in ("completed", "cancelled") and not _has_answer(produced):
                         # 只产出了 note(日期、记忆召回等)也算没有回答:追加失败说明,别让失败悄悄消失
+                        # (用户取消不算失败)。assistant 角色(同 CC 合成的 API 错误消息):system 角色进不了上下文缓冲。
                         failure = MemoryMessage(
-                            role="system",
+                            role="assistant",
                             content=f"此回答未完成（status={status}）。",
                         )
                         produced = (*produced, failure)
@@ -901,7 +903,7 @@ class DefaultHarness(Harness):
                             await jsonl_mirror.append(HistoryRow(
                                 row_id=f"{run_id}:bg:fail",
                                 session_id=session_id, agent_name=agent_name,
-                                kind="system", payload=failure, ts=time.time(),
+                                kind="assistant", payload=failure, ts=time.time(),
                             ))
                         except Exception:
                             _logger.exception("run_jsonl fail-row write failed")
@@ -954,9 +956,9 @@ class DefaultHarness(Harness):
             raise
         finally:
             produced = fork_store.produced_messages()
-            if status != "completed" and not _has_answer(produced):
+            if status not in ("completed", "cancelled") and not _has_answer(produced):
                 produced = (*produced, MemoryMessage(
-                    role="system",
+                    role="assistant",
                     content=f"此回答未完成（status={status}）。",
                 ))
             await _finalize_writeback(produced, status)
@@ -1207,8 +1209,7 @@ class DefaultHarness(Harness):
                 else:
                     # /clear 等导致历史变短 → 旧精确值失效,退回估算
                     tokens = estimate_tokens(history_msgs)
-                live = messages_since_boundary(history_msgs)
-                if tokens >= int(force_at) and live and not compact_attempted:
+                if tokens >= int(force_at) and not compact_attempted:
                     compact_attempted = True
                     from xana.context._compact_debug import log_auto_compact
                     log_auto_compact(
@@ -1218,104 +1219,44 @@ class DefaultHarness(Harness):
                     )
                     await self._report_compact(context, session_id, run_id, "start")
                     summary = await generate_summary(
-                        client, provider=provider, model=context.model, messages=live)
+                        client, provider=provider, model=context.model, messages=history_msgs)
                     if summary is None:
                         await self._report_compact(context, session_id, run_id, "failed")
                     else:
                         # 诚信修复:compact 前把将被压缩的消息区间落盘,摘要引用
                         # 真实可读路径;落盘失败退回旧式相对路径不阻断 compact。
                         transcript = await _persist_compact_transcript(
-                            context, session_id, tuple(live))
+                            context, session_id, tuple(history_msgs))
                         if transcript is None:
                             transcript = f"runs/autocompact-{session_id}-{run_id}.jsonl"
-                        # Bug C fix: prefer SDK Compact-as-PH path so we
-                        # take the same per-sid compact_lock as manual
-                        # /compact (serializing auto vs manual) AND keep
-                        # the boundary marker in the SDK buffer (the
-                        # legacy ``set()`` mirror dropped role="system"
-                        # via _message_bridge, losing the boundary). See
-                        # docs/design/session-and-card-state.md §1.5
-                        # c3/c4.
-                        revealed_now = sorted(
-                            revealed_tools_from_messages(history_msgs))
-                        from xana.context.sdk import ContextSDK as _SDK
-                        sdk: "_SDK | None" = None
-                        store = context.active_context_store
-                        sdk_getter = getattr(store, "sdk", None)
-                        if callable(sdk_getter):
-                            try:
-                                sdk = sdk_getter()
-                            except Exception:
-                                sdk = None
-                        wq = context.metadata.get("write_queue")
-                        if sdk is not None:
-                            from xana.context._internal import _PlaceholderInternal
-                            from xana.context.message import CompactSummary
-                            auto_run_id = f"autocompact-{session_id}-{run_id}"
-                            try:
-                                await sdk.append_compact_placeholder(
-                                    session_id, agent_name,
-                                    run_id=auto_run_id, ph_id=auto_run_id,
-                                    transcript_path=transcript,
-                                )
-                                cs = CompactSummary(
-                                    summary=summary,
-                                    _internal=_PlaceholderInternal(
-                                        run_id=auto_run_id,
-                                        ph_id=auto_run_id,
-                                        transcript_path=transcript,
-                                    ),
-                                    revealed_tools=tuple(revealed_now),
-                                )
-                                await sdk.replace_placeholder(
-                                    session_id, agent_name, auto_run_id, (cs,),
-                                )
-                            except Exception:
-                                _logger.exception(
-                                    "auto-compact SDK writeback failed; "
-                                    "falling back to legacy path")
-                                sdk = None
-                        if sdk is None:
-                            # Legacy fallback (tests w/ no SDK-backed store).
-                            _logger.warning(
-                                "auto-compact using legacy fallback path "
-                                "(no ContextSDK on active_context_store)")
-                            if wq is not None:
-                                from xana.memory.contracts import Placeholder
-                                from xana.memory.write_queue import ReplaceRangeItem
-                                from xana.context.message import CompactSummary
-                                from xana.harness_sdk.compact import (
-                                    COMPACT_BOUNDARY_MARKER,
-                                )
-                                mixed = await context.active_context_store.snapshot(
-                                    session_id, agent_name)
-                                fork_point = len(mixed)
-                                for i, item in enumerate(mixed):
-                                    if isinstance(item, Placeholder) and item.status == "running":
-                                        fork_point = i
-                                        break
-                                boundary_meta: dict = {"compact_boundary": True}
-                                if revealed_now:
-                                    boundary_meta["pre_compact_revealed_tools"] = revealed_now
-                                summary_msg = MemoryMessage(
-                                    role="compact",
-                                    content=CompactSummary.render(summary, transcript_path=transcript),
-                                    metadata={**boundary_meta,
-                                              "compact_summary": True,
-                                              "boundary_marker": COMPACT_BOUNDARY_MARKER},
-                                )
-                                await wq.put(ReplaceRangeItem(
-                                    session_id=session_id, agent_name=agent_name,
-                                    start_idx=0, end_idx=fork_point, summary=summary_msg,
-                                ))
-                            else:
-                                await context.active_context_store.set(build_post_compact_context(
-                                    session_id=session_id, agent_name=agent_name, summary=summary,
-                                    revealed_tools=revealed_now, transcript_path=transcript))
-                        self._session_prompt_tokens.pop(key, None)
-                        await self._report_compact(context, session_id, run_id, "done")
-                        snapshot = await context.active_context_store.get(session_id, agent_name)
-                        history_msgs = snapshot.messages if snapshot is not None else ()
+                        # Compact-as-PH(§1.5 c3/c4):和手动 /compact 同一把 per-sid compact 锁;
+                        # 替换成 CompactSummary 时 SDK 把它之前的历史折叠进摘要。
+                        from xana.context._internal import _PlaceholderInternal
+                        from xana.context.message import CompactSummary
+                        sdk = context.active_context_store.sdk()
+                        auto_run_id = f"autocompact-{session_id}-{run_id}"
+                        try:
+                            await sdk.append_compact_placeholder(
+                                session_id, agent_name,
+                                run_id=auto_run_id, ph_id=auto_run_id,
+                                transcript_path=transcript,
+                            )
+                            await sdk.replace_placeholder(session_id, agent_name, auto_run_id, (CompactSummary(
+                                summary=summary,
+                                _internal=_PlaceholderInternal(
+                                    run_id=auto_run_id, ph_id=auto_run_id, transcript_path=transcript),
+                                revealed_tools=tuple(sorted(revealed_tools_from_messages(history_msgs))),
+                            ),))
+                        except Exception:
+                            _logger.exception("auto-compact SDK writeback failed")
+                            # 已插入的 compact 占位符要撤掉,否则 compact 锁不释放
+                            await sdk.cancel_compact_placeholder(session_id, agent_name, auto_run_id)
+                            await self._report_compact(context, session_id, run_id, "failed")
+                        else:
+                            self._session_prompt_tokens.pop(key, None)
+                            await self._report_compact(context, session_id, run_id, "done")
+                            snapshot = await context.active_context_store.get(session_id, agent_name)
+                            history_msgs = snapshot.messages if snapshot is not None else ()
                 elif tokens >= int(ctx_win) - BLOCKING_HEADROOM and compact_attempted:
                     await self._fire_turn_end(
                         ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
@@ -1858,7 +1799,7 @@ class _ForkedActiveContextStore(ActiveContextStore):
         session_id: str,
         agent_name: str,
         seed_messages: tuple[MemoryMessage | Placeholder, ...],
-        sdk: Any | None = None,
+        sdk: "ContextSDK",
     ) -> None:
         self._session_id = session_id
         self._agent_name = agent_name
@@ -1867,13 +1808,12 @@ class _ForkedActiveContextStore(ActiveContextStore):
         # (returned by _ctx) stays pure MemoryMessage per the contract.
         self._messages: list[MemoryMessage | Placeholder] = list(seed_messages)
         self._produced: list[MemoryMessage] = []
-        self._summary: str = ""
         self._sdk = sdk
 
     def produced_messages(self) -> tuple[MemoryMessage, ...]:
         return tuple(self._produced)
 
-    def sdk(self) -> Any | None:
+    def sdk(self) -> "ContextSDK":
         return self._sdk
 
     def _ctx(self) -> ActiveContext:
@@ -1882,7 +1822,6 @@ class _ForkedActiveContextStore(ActiveContextStore):
             session_id=self._session_id,
             agent_name=self._agent_name,
             messages=pure,
-            summary=self._summary,
             token_estimate=sum(len(m.content) for m in pure),
         )
 
@@ -1890,14 +1829,9 @@ class _ForkedActiveContextStore(ActiveContextStore):
         return self._ctx()
 
     async def set(self, context: ActiveContext) -> None:
-        # Used by compaction. After set(), the seed view is replaced with
-        # the post-compact context (boundary + summary). Push those into
-        # `_produced` too so the PH-replacement payload carries the compact
-        # summary forward into the real store (spec §1.6 case A: compact
-        # summary lands on the PH's bg card).
+        # 整体替换本 run 的视图;替换后的内容即本 run 的产出,随 PH 替换写回主历史。
         self._messages = list(context.messages)
-        self._summary = context.summary
-        self._produced = [m for m in context.messages]
+        self._produced = list(context.messages)
 
     async def append_message(
         self, session_id: str, agent_name: str, message: MemoryMessage
@@ -1909,16 +1843,8 @@ class _ForkedActiveContextStore(ActiveContextStore):
             self._produced.append(message)
         return self._ctx()
 
-    async def compact(
-        self, session_id: str, agent_name: str, summary: str
-    ) -> ActiveContext:
-        self._summary = summary
-        self._messages = []
-        return self._ctx()
-
     async def clear(self, session_id: str, agent_name: str) -> None:
         self._messages = []
-        self._summary = ""
 
     async def snapshot(
         self, session_id: str, agent_name: str
@@ -1935,20 +1861,6 @@ class _ForkedActiveContextStore(ActiveContextStore):
         self, run_id: str, replace_with: tuple[MemoryMessage, ...]
     ) -> ActiveContext | None:
         return None
-
-    async def replace_range(
-        self,
-        session_id: str,
-        agent_name: str,
-        start_idx: int,
-        end_idx: int,
-        summary_message: MemoryMessage,
-    ) -> ActiveContext | None:
-        if start_idx < 0 or end_idx > len(self._messages) or start_idx >= end_idx:
-            return None
-        self._messages[start_idx:end_idx] = [summary_message]
-        return self._ctx()
-
 
 class _RunJsonlMirror(HistoryMirror):
     """HistoryMirror that writes each appended row into the per-run JSONL.
@@ -1985,17 +1897,6 @@ class _RunJsonlMirror(HistoryMirror):
         self, run_id: str, messages: tuple[MemoryMessage, ...]
     ) -> None:
         raise NotImplementedError("Group B/C")
-
-    async def replace_range(
-        self,
-        session_id: str,
-        agent_name: str,
-        start_idx: int,
-        end_idx: int,
-        summary_message: MemoryMessage,
-    ) -> None:
-        raise NotImplementedError("Group H")
-
 
 def _denied_result(perm: PermissionResult) -> ToolResult:
     return ToolResult(

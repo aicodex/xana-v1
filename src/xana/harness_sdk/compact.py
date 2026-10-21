@@ -1,7 +1,7 @@
 """Compact 共享纯函数 — auto-compact(DefaultHarness 内联触发)与 /compact 共用。
 
-无 class、无 ABC;状态写回走已有 ActiveContextStore.set()。
-boundary/summary/保留消息全部是普通 MemoryMessage,summary 字段不再使用。
+无 class、无 ABC;写回走 ContextSDK 的 Compact-as-PH(docs/design/session-and-card-state.md §1.5):
+compact 占位符替换成 CompactSummary 时,SDK 把它之前的全部历史折叠进摘要。
 """
 from __future__ import annotations
 
@@ -12,13 +12,9 @@ import time
 from pathlib import Path
 from typing import Awaitable, Callable, Sequence
 
-from xana.context.message import CompactSummary as _CompactSummary
-from xana.harness_sdk.compact_prompt import (
-    COMPACT_BOUNDARY_MARKER,
-    get_compact_prompt,
-)
+from xana.harness_sdk.compact_prompt import get_compact_prompt
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
-from xana.memory.contracts import ActiveContext, MemoryMessage
+from xana.memory.contracts import MemoryMessage
 
 _logger = logging.getLogger(__name__)
 
@@ -34,13 +30,6 @@ _COMPACT_RETRIES = 3
 
 def estimate_tokens(messages: Sequence[MemoryMessage]) -> int:
     return max(1, sum(len(m.content or "") for m in messages) // _CHARS_PER_TOKEN)
-
-
-def messages_since_boundary(messages: tuple[MemoryMessage, ...]) -> tuple[MemoryMessage, ...]:
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i].metadata.get("compact_boundary"):
-            return messages[i + 1:]
-    return messages
 
 
 SUMMARY_SECTIONS = (
@@ -163,7 +152,7 @@ def persist_compact_transcript(sessions_root: Path, session_id: str, messages) -
 
 
 def revealed_tools_from_messages(messages) -> set[str]:
-    """已揭示工具 = 消息 metadata.revealed_tools ∪ compact boundary 的
+    """已揭示工具 = 消息 metadata.revealed_tools ∪ 压缩摘要带下来的
     pre_compact_revealed_tools(CC: preCompactDiscoveredTools 同思路)。"""
     out: set[str] = set()
     for m in messages:
@@ -173,25 +162,3 @@ def revealed_tools_from_messages(messages) -> set[str]:
                 out.update(names)
     return out
 
-
-def build_post_compact_context(
-    *, session_id: str, agent_name: str, summary: str,
-    revealed_tools: Sequence[str] = (),
-    transcript_path: str = "",
-) -> ActiveContext:
-    """compact 后上下文清空,只留 boundary + 一条 post-compact 消息(CC 行为,不逐字保留近期消息)。
-    revealed_tools 非空时写进 boundary metadata,压缩后 deferred 工具的揭示状态不丢。
-    transcript_path 是落盘的真实消息区间文件,摘要据此引用(诚信修复)。"""
-    boundary_meta: dict = {"compact_boundary": True}
-    if revealed_tools:
-        boundary_meta["pre_compact_revealed_tools"] = sorted(revealed_tools)
-    boundary = MemoryMessage(
-        role="system", content=COMPACT_BOUNDARY_MARKER, metadata=boundary_meta
-    )
-    summary_msg = MemoryMessage(
-        role="user", content=_CompactSummary.render(summary, transcript_path=transcript_path),
-    )
-    return ActiveContext(
-        session_id=session_id, agent_name=agent_name,
-        messages=(boundary, summary_msg),
-    )

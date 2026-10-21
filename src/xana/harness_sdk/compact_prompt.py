@@ -5,8 +5,6 @@
 """
 from __future__ import annotations
 
-COMPACT_BOUNDARY_MARKER = "对话已压缩"
-
 NO_TOOLS_PREAMBLE = """重要：仅回复纯文本。禁止调用任何工具。
 
 - 禁止使用 Read、Bash、Grep、Glob、Edit、Write 或任何其他工具。

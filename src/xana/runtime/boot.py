@@ -192,9 +192,8 @@ async def boot(
     memory_store = ProjectMemoryStore(project_root)
     injector_registry = DefaultMemoryInjectorRegistry()
 
-    # §1.5 Compact-as-PH: construct ContextSDK FIRST, then back the legacy
-    # InMemoryActiveContextStore with it so writes flow into both stores and
-    # reads are served from the SDK (canonical). P3-D.
+    # §1.5 Compact-as-PH: the ContextSDK buffer is the single authority for session context;
+    # InMemoryActiveContextStore (below) reads and writes it.
     from xana.context.sdk import ContextSDK
     context_sdk = ContextSDK()
 
@@ -288,7 +287,7 @@ async def boot(
         mirror = InMemoryHistoryMirror()
         active_ctx = active_ctx_inner
 
-    # Group C: write queue + single consumer for PH replacement + replace_range.
+    # Group C: write queue + single consumer for PH replacement.
     # CRITICAL (spec section 11): consumer runs as a SEPARATE asyncio task
     # so sync mode does not deadlock when _invoke enqueues during a run.
     write_queue = WriteQueue()
@@ -562,15 +561,12 @@ async def boot(
         resolver=session_resolver, meta_service=meta_service)
     await _register(NotifyUserTool(dispatcher=scheduler_dispatch))
 
-    # §1.5 Compact-as-PH: ContextSDK constructed above and bound into the
-    # legacy active_context_store; same instance is wired into the
-    # command router so /compact reaches the same buffer.
+    # §1.5 Compact-as-PH: /compact reaches the SDK through active_ctx.sdk() (same buffer).
     command_router = DefaultCommandRouter(
         session_config_store=session_config_store,
         agent_registry=agent_registry,
         active_context_store=active_ctx,
         gateway=gateway,
-        context_sdk=context_sdk,
         # 只列同 provider 的模型:进程内只注册了当前 provider 的 client,
         # 跨 provider 的模型名发给它会出错。
         available_models=tuple(e.name for e in system_cfg.models if e.type == provider) or (model,),
@@ -583,7 +579,6 @@ async def boot(
         provider=provider,
         model=model,
         progress_sink=progress_sink,
-        write_queue=write_queue,
     )
     await gateway.register_command_router(command_router)
 

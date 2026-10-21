@@ -1,4 +1,4 @@
-"""Single-consumer queue for PH replacement + compact replace_range.
+"""Single-consumer queue for PH replacement.
 
 Decouples run consumers from main-context writes so concurrent runs can
 finish in any order without racing the main message list. The consumer
@@ -34,27 +34,16 @@ class ReplaceItem:
     messages: tuple[MemoryMessage, ...]
 
 
-@dataclass(frozen=True)
-class ReplaceRangeItem:
-    """Enqueue when compact finalizes — collapse [start_idx, end_idx) into summary."""
-
-    session_id: str
-    agent_name: str
-    start_idx: int
-    end_idx: int
-    summary: MemoryMessage
-
-
 class WriteQueue:
-    """Thin asyncio.Queue wrapper for ReplaceItem / ReplaceRangeItem."""
+    """Thin asyncio.Queue wrapper for ReplaceItem."""
 
     def __init__(self) -> None:
         self._q: asyncio.Queue = asyncio.Queue()
 
-    async def put(self, item: ReplaceItem | ReplaceRangeItem) -> None:
+    async def put(self, item: ReplaceItem) -> None:
         await self._q.put(item)
 
-    async def get(self) -> ReplaceItem | ReplaceRangeItem:
+    async def get(self) -> ReplaceItem:
         return await self._q.get()
 
 
@@ -84,33 +73,13 @@ class WriteQueueConsumer:
             except Exception:
                 _logger.exception("WriteQueueConsumer: apply failed for %r", item)
 
-    async def _apply(self, item: ReplaceItem | ReplaceRangeItem) -> None:
-        if isinstance(item, ReplaceItem):
-            await self._store.replace_placeholder(item.run_id, item.messages)
-            if self._mirror is not None:
-                try:
-                    await self._mirror.replace_placeholder(item.run_id, item.messages)
-                except NotImplementedError:
-                    pass
-        elif isinstance(item, ReplaceRangeItem):
-            await self._store.replace_range(
-                item.session_id,
-                item.agent_name,
-                item.start_idx,
-                item.end_idx,
-                item.summary,
-            )
-            if self._mirror is not None:
-                try:
-                    await self._mirror.replace_range(
-                        item.session_id,
-                        item.agent_name,
-                        item.start_idx,
-                        item.end_idx,
-                        item.summary,
-                    )
-                except NotImplementedError:
-                    pass
+    async def _apply(self, item: ReplaceItem) -> None:
+        await self._store.replace_placeholder(item.run_id, item.messages)
+        if self._mirror is not None:
+            try:
+                await self._mirror.replace_placeholder(item.run_id, item.messages)
+            except NotImplementedError:
+                pass
 
     def stop(self) -> None:
         self._stopped.set()
