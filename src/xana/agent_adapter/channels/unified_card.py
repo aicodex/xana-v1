@@ -82,6 +82,7 @@ class ToolBlock:
     elapsed_s: float | None = None
     live: str = ""               # 执行中的进度(tool_progress),如"正在阅读 5/12 个网页"
     activity: tuple[ActivityLane, ...] = ()   # 结构化活动时间线(tool_progress 带 activity 时累积)
+    error: str = ""              # 失败时工具给的一句话错误摘要(ToolResult.error),如 "IndexError: ..."
 
 
 @dataclass

@@ -205,7 +205,8 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
                 new_header = _make_tool_header(
                     old.name, old.summary, elapsed_s, status)
                 items[target] = replace(old, header=new_header, body_md=body, ok=ok,
-                                        status=status, elapsed_s=elapsed_s, live="")
+                                        status=status, elapsed_s=elapsed_s, live="",
+                                        error=str(payload.get("error") or ""))
                 setattr(state.answer, collection_name, tuple(items))
                 return
         return

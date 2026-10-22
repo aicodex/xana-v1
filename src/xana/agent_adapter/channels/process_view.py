@@ -158,8 +158,8 @@ def member_line(t: ToolBlock) -> str:
     if t.elapsed_s is not None:
         parts.append(_fmt_s(t.elapsed_s))
     line = " · ".join(parts)
-    if t.status == "fail" and t.body_md:
-        line += f" — {_clip(t.body_md.strip().splitlines()[0], 60)}"
+    if t.status == "fail" and (t.error or t.body_md.strip()):
+        line += f" — {_clip(t.error or t.body_md.strip().splitlines()[0], 60)}"
     return _clip(line, 120)
 
 

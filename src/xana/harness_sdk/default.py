@@ -1639,6 +1639,7 @@ class DefaultHarness(Harness):
                             "call_id": tc["call_id"],
                             "input": dict(tc["input"]),
                             "ok": result.ok,
+                            "error": "" if result.ok else (result.error or ""),   # 卡片失败行的一句话摘要
                             "cancelled": result.failure_kind == "cancelled",
                             "elapsed_ms": _tool_elapsed_ms,
                         },

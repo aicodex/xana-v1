@@ -229,13 +229,14 @@ def _build_request_body(request: ModelRequest, config: AnthropicDeepSeekConfig) 
                 history.append({"role": "assistant", "content": msg.content})
             continue
         if msg.role == "tool":
-            pending_tool_results.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": (msg.metadata or {}).get("tool_use_id", ""),
-                    "content": msg.content,
-                }
-            )
+            block = {
+                "type": "tool_result",
+                "tool_use_id": (msg.metadata or {}).get("tool_use_id", ""),
+                "content": msg.content,
+            }
+            if (msg.metadata or {}).get("ok") is False:
+                block["is_error"] = True        # 同 CC:失败的工具结果带 is_error
+            pending_tool_results.append(block)
             continue
     _flush_pending()
 
