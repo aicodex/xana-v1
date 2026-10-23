@@ -39,6 +39,7 @@ _DESCRIPTION = (
 def _spec(max_concurrent: int) -> ToolSpec:
     """描述里的并发上限取自实际参数(工具描述中的限制都从行为参数生成,不手写数字)。"""
     return ToolSpec(
+        temporal="as_of",
         toolset="agents",
         component=ComponentSpec(
             kind="tool", name=AGENT_RUN_TOOL, qualified_name="builtin.agent_run",

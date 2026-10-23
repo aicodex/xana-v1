@@ -26,6 +26,7 @@ DEFAULT_RESULTS = 10
 MAX_RESULTS = 20
 
 _SPEC = ToolSpec(
+    temporal="live",
     toolset="web",
     component=ComponentSpec(
         kind="tool", name="web_search", qualified_name="builtin.web_search",

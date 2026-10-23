@@ -18,6 +18,7 @@ _DEFAULT_LIMIT = 2000
 
 
 _SPEC = ToolSpec(
+    temporal="static",
     toolset="fs",
     component=ComponentSpec(
         kind="tool",

@@ -42,6 +42,8 @@ _DESCRIPTION = (
 )
 
 _SPEC = ToolSpec(
+    temporal="static",
+    destructive=True,
     toolset="projects",
     component=ComponentSpec(
         kind="tool", name=PROJECT_MANAGE_TOOL, qualified_name="builtin.project_manage", description=_DESCRIPTION,

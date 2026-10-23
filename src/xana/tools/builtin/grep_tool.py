@@ -22,6 +22,7 @@ _OutputMode = Literal["files_with_matches", "content"]
 
 
 _SPEC = ToolSpec(
+    temporal="static",
     toolset="fs",
     component=ComponentSpec(
         kind="tool",

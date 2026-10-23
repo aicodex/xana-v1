@@ -73,6 +73,9 @@ class ToolDisplay:
                 "count": self.count(args), "summary_args": list(self.summary_args), "result": self.result}
 
 
+ToolTemporal = Literal["static", "as_of", "live"]
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     component: ComponentSpec
@@ -83,8 +86,12 @@ class ToolSpec:
     #   False → 取消时等 2 秒宽限,完成则正常写,超时强杀 + 注入
     #           synthetic warning(P5.2),resume = fork 新 run
     read_only: bool = False
+    # 会改变外部状态(写文件、发消息、建任务……);评测环境默认拒绝或模拟(iteration-agent-design §5.1)
     destructive: bool = False
     open_world: bool = False
+    # 结果与时间的关系:static 不随时间变 / as_of 能按 ToolContext.as_of 截断 / live 只能取当前状态;
+    # None = 未声明,评测环境按最保守处理(只回放,否则拒绝)
+    temporal: ToolTemporal | None = None
     concurrency: ToolConcurrency = "serialized"
     interrupt_behavior: InterruptBehavior = "block"
     permission_policy: str | None = None

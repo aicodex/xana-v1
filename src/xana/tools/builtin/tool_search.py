@@ -27,6 +27,7 @@ _DESCRIPTION = (
 )
 
 _SPEC = ToolSpec(
+    temporal="static",
     toolset="meta",
     component=ComponentSpec(
         kind="tool", name="tool_search", qualified_name="builtin.tool_search",

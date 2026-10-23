@@ -26,6 +26,8 @@ from xana.tools.interfaces import Tool
 HISTORY_DEFAULT = 20
 
 _CREATE_SPEC = ToolSpec(
+    temporal="static",
+    destructive=True,
     toolset="schedule",
     component=ComponentSpec(
         kind="tool", name="cron_create", qualified_name="builtin.cron_create",
@@ -61,6 +63,7 @@ _CREATE_SPEC = ToolSpec(
 )
 
 _LIST_SPEC = ToolSpec(
+    temporal="static",
     toolset="schedule",
     component=ComponentSpec(
         kind="tool", name="cron_list", qualified_name="builtin.cron_list",
@@ -77,6 +80,8 @@ _LIST_SPEC = ToolSpec(
 )
 
 _DELETE_SPEC = ToolSpec(
+    temporal="static",
+    destructive=True,
     toolset="schedule",
     component=ComponentSpec(
         kind="tool", name="cron_delete", qualified_name="builtin.cron_delete",

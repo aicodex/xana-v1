@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 
 _SPEC = ToolSpec(
+    temporal="static",
     toolset="fs",
     component=ComponentSpec(
         kind="tool",

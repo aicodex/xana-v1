@@ -31,6 +31,7 @@ _DESCRIPTION = (
 )
 
 _SPEC = ToolSpec(
+    temporal="static",
     toolset="eval",
     component=ComponentSpec(
         kind="tool", name=TRACE_VIEW_TOOL, qualified_name="builtin.trace_view",

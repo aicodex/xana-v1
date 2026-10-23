@@ -25,6 +25,7 @@ MAX_URLS = 10
 MAX_DOMAINS = 10
 
 _SEARCH_SPEC = ToolSpec(
+    temporal="live",
     toolset="web",
     component=ComponentSpec(
         kind="tool", name="web_search", qualified_name="builtin.web_search",
@@ -51,6 +52,7 @@ _SEARCH_SPEC = ToolSpec(
 )
 
 _OPEN_SPEC = ToolSpec(
+    temporal="live",
     toolset="web",
     component=ComponentSpec(
         kind="tool", name="web_open_url", qualified_name="builtin.web_open_url",
@@ -74,6 +76,7 @@ _OPEN_SPEC = ToolSpec(
 )
 
 _DEEP_SPEC = ToolSpec(
+    temporal="live",
     toolset="research",
     component=ComponentSpec(
         kind="tool", name="background_research", qualified_name="builtin.background_research",

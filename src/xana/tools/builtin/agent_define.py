@@ -43,6 +43,8 @@ _DESCRIPTION = (
 )
 
 _SPEC = ToolSpec(
+    temporal="static",
+    destructive=True,
     toolset="agents",
     component=ComponentSpec(
         kind="tool", name=AGENT_DEFINE_TOOL, qualified_name="builtin.agent_define", description=_DESCRIPTION,

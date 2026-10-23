@@ -34,6 +34,7 @@ DEFAULT_MAX_CHARS = 20000
 MAX_REDIRECTS = 10
 
 _SPEC = ToolSpec(
+    temporal="live",
     toolset="web",
     component=ComponentSpec(
         kind="tool", name="web_fetch", qualified_name="builtin.web_fetch",

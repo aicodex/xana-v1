@@ -16,6 +16,7 @@ from xana.tools.interfaces import Tool
 _VALID_STATUS = {"pending", "in_progress", "completed"}
 
 _SPEC = ToolSpec(
+    temporal="static",
     toolset="session",
     component=ComponentSpec(
         kind="tool",

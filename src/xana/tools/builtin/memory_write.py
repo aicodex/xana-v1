@@ -31,6 +31,7 @@ _DESCRIPTION = (
 )
 
 _SPEC = ToolSpec(
+    temporal="static",
     toolset="memory",
     component=ComponentSpec(
         kind="tool", name="memory_write", qualified_name="builtin.memory_write", description=_DESCRIPTION,

@@ -21,6 +21,8 @@ _DESCRIPTION = (
 )
 
 _SPEC = ToolSpec(
+    temporal="static",
+    destructive=True,
     toolset="schedule",
     component=ComponentSpec(
         kind="tool", name=NOTIFY_USER_TOOL, qualified_name=f"builtin.{NOTIFY_USER_TOOL}", description=_DESCRIPTION,

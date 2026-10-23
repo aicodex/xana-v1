@@ -49,6 +49,7 @@ def _resolve_timeout_s(input_: dict) -> float:
 
 
 _SPEC = ToolSpec(
+    temporal="live",
     toolset="exec",
     component=ComponentSpec(
         kind="tool",
