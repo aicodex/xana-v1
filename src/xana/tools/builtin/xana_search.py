@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from datetime import date, timedelta
 from typing import Any, Callable
 
 import httpx
@@ -169,13 +170,16 @@ class XanaSearchError(RuntimeError):
 
 
 def _date_range(inp: dict, context: ToolContext) -> dict[str, Any]:
-    """模型给的日期范围;评测 run 的研究时点(ToolContext.as_of)是硬上限,且严格过滤(iteration-agent-design §10)。"""
+    """模型给的日期范围;评测 run 的研究时点是硬上限,且严格过滤(iteration-agent-design §10)。
+    研究时点 = 当天开盘前:当天晚间的公告公告日记为次日(与 qt 的 ann_date ≤ as_of 一致),
+    而网页按发布日只到天,所以网页只要研究时点前一天及之前的。"""
     out: dict[str, Any] = {}
     if inp.get("start_date"):
         out["start_date"] = str(inp["start_date"])
     end = str(inp.get("end_date") or "") or None
     if context.as_of:
-        end = min(end, context.as_of) if end else context.as_of
+        cap = (date.fromisoformat(context.as_of[:10]) - timedelta(days=1)).isoformat()
+        end = min(end, cap) if end else cap
         out["strict"] = True
     if end:
         out["end_date"] = end
