@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 
 from xana.policy.contracts import PermissionResult
 from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset, ToolTemporal
@@ -56,3 +57,14 @@ class ToolRegistry(ABC):
 
     @abstractmethod
     async def list_toolsets(self) -> tuple[Toolset, ...]: ...
+
+
+class ToolEnvironment(ABC):
+    """评测会话的工具环境(iteration-agent-design §6):harness 在统一入口把每次工具调用交给它,
+    由它决定回放录制、真实执行(时点经 ToolContext.env 注入)、拒绝或模拟,并在结果 metadata["env"]
+    记下所用策略与是否回退。只在 ToolContext.env 有值的 run 上调用。"""
+
+    @abstractmethod
+    async def execute(self, invocation: ToolInvocation, tool: Tool, context: ToolContext,
+                      run: Callable[[], Awaitable[ToolResult]]) -> ToolResult:
+        """run() 是真实执行(pre_tool_use → execute → post_tool_use)。"""

@@ -116,6 +116,7 @@ from xana.tools.builtin.xana_search import (BackgroundResearchTool, WebOpenUrlTo
                                             XanaWebSearchTool)
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import Tool, ToolRegistry
+from xana.tools.environment import TapeToolEnvironment
 from xana.tools.file_registry import FileToolRegistry
 from xana.tools.toolsets import BUILTIN_TOOLSETS, unknown_names
 
@@ -270,7 +271,10 @@ async def boot(
     # 扩展注册表须在构造 harness 之前组装完毕(harness 构造时即持有它)。
     # harness 提前构造:/clear 时经 on_clear 丢弃它记下的 prompt 占用
     # (docs/design/session-and-card-state.md §1.5)。
-    _harness = DefaultHarness(extension_registry=extension_registry, memory_extractor=memory_extractor)
+    # 评测 run 的工具环境:录制回放读 sessions/runs(iteration-agent-design §6)
+    _harness = DefaultHarness(
+        extension_registry=extension_registry, memory_extractor=memory_extractor,
+        tool_environment=TapeToolEnvironment(runs_dir=Path(history_root) / "runs") if history_root is not None else None)
 
     active_ctx_inner = InMemoryActiveContextStore(
         context_sdk=context_sdk,

@@ -125,6 +125,20 @@ class ToolInvocation:
     run_id: str | None = None
 
 
+EnvStrategy = Literal["replay", "live", "deny", "simulate"]
+
+
+@dataclass(frozen=True)
+class ToolEnvConfig:
+    """一次评测 run 的工具环境(iteration-agent-design §6.2)。
+    as_of:研究时点(ISO 日期);tape:可回放的录制(run_id);strategies:按工具名指定策略(覆盖默认判定);
+    on_miss:回放找不到相同调用时 live(真实执行,计为回退)或 deny。"""
+    as_of: str | None = None
+    tape: tuple[str, ...] = ()
+    strategies: dict[str, EnvStrategy] = field(default_factory=dict)
+    on_miss: Literal["live", "deny"] = "live"
+
+
 @dataclass(frozen=True)
 class ToolContext:
     session_id: str
@@ -142,8 +156,13 @@ class ToolContext:
     available_tools: frozenset[str] | None = None
     # 本 run 可见的技能名;None = 全部(skill_load 据此拒绝不可见技能)
     visible_skills: frozenset[str] | None = None
-    # 研究时点(ISO 日期,评测环境注入):temporal=as_of 的工具据此只返回该时点之前已公开的信息;None = 当前
-    as_of: str | None = None
+    # 本 run 的工具环境(评测会话由 eval_run 设置,子 run 继承);None = 普通会话,工具原样执行
+    env: ToolEnvConfig | None = None
+
+    @property
+    def as_of(self) -> str | None:
+        """研究时点:temporal=as_of 的工具据此只返回该时点之前已公开的信息;None = 当前。"""
+        return self.env.as_of if self.env is not None else None
 
 
 ActivityKind = Literal["thinking", "search", "open", "tool", "done", "error", "note"]

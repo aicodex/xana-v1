@@ -154,7 +154,8 @@ class LeadResearchTool(Tool):
                 agent_name=self.researcher_agent,
                 prompt=f"总研究问题:{question}\n\n你的子课题:{sub['title']}\n{sub['brief']}",
                 session_id=f"{context.session_id}-research-{tag}-{i + 1}",
-                parent_run_id=context.run_id, parent_session_id=context.session_id, on_step=on_step)
+                parent_run_id=context.run_id, parent_session_id=context.session_id, on_step=on_step,
+                tool_env=context.env)
             counts["done"] += 1
             report()
             if outcome.status == "completed":

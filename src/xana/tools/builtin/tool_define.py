@@ -16,7 +16,7 @@ from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
 from xana.skills.markdown_loader import SkillManifestError, split_frontmatter
 from xana.tools.command_tool import TOOL_DOC_NAME, CommandTool, ToolDocError, parse_tool_doc
-from xana.tools.contracts import ToolContext, ToolDisplay, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.contracts import ToolContext, ToolDisplay, ToolEnvConfig, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.file_registry import FileToolRegistry
 from xana.tools.interfaces import Tool
 
@@ -135,7 +135,8 @@ class ToolDefineTool(Tool):
         except ValueError as exc:
             return _fail(f"示例参数不合法:{exc}")
         run_ctx = ToolContext(session_id=context.session_id, agent_name=context.agent_name, cwd=context.cwd,
-                              permission=context.permission, run_id=context.run_id, as_of=as_of)
+                              permission=context.permission, run_id=context.run_id,
+                              env=ToolEnvConfig(as_of=as_of) if as_of else None)
         result = await tool.execute(ToolInvocation(
             tool_name=tool.definition.name, input=example, call_id=f"{invocation.call_id}:test",
             session_id=invocation.session_id, run_id=invocation.run_id), run_ctx)

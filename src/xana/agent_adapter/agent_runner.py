@@ -15,6 +15,7 @@ from xana.agents.contracts import AgentRequest
 from xana.agents.interfaces import Agent
 from xana.extension_api.capabilities import AgentRunner
 from xana.extension_api.contracts import AgentRunOutcome, SubagentStep
+from xana.tools.contracts import ToolEnvConfig
 from xana.harness_sdk.contracts import AbortSignal
 from xana.state.contracts import SessionRecord
 
@@ -47,6 +48,7 @@ class GatewayAgentRunner(AgentRunner):
         tool_ceiling: frozenset[str] | None = None,
         on_step: Callable[[SubagentStep], None] | None = None,
         preamble: str | None = None,
+        tool_env: ToolEnvConfig | None = None,
     ) -> AgentRunOutcome:
         agent = self._agents.get(agent_name)
         if agent is None:
@@ -67,7 +69,8 @@ class GatewayAgentRunner(AgentRunner):
         abort = AbortSignal()
         request = AgentRequest(
             session_id=session_id, text=prompt, source="agent_runner", target_agent=agent_name,
-            metadata={"gateway_run_id": run_id, "parent_run_id": parent_run_id, "abort_signal": abort},
+            metadata={"gateway_run_id": run_id, "parent_run_id": parent_run_id, "abort_signal": abort,
+                      **({"tool_env": tool_env} if tool_env is not None else {})},
             tool_ceiling=tool_ceiling)
         text, status, error = "", "error", "子 agent 没有产出最终回答"
         counts: dict[str, int] = {}

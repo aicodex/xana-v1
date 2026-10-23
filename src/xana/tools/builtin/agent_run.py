@@ -139,7 +139,8 @@ class AgentRunTool(Tool):
             activity(ToolActivity(lane="sub", lane_title=lane_title, kind="note", text="开始"))
             outcome = await self._runner.run(
                 agent_name=name, prompt=prompt, session_id=child, parent_run_id=context.run_id,
-                parent_session_id=context.session_id, tool_ceiling=ceiling, on_step=on_step)
+                parent_session_id=context.session_id, tool_ceiling=ceiling, on_step=on_step,
+                tool_env=context.env)    # 评测环境(时点 / 回放)随委派下传
         activity(ToolActivity(lane="sub", lane_title=lane_title,
                               kind="done" if outcome.status == "completed" else "error",
                               text=f"{'完成' if outcome.status == 'completed' else '未完成'} · 工具 {calls[0]} 次"))

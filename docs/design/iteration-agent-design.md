@@ -121,7 +121,10 @@ timeout_s: 60
 (给模型看的使用说明)
 ```
 
-- 由核心的通用命令工具执行:参数按 schema 校验后拼成参数数组,**不经 shell**(无注入,也无法顺手跑别的命令)。
+- 由核心的通用命令工具执行:参数按 schema 校验后拼成参数数组,**不经 shell**(无注入,也无法顺手跑别的命令)。模型给的字符串不能以 `-` 开头(防止冒充 `--as-of` 等参数;声明的 enum 值除外),时点参数追加在最后。
+- 子命令可单独写 `temporal` / `as_of` 覆盖工具级声明(实测 `qt` 有子命令不支持时点)。
+- 派生工具属于默认组合里的 `derived` 组:委派时子 agent = 自身选择 ∩ 调用方工具,若不在默认组合,选 `default` 的 chat 委派时会把它截掉(2026-10-24 实测 equity-researcher 因此退回网页搜索)。
+- `side_effects` 复用 `destructive`(此前没有代码读它,只是声明);补齐了 cron / notify_user / agent_define / project_manage。
 - 复杂工具以后走 MCP(配置已有 `mcp.servers`,boot 未实现);TOOL.md 覆盖"把现有命令行包成工具"这一最常见情况,两者并存。
 
 ### 5.3 注册与创建(与 agent 对称)
@@ -184,7 +187,8 @@ timeout_s: 60
 
 ### 6.3 接入
 
-- 现有 `ToolLifecycleContributor` 只能观察,不能替换结果。在 `_dispatch_tool` 增加可接管执行的接入点,**新增 ABC**(大致 `ToolEnvironment.execute(调用, 上下文, 真实执行) → 结果`),定义在 `extension_api/interfaces.py`(按 AGENTS.md 第 9 条须用户同意)。
+- 现有 `ToolLifecycleContributor` 只能观察,不能替换结果。在 `_dispatch_tool` 增加可接管执行的接入点,**新增 ABC** `ToolEnvironment.execute(调用, 工具, 上下文, 真实执行) → 结果`(用户 2026-10-24 同意)。实现时放在 `tools/interfaces.py`(与 `Tool` 同处):它由 `boot()` 构造注入 `DefaultHarness`,不是扩展贡献者。首个实现 `tools/environment.py::TapeToolEnvironment`。
+- 每次 run 的环境是数据 `ToolEnvConfig(as_of, tape, strategies, on_miss)`,经 `request.metadata["tool_env"]` 进入 harness、放进 `ToolContext.env`;`AgentRunner.run(tool_env=...)` 让 `agent_run` / `deep_research` 的子 run 原样继承。工具按调用给出时间声明 `Tool.temporal_for(调用)`(缺省 = `spec().temporal`;TOOL.md 子命令可覆盖)。
 - 所有工具都经同一入口,在此一处实现录制 / 回放 / 拒绝 / 回退计数,**不让每个工具继承 hook**(工具只做 §5.1 声明)。
 - `ToolContext` 增加环境信息(`as_of` 等):支持时点约束的工具自己读它(搜索自动带日期上限、派生工具按 `as_of.arg` 注入);不支持的由环境层按声明回放或禁止。
 - 子 agent 的运行继承父运行的环境(`agent_run` / `deep_research` 经 HarnessContext 下发)。
@@ -381,6 +385,9 @@ demo 侧补充(不改核心):
 6. **每日预算与定时循环**。
 
 ## 15. 已确认(2026-10-24)
+
+实施进度:第 1 步 trace、第 2 步(派生工具、工具环境层、Bash 规则、两个 agent 迁移)已完成并部署验证。
+demo 的 `qt` 已补齐时点:全部子命令支持 `--as-of`,`QT_AS_OF` 为硬上限(公告类按 f_ann_date,调研按 surv_date,主营按财报公告,日历隐藏未发生的实际披露日,行情 / 估值 / 美债截到当日)。
 
 用户全部同意 §15 原列六项:
 1. 新增 `ToolEnvironment` ABC(§6.3),定义在 `extension_api/interfaces.py`。

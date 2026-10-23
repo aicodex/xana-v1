@@ -99,8 +99,10 @@ from xana.memory.interfaces import ActiveContextStore, HistoryMirror
 from xana.policy.contracts import PermissionContext, PermissionResult
 from xana.state.contracts import RunRecord, UsageSnapshot
 from xana.state.file_runs import save_prompt
-from xana.tools.contracts import ToolActivity, ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset
-from xana.tools.interfaces import Tool
+from xana.tools.contracts import (
+    ToolActivity, ToolContext, ToolEnvConfig, ToolInvocation, ToolResult, ToolSpec, Toolset,
+)
+from xana.tools.interfaces import Tool, ToolEnvironment
 from xana.tools.toolsets import resolve_tools
 from xana.config.paths import project_home
 
@@ -199,10 +201,14 @@ def _can_use(available: frozenset[str] | None, name: str) -> bool:
 class DefaultHarness(Harness):
     def __init__(self, extension_registry: "ExtensionRegistry | None" = None,
                  today: Callable[[], str] | None = None,
-                 memory_extractor: MemoryExtractor | None = None) -> None:
+                 memory_extractor: MemoryExtractor | None = None,
+                 tool_environment: ToolEnvironment | None = None) -> None:
         """today:返回本地日期 YYYY-MM-DD(缺省系统时钟;测试可替换)。
-        memory_extractor:每轮完成后在后台提取漏记的记忆(docs/design/memory-dream-design.md §3.1);None = 不提取。"""
+        memory_extractor:每轮完成后在后台提取漏记的记忆(docs/design/memory-dream-design.md §3.1);None = 不提取。
+        tool_environment:评测 run(request.metadata["tool_env"])的工具调用经它执行(回放 / 时点 / 拒绝);
+        None = 只注入时点,工具原样执行。"""
         self._memory_extractor = memory_extractor
+        self._tool_environment = tool_environment
         self._today = today or (lambda: date.today().isoformat())
         self.last_assembled_messages: tuple[ModelMessage, ...] | None = None
         self.usage_accumulator = DefaultUsageAccumulator()
@@ -569,6 +575,7 @@ class DefaultHarness(Harness):
         thread_store: ExtensionData | None,
         turn_store: ExtensionData | None,
         progress: Callable[[str | ToolActivity], None] | None = None,
+        tool_env: ToolEnvConfig | None = None,
     ) -> tuple[ToolResult, str]:
         """Run one tool through the validate→permission→pre→execute→post
         pipeline, wrapped by extension tool-lifecycle hooks.
@@ -660,6 +667,7 @@ class DefaultHarness(Harness):
             report_activity=progress,
             available_tools=available,
             visible_skills=_visible_skills(context),
+            env=tool_env,
         )
         try:
             await tool.validate(invocation)
@@ -690,15 +698,21 @@ class DefaultHarness(Harness):
             if perm.decision != "allow":
                 result = _denied_result(perm)
             else:
-                prepared = await tool.pre_tool_use(invocation, tool_ctx)
-                result = await self._run_tool_with_abort(
-                    lambda: tool.execute(prepared, tool_ctx),
-                    abort=context.abort,
-                    read_only=bool(getattr(tool.spec(), "read_only", False)),
-                    tool=tool,
-                    call_id=call_id,
-                )
-                result = await tool.post_tool_use(prepared, tool_ctx, result)
+                async def _real() -> ToolResult:
+                    prepared = await tool.pre_tool_use(invocation, tool_ctx)
+                    res = await self._run_tool_with_abort(
+                        lambda: tool.execute(prepared, tool_ctx),
+                        abort=context.abort,
+                        read_only=bool(getattr(tool.spec(), "read_only", False)),
+                        tool=tool,
+                        call_id=call_id,
+                    )
+                    return await tool.post_tool_use(prepared, tool_ctx, res)
+                # 评测 run:统一入口交给工具环境(回放 / 真实执行 / 拒绝,iteration-agent-design §6.3)
+                if tool_env is not None and self._tool_environment is not None:
+                    result = await self._tool_environment.execute(invocation, tool, tool_ctx, _real)
+                else:
+                    result = await _real()
             rendered = await tool.render_result(result)
         except Exception as exc:
             result = ToolResult(
@@ -978,6 +992,8 @@ class DefaultHarness(Harness):
         # §4.3 预算护栏:budget 上限经 request.metadata 进入(同 parent_run_id
         # 的 lineage 通道);tracker 是 boot 组装的 concrete helper,经
         # ctx.metadata 注入(todo_store 同款松散注入)。
+        _env = request.metadata.get("tool_env")
+        tool_env: ToolEnvConfig | None = _env if isinstance(_env, ToolEnvConfig) else None
         run_budget = request.metadata.get("budget")
         if not isinstance(run_budget, dict):
             run_budget = {}
@@ -1063,7 +1079,8 @@ class DefaultHarness(Harness):
         _hist: tuple[MemoryMessage, ...] = _snap.messages if _snap is not None else ()
         pending_notes: list[MemoryMessage] = []
         if _has_env(context):   # 日期随环境信息:完全替换提示词且不放 ${env} 的 agent 不注入
-            today = date_note(self._today(), _hist)
+            # 评测 run 的"今天" = 研究时点(iteration-agent-design §6.3)
+            today = date_note(tool_env.as_of if tool_env is not None and tool_env.as_of else self._today(), _hist)
             if today is not None:
                 pending_notes.append(today)
             instructions = _project_instructions(context.cwd)
@@ -1599,7 +1616,7 @@ class DefaultHarness(Harness):
                         tc, context, session_id, agent_name, run_id,
                         ext_tools=ext_tools, available=available, ext=ext,
                         thread_store=thread_store, turn_store=turn_store,
-                        progress=progress,
+                        progress=progress, tool_env=tool_env,
                     )
 
                 async for item in run_batch(calls, _dispatch):
@@ -1645,6 +1662,7 @@ class DefaultHarness(Harness):
                             ts=time.time(),
                             metadata={"trace": {
                                 "elapsed_ms": _tool_elapsed_ms,
+                                **({"env": result.metadata["env"]} if result.metadata.get("env") else {}),
                                 **({} if result.ok else {"error": result.error or "",
                                                          "failure_kind": result.failure_kind or ""}),
                             }},
