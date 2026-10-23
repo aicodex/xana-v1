@@ -70,6 +70,7 @@ from xana.skills.bundled.schedule import ScheduleSkill
 from xana.skills.bundled.agent_creator import AgentCreatorSkill
 from xana.skills.bundled.project_creator import ProjectCreatorSkill
 from xana.skills.bundled.skill_creator import SkillCreatorSkill
+from xana.skills.bundled.tool_creator import ToolCreatorSkill
 from xana.skills.interfaces import SkillRegistry
 from xana.skills.markdown_loader import MarkdownDocParser
 from xana.skills.registry import InMemorySkillRegistry
@@ -91,6 +92,7 @@ from xana.runtime.session_resolver import SessionResolver
 from xana.agent_adapter.agent_runner import GatewayAgentRunner
 from xana.tools.builtin.agent_define import AgentDefineTool
 from xana.tools.builtin.agent_run import AgentRunTool
+from xana.tools.builtin.tool_define import ToolDefineTool
 from xana.tools.builtin.trace_view import TraceViewTool
 from xana.tools.builtin.bash import BashTool
 from xana.tools.builtin.project_manage import ProjectManageTool
@@ -114,7 +116,7 @@ from xana.tools.builtin.xana_search import (BackgroundResearchTool, WebOpenUrlTo
                                             XanaWebSearchTool)
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import Tool, ToolRegistry
-from xana.tools.registry import InMemoryToolRegistry
+from xana.tools.file_registry import FileToolRegistry
 from xana.tools.toolsets import BUILTIN_TOOLSETS, unknown_names
 
 
@@ -205,7 +207,8 @@ async def boot(
     from xana.skills.markdown_loader import FileSkillLoader, scan_skill_docs
     _doc_parser = MarkdownDocParser()
     bundled_skills = InMemorySkillRegistry()
-    for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill(), AgentCreatorSkill(), CodingSkill()):
+    for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill(), AgentCreatorSkill(), ToolCreatorSkill(),
+                    CodingSkill()):
         await bundled_skills.register(bundled)
     if project_id() == DEFAULT_PROJECT:   # default 项目是管理台:在聊天里创建 / 管理项目(project-design §7)
         await bundled_skills.register(ProjectCreatorSkill())
@@ -221,7 +224,9 @@ async def boot(
     runtime_config = await cp.load(project_root)
     system_cfg = cp.load_system_config()
     agents: dict[str, Agent] = {}
-    tools = InMemoryToolRegistry()
+    # 工具目录 = 内置 / 扩展登记的工具 + 两级目录 TOOL.md 派生工具(热加载,iteration-agent-design §5.3)
+    tool_dirs = (xana_home() / "tools", project_root / ".xana" / "tools")
+    tools = FileToolRegistry(roots=(("user", tool_dirs[0]), ("project", tool_dirs[1])), project_root=project_root)
     # 文件 agent:两级目录(用户级 < 项目级),热加载,直接维护共用的 agents 表(agent-delegation-design §7)。
     # 工厂在下文定义、首次 load 时才调用。
     from xana.agents.registry import FileAgentRegistry
@@ -317,8 +322,8 @@ async def boot(
     # 写保护:记忆目录 memory/ 只能经 memory_write 写,两级 agent 文档目录只能经 agent_define 写;
     # root 内 .md 写后增量 reindex(memory_tree)。
     agent_dirs = (xana_home() / "agents", project_root / ".xana" / "agents")
-    await _register(EditTool(memory_tree=tree, protected_dir=(memory_store.dir, *agent_dirs)))
-    await _register(WriteTool(memory_tree=tree, protected_dir=(memory_store.dir, *agent_dirs)))
+    await _register(EditTool(memory_tree=tree, protected_dir=(memory_store.dir, *agent_dirs, *tool_dirs)))
+    await _register(WriteTool(memory_tree=tree, protected_dir=(memory_store.dir, *agent_dirs, *tool_dirs)))
     await _register(GlobTool())
     await _register(GrepTool())
     await _register(BashTool())
@@ -498,6 +503,7 @@ async def boot(
     # 后刷新注册表,立即生效。
     await _register(AgentRunTool(runner=agent_runner, agents=gateway.agents, agent_registry=agent_registry,
                                  tool_registry=tools))
+    await _register(ToolDefineTool(registry=tools, project_root=project_root))
     await _register(AgentDefineTool(
         roots={"user": xana_home() / "agents", "project": project_root / ".xana" / "agents"},
         agents=gateway.agents, agent_registry=agent_registry, tool_registry=tools))

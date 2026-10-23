@@ -11,22 +11,18 @@ command string with pipes/redirection (matches CC ergonomics). Optional
 """
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import os
 import re
-import signal
-import time
 
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
 from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
+from xana.tools.builtin._process import MAX_OUTPUT_CHARS as _MAX_OUTPUT_CHARS
+from xana.tools.builtin._process import ProcessRunner, format_exec_output, last_line
 from xana.tools.interfaces import Tool
 
 
 _DEFAULT_TIMEOUT_S = 120.0
 _MAX_TIMEOUT_S = 600.0
-_MAX_OUTPUT_CHARS = 50_000
 _MS_HEURISTIC_THRESHOLD = 600  # values above this for the "timeout" alias are treated as ms
 
 
@@ -75,12 +71,10 @@ _SPEC = ToolSpec(
 
 
 class BashTool(Tool):
-    # write 类工具:内部维护活跃子进程 + 2s grace。cancel() 发 SIGTERM,2s 未退则 SIGKILL。
-    _GRACE_S = 2.0
+    # write 类工具:活跃子进程按 call_id 登记;cancel() 发 SIGTERM,2s 未退则 SIGKILL。
 
     def __init__(self) -> None:
-        # call_id → 活跃子进程。execute 进入即登记,完成即清。
-        self._procs: dict[str, asyncio.subprocess.Process] = {}
+        self._runner = ProcessRunner()
 
     def spec(self) -> ToolSpec:
         return _SPEC
@@ -95,92 +89,30 @@ class BashTool(Tool):
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         command = invocation.input["command"]
         timeout = min(_resolve_timeout_s(invocation.input), _MAX_TIMEOUT_S)
-
-        started = time.monotonic()
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=context.cwd,
-            start_new_session=True,      # 自成进程组:超时 / 取消时连同子进程一起结束,不留进程占着管道
-        )
-        self._procs[invocation.call_id] = proc
-        combined: list[str] = []          # stdout / stderr 按到达顺序
-        err_chunks: list[str] = []
-        readers = asyncio.gather(_pump(proc.stdout, combined), _pump(proc.stderr, combined, err_chunks))
-        timed_out = False
-        try:
-            try:
-                await asyncio.wait_for(asyncio.shield(readers), timeout=timeout)
-                await proc.wait()
-            except asyncio.TimeoutError:
-                timed_out = True
-                _signal_group(proc, signal.SIGKILL)
-                await proc.wait()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(readers, timeout=1.0)
-            except asyncio.CancelledError:
-                # 外层 task.cancel() 兜底强杀(grace 已过期或 read_only 路径)。
-                _signal_group(proc, signal.SIGKILL)
-                await proc.wait()
-                readers.cancel()
-                raise
-        finally:
-            self._procs.pop(invocation.call_id, None)
-
-        elapsed = time.monotonic() - started
-        output = "".join(combined)
-        stderr = "".join(err_chunks)
-        exit_code = -1 if timed_out or proc.returncode is None else proc.returncode
-        failed, note = (True, "") if timed_out else _interpret_exit(command, exit_code)
-        if timed_out:
+        out = await self._runner.run(invocation.call_id, shell=command, cwd=context.cwd, timeout_s=timeout)
+        output = out.output
+        failed, note = (True, "") if out.timed_out else _interpret_exit(command, out.exit_code)
+        if out.timed_out:
             output = f"命令超时（{timeout:g} 秒），已终止\n{output}"
-        rendered, truncated = format_exec_output(output, exit_code, elapsed, note=note)
+        rendered, truncated = format_exec_output(output, out.exit_code, out.elapsed_s, note=note)
         error = None
         if failed:
-            error = (f"超时（超过 {timeout:g} 秒）" if timed_out
-                     else _last_line(stderr) or _last_line(output) or f"退出码 {exit_code}")
+            error = (f"超时（超过 {timeout:g} 秒）" if out.timed_out
+                     else last_line(out.stderr) or last_line(output) or f"退出码 {out.exit_code}")
         return ToolResult(
             ok=not failed,
-            content={"stdout": output, "stderr": stderr, "exit_code": exit_code},
+            content={"stdout": output, "stderr": out.stderr, "exit_code": out.exit_code},
             stdout=output,
-            stderr=stderr,
-            exit_code=exit_code,
+            stderr=out.stderr,
+            exit_code=out.exit_code,
             truncated=truncated,
             error=error,
-            failure_kind="timeout" if timed_out else ("execution" if failed else None),
+            failure_kind="timeout" if out.timed_out else ("execution" if failed else None),
             rendered=rendered,
         )
 
     async def cancel(self, call_id: str) -> None:
-        """SIGTERM → 等 grace → SIGKILL(整个进程组)。子进程退出后 execute 自然返回,
-        ToolExecutor 拿到带 exit_code 的结果。"""
-        proc = self._procs.get(call_id)
-        if proc is None or proc.returncode is not None:
-            return
-        _signal_group(proc, signal.SIGTERM)
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=self._GRACE_S)
-        except asyncio.TimeoutError:
-            _signal_group(proc, signal.SIGKILL)
-            await proc.wait()
-
-
-def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(proc.pid, sig)
-
-
-async def _pump(stream: asyncio.StreamReader | None, combined: list[str],
-                also: list[str] | None = None) -> None:
-    """按块读管道,解码后追加到 combined(两路共用 → 保持到达顺序);also 另存一份(stderr)。"""
-    if stream is None:
-        return
-    while chunk := await stream.read(65536):
-        text = chunk.decode("utf-8", errors="replace")
-        combined.append(text)
-        if also is not None:
-            also.append(text)
+        await self._runner.cancel(call_id)
 
 
 # 退出码 1 不表示出错的命令(照 CC commandSemantics.ts);值 = 给模型的说明
@@ -197,30 +129,3 @@ def _interpret_exit(command: str, exit_code: int) -> tuple[bool, str]:
     if exit_code == 1 and base in _EXIT_1_OK:
         return False, f"{_EXIT_1_OK[base]}，不表示出错"
     return True, ""
-
-
-def format_exec_output(output: str, exit_code: int, elapsed_s: float, *, note: str = "") -> tuple[str, bool]:
-    """给模型的命令结果(结构照 Codex format_exec_output_for_model),返回 (文本, 是否截断)。"""
-    total_lines = output.count("\n") + (0 if output.endswith("\n") or not output else 1)
-    body = output.rstrip("\n")
-    truncated = len(body) > _MAX_OUTPUT_CHARS
-    if truncated:
-        half = _MAX_OUTPUT_CHARS // 2
-        head, tail = body[:half], body[-half:]
-        omitted = body[half:-half].count("\n")
-        body = f"{head}\n\n…[中间省略 {omitted} 行]…\n\n{tail}"
-    lines = [f"退出码：{exit_code}" + (f"（{note}）" if note else ""), f"用时：{elapsed_s:.1f} 秒"]
-    if truncated:
-        lines.append(f"输出总行数：{total_lines}")
-    lines.append("输出：" if body else "输出：（无）")
-    if body:
-        lines.append(body)
-    return "\n".join(lines), truncated
-
-
-def _last_line(text: str) -> str:
-    """最后一个非空行(Python traceback 等的错误摘要通常在这里)。"""
-    for line in reversed(text.splitlines()):
-        if line.strip():
-            return line.strip()
-    return ""

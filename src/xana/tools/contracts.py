@@ -142,6 +142,8 @@ class ToolContext:
     available_tools: frozenset[str] | None = None
     # 本 run 可见的技能名;None = 全部(skill_load 据此拒绝不可见技能)
     visible_skills: frozenset[str] | None = None
+    # 研究时点(ISO 日期,评测环境注入):temporal=as_of 的工具据此只返回该时点之前已公开的信息;None = 当前
+    as_of: str | None = None
 
 
 ActivityKind = Literal["thinking", "search", "open", "tool", "done", "error", "note"]
