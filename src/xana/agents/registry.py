@@ -14,11 +14,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+
+import yaml
 from collections.abc import Callable, Collection, MutableMapping, Sequence
 from pathlib import Path
 
 from xana.harness_sdk.contracts import PromptProfile, VerifyCheck
-from xana.agents.contracts import AgentSpec
+from xana.agents.contracts import EXEC_AGENTS, AgentSpec, GoalContract
 from xana.agents.interfaces import Agent, AgentRegistry
 from xana.component.contracts import ComponentScope, ComponentSource, ComponentSpec
 from xana.config.system_model import AgentDefaults
@@ -57,6 +59,24 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path,
         except (TypeError, ValueError) as exc:
             raise SkillManifestError(path=path, kind="agent", field="prompt_profile",
                                      reason=str(exc)) from exc
+    contract = GoalContract(
+        goal=manifest.description,
+        success=dict(md.get("success") or {}),
+        constraints=tuple(md.get("constraints") or ()),
+        non_goals=tuple(md.get("non_goals") or ()),
+        eval=md.get("eval"),
+        allow_exec=bool(md.get("allow_exec")),
+        allow_exec_reason=str(md.get("allow_exec_reason") or ""),
+    )
+    tools = tuple(md["tools"]) if "tools" in md else tuple(defaults.tools)
+    disallowed = tuple(md.get("disallowed_tools", ())) + (() if "tools" in md else tuple(defaults.disallowed_tools))
+    # Bash 规则(§5.4):文件 agent 默认没有 exec 组,需要执行能力时派生工具;用户开启 allow_exec 才保留
+    if manifest.name not in EXEC_AGENTS and not contract.allow_exec:
+        if any(t in ("exec", "Bash") for t in tools):
+            _logger.warning("agent %s 选了 exec / Bash 但没有 allow_exec,已去掉;需要执行能力请派生工具"
+                            "(tool_creator),或由用户 /agent allow-exec %s <原因>", manifest.name, manifest.name)
+        if "exec" not in disallowed:
+            disallowed += ("exec",)
     return AgentSpec(
         component=ComponentSpec(
             kind="agent",
@@ -67,9 +87,9 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path,
             metadata=component_metadata,
         ),
         prompt_id=f"agent.{manifest.name}",
-        tools=tuple(md["tools"]) if "tools" in md else tuple(defaults.tools),
-        disallowed_tools=tuple(md.get("disallowed_tools", ())) + (
-            () if "tools" in md else tuple(defaults.disallowed_tools)),
+        tools=tools,
+        disallowed_tools=disallowed,
+        contract=contract,
         skills=tuple(md["skills"]) if "skills" in md else (
             tuple(defaults.skills) if defaults.skills is not None else None),
         when_to_use=str(md.get("when_to_use") or ""),
@@ -188,6 +208,26 @@ class FileAgentRegistry(AgentRegistry):
             path.parent.rmdir()                             # 目录空了才删
         except OSError:
             pass
+        await self.refresh(force=True)
+        return path
+
+    async def set_allow_exec(self, name: str, allowed: bool, reason: str = "") -> Path:
+        await self.refresh(force=True)
+        if name not in self._loaded:
+            raise LookupError(f"没有名为 {name!r} 的文件 agent(内置 agent 的 Bash 权限不可改)")
+        if allowed and not reason.strip():
+            raise ValueError("开启 Bash 必须写原因")
+        path, _mtime = self._loaded[name]
+        text = path.read_text(encoding="utf-8")
+        fm, body = split_frontmatter(text, path=path)
+        if allowed:
+            fm["allow_exec"] = True
+            fm["allow_exec_reason"] = reason.strip()
+        else:
+            fm.pop("allow_exec", None)
+            fm.pop("allow_exec_reason", None)
+        path.write_text("---\n" + yaml.safe_dump(fm, allow_unicode=True, sort_keys=False) + "---\n" + body + "\n",
+                        encoding="utf-8")
         await self.refresh(force=True)
         return path
 

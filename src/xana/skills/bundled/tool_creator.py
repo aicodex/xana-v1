@@ -45,6 +45,14 @@ timeout_s: 60
 给模型看的使用说明:各子命令什么时候用、输出字段含义、常见错误。
 ```
 参数没有 flag = 位置参数(按声明顺序);boolean 参数必须有 flag。
+个别子命令与工具级声明不同时,在该子命令下单独写 temporal / as_of 覆盖,例如:
+```
+  daily:
+    description: 日线行情
+    temporal: live            # 没有 --as-of:评测环境里只回放或拒绝,不会被注入时点参数
+    args: {code: {type: string}}
+```
+声明要与程序实际行为一致:接受 --as-of 却不真的截断的子命令应声明为 live(否则评测时会泄漏未来信息)。
 
 第三步:试跑
 调用 tool_define(action="test", content=草稿, input=示例参数),确认输出正确。

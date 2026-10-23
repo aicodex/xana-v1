@@ -53,3 +53,8 @@ class AgentRegistry(ABC):
     @abstractmethod
     async def remove(self, name: str) -> Path:
         """删除一个可删除的 agent 定义并立即生效,返回被删文件;不可删除或不存在时抛 LookupError。"""
+
+    @abstractmethod
+    async def set_allow_exec(self, name: str, allowed: bool, reason: str = "") -> Path:
+        """用户开启 / 关闭某个文件 agent 的 Bash 权限(写进其 AGENT.md 的目标契约)并立即生效,返回该文件;
+        内置或不存在的 agent 抛 LookupError。只供用户命令调用,不暴露给模型。"""

@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset
+from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset, ToolTemporal
 
 
 class Tool(ABC):
@@ -35,6 +35,10 @@ class Tool(ABC):
 
     async def cancel(self, call_id: str) -> None:
         return None
+
+    def temporal_for(self, invocation: ToolInvocation) -> ToolTemporal | None:
+        """本次调用结果与时间的关系;缺省 = spec().temporal。按参数而异的工具(如部分子命令能按时点截断)覆盖。"""
+        return self.spec().temporal
 
 
 class ToolRegistry(ABC):

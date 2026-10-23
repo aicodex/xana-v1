@@ -10,7 +10,8 @@ TOOL.md frontmatter:
     description: 一句话说明
     command: ["./qt", "--format", "json"]
     cwd: project                     project(项目目录,缺省)或绝对路径
-    subcommands:                     与 args 二选一;每个子命令 {description?, args}
+    subcommands:                     与 args 二选一;每个子命令 {description?, args, temporal?, as_of?}
+                                     (子命令的 temporal / as_of 覆盖工具级声明,如个别子命令不支持时点)
       income: {description: 利润表, args: {code: {type: string}, quarters: {type: integer, flag: --quarters}}}
     args: {...}                      没有子命令时的参数
     temporal: as_of                  必填:static / as_of / live
@@ -58,6 +59,15 @@ class ArgDef:
 
 
 @dataclass(frozen=True)
+class SubDef:
+    description: str
+    args: tuple[ArgDef, ...]
+    temporal: ToolTemporal
+    as_of_arg: str | None
+    as_of_env: str | None
+
+
+@dataclass(frozen=True)
 class CommandDef:
     name: str
     description: str
@@ -65,7 +75,7 @@ class CommandDef:
     cwd: str                                     # "project" 或绝对路径
     temporal: ToolTemporal
     destructive: bool
-    subcommands: dict[str, tuple[str, tuple[ArgDef, ...]]] = field(default_factory=dict)  # 名 → (说明, 参数)
+    subcommands: dict[str, SubDef] = field(default_factory=dict)
     args: tuple[ArgDef, ...] = ()
     as_of_arg: str | None = None
     as_of_env: str | None = None
@@ -98,6 +108,16 @@ def _args(raw: Any, path: Path, where: str) -> tuple[ArgDef, ...]:
     return tuple(out)
 
 
+def _as_of(d: dict, temporal: str, path: Path, where: str) -> tuple[str | None, str | None]:
+    raw = d.get("as_of") or {}
+    if not isinstance(raw, dict):
+        raise ToolDocError(path, where, "必须是 {arg, env}")
+    arg, env = raw.get("arg"), raw.get("env")
+    if temporal == "as_of" and not (arg or env):
+        raise ToolDocError(path, where, "temporal=as_of 时必须声明 as_of.arg 或 as_of.env")
+    return (str(arg) if arg else None), (str(env) if env else None)
+
+
 def parse_tool_doc(fm: dict, body: str, *, path: Path) -> CommandDef:
     """TOOL.md 的 frontmatter + 正文 → CommandDef;不合法抛 ToolDocError。"""
     if fm.get("kind") != "tool":
@@ -116,9 +136,7 @@ def parse_tool_doc(fm: dict, body: str, *, path: Path) -> CommandDef:
         raise ToolDocError(path, "temporal", f"必填:{' / '.join(_TEMPORALS)}")
     if not isinstance(fm.get("destructive"), bool):
         raise ToolDocError(path, "destructive", "必填:true / false(是否改变外部状态)")
-    as_of = fm.get("as_of") or {}
-    if temporal == "as_of" and not (isinstance(as_of, dict) and (as_of.get("arg") or as_of.get("env"))):
-        raise ToolDocError(path, "as_of", "temporal=as_of 时必须声明 as_of.arg 或 as_of.env")
+    as_of_arg, as_of_env = _as_of(fm, temporal, path, "as_of")
     cwd = fm.get("cwd", "project")
     if not isinstance(cwd, str) or not (cwd == "project" or Path(cwd).is_absolute()):
         raise ToolDocError(path, "cwd", "project 或绝对路径")
@@ -128,7 +146,7 @@ def parse_tool_doc(fm: dict, body: str, *, path: Path) -> CommandDef:
     subs_raw = fm.get("subcommands")
     if subs_raw is not None and fm.get("args") is not None:
         raise ToolDocError(path, "subcommands", "subcommands 与 args 只能写一个")
-    subs: dict[str, tuple[str, tuple[ArgDef, ...]]] = {}
+    subs: dict[str, SubDef] = {}
     if subs_raw is not None:
         if not isinstance(subs_raw, dict) or not subs_raw:
             raise ToolDocError(path, "subcommands", "必须是非空 mapping:子命令 → {description, args}")
@@ -136,12 +154,20 @@ def parse_tool_doc(fm: dict, body: str, *, path: Path) -> CommandDef:
             d = d or {}
             if not isinstance(d, dict):
                 raise ToolDocError(path, f"subcommands.{sub}", "必须是 mapping")
-            subs[str(sub)] = (str(d.get("description") or ""), _args(d.get("args"), path, f"subcommands.{sub}.args"))
+            sub_temporal = d.get("temporal", temporal)
+            if sub_temporal not in _TEMPORALS:
+                raise ToolDocError(path, f"subcommands.{sub}.temporal", f"只能是 {' / '.join(_TEMPORALS)}")
+            sub_arg, sub_env = (_as_of(d, sub_temporal, path, f"subcommands.{sub}.as_of") if "as_of" in d
+                                else (as_of_arg, as_of_env) if sub_temporal == "as_of" else (None, None))
+            if sub_temporal == "as_of" and not (sub_arg or sub_env):
+                raise ToolDocError(path, f"subcommands.{sub}.as_of", "temporal=as_of 时必须声明 as_of.arg 或 as_of.env")
+            subs[str(sub)] = SubDef(description=str(d.get("description") or ""),
+                                    args=_args(d.get("args"), path, f"subcommands.{sub}.args"),
+                                    temporal=sub_temporal, as_of_arg=sub_arg, as_of_env=sub_env)
     return CommandDef(
         name=name, description=desc.strip(), command=tuple(command), cwd=cwd, temporal=temporal,
         destructive=fm["destructive"], subcommands=subs, args=_args(fm.get("args"), path, "args"),
-        as_of_arg=as_of.get("arg") if isinstance(as_of, dict) else None,
-        as_of_env=as_of.get("env") if isinstance(as_of, dict) else None,
+        as_of_arg=as_of_arg, as_of_env=as_of_env,
         timeout_s=float(timeout), usage=body.strip(),
     )
 
@@ -177,9 +203,9 @@ class CommandTool(Tool):
         doc = [d.description]
         if d.subcommands:
             doc.append("子命令(subcommand)及其参数(args):")
-            for sub, (sdesc, args) in d.subcommands.items():
-                doc.append(f"- {sub}" + (f":{sdesc}" if sdesc else ""))
-                doc.extend(_arg_line(a) for a in args)
+            for sub, sd in d.subcommands.items():
+                doc.append(f"- {sub}" + (f":{sd.description}" if sd.description else ""))
+                doc.extend(_arg_line(a) for a in sd.args)
             schema: dict = {"type": "object", "properties": {
                 "subcommand": {"type": "string", "enum": list(d.subcommands)},
                 "args": {"type": "object", "description": "该子命令的参数(见工具说明)"}},
@@ -216,13 +242,15 @@ class CommandTool(Tool):
             sub = inp.get("subcommand")
             if sub not in d.subcommands:
                 raise ValueError(f"subcommand 必须是 {'/'.join(d.subcommands)} 之一")
-            defs = d.subcommands[sub][1]
+            sd = d.subcommands[sub]
+            defs, temporal, as_of_arg = sd.args, sd.temporal, sd.as_of_arg
             values = inp.get("args") or {}
             if not isinstance(values, dict):
                 raise ValueError("args 必须是对象")
             head = [*d.command, sub]
         else:
             defs, values, head = d.args, inp, list(d.command)
+            temporal, as_of_arg = d.temporal, d.as_of_arg
         known = {a.name for a in defs}
         extra = sorted(set(values) - known)
         if extra:
@@ -239,7 +267,7 @@ class CommandTool(Tool):
                 raise ValueError(f"参数 {a.name} 应为 {a.type}")
             if a.enum and v not in a.enum:
                 raise ValueError(f"参数 {a.name} 只能是 {'/'.join(map(str, a.enum))}")
-            if isinstance(v, str) and v.startswith("-"):
+            if isinstance(v, str) and v.startswith("-") and not a.enum:   # enum 值由声明者给定,可以以 - 开头
                 raise ValueError(f"参数 {a.name} 的值不能以 - 开头")
             if a.type == "boolean":
                 if v:
@@ -248,8 +276,18 @@ class CommandTool(Tool):
                 positional.append(str(v))
             else:
                 flags += [a.flag, str(v)]
-        tail = [d.as_of_arg, as_of] if as_of and d.temporal == "as_of" and d.as_of_arg else []
+        tail = [as_of_arg, as_of] if as_of and temporal == "as_of" and as_of_arg else []
         return [*head, *positional, *flags, *tail]
+
+    def _time_decl(self, inp: dict) -> tuple[ToolTemporal, str | None, str | None]:
+        d = self.definition
+        sd = d.subcommands.get(inp.get("subcommand")) if d.subcommands else None
+        if sd is not None:
+            return sd.temporal, sd.as_of_arg, sd.as_of_env
+        return d.temporal, d.as_of_arg, d.as_of_env
+
+    def temporal_for(self, invocation: ToolInvocation) -> ToolTemporal | None:
+        return self._time_decl(dict(invocation.input))[0]
 
     async def validate(self, invocation: ToolInvocation) -> None:
         self.argv(dict(invocation.input), None)
@@ -264,7 +302,8 @@ class CommandTool(Tool):
         except ValueError as exc:
             return ToolResult(ok=False, content=None, error=str(exc), failure_kind="validation",
                               rendered=f"[{d.name}] 参数错误:{exc}")
-        env = {d.as_of_env: context.as_of} if context.as_of and d.temporal == "as_of" and d.as_of_env else None
+        temporal, _arg, as_of_env = self._time_decl(dict(invocation.input))
+        env = {as_of_env: context.as_of} if context.as_of and temporal == "as_of" and as_of_env else None
         cwd = str(self._project_root if d.cwd == "project" else Path(d.cwd))
         try:
             out = await self._runner.run(invocation.call_id, argv=argv, cwd=cwd, timeout_s=d.timeout_s, env=env)

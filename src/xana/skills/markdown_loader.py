@@ -167,6 +167,28 @@ class MarkdownDocParser(SkillManifestParser):
                 if not isinstance(fm["max_turns"], int) or isinstance(fm["max_turns"], bool) or fm["max_turns"] < 1:
                     raise SkillManifestError(path=path, kind=kind, field="max_turns", reason="max_turns 必须是正整数")
                 metadata["max_turns"] = fm["max_turns"]
+            # 目标契约(iteration-agent-design §4):只有人写,agent_define / 迭代者写不进
+            if fm.get("success") is not None:
+                if not isinstance(fm["success"], dict):
+                    raise SkillManifestError(path=path, kind=kind, field="success",
+                                             reason="success 必须是 mapping:{eval, metrics}")
+                metadata["success"] = dict(fm["success"])
+            for list_field in ("constraints", "non_goals"):
+                if fm.get(list_field) is not None:
+                    metadata[list_field] = list(_optional_str_list(fm, path=path, kind=kind, field=list_field))
+            if fm.get("eval") is not None:
+                if not isinstance(fm["eval"], str) or not fm["eval"].strip():
+                    raise SkillManifestError(path=path, kind=kind, field="eval", reason="eval 必须是评测套件名")
+                metadata["eval"] = fm["eval"].strip()
+            if fm.get("allow_exec") is not None:
+                if not isinstance(fm["allow_exec"], bool):
+                    raise SkillManifestError(path=path, kind=kind, field="allow_exec", reason="allow_exec 必须是 true / false")
+                reason = fm.get("allow_exec_reason")
+                if fm["allow_exec"] and not (isinstance(reason, str) and reason.strip()):
+                    raise SkillManifestError(path=path, kind=kind, field="allow_exec_reason",
+                                             reason="开启 allow_exec 必须写原因(allow_exec_reason)")
+                metadata["allow_exec"] = fm["allow_exec"]
+                metadata["allow_exec_reason"] = str(reason or "").strip()
             return SkillManifest(
                 name=name,
                 description=goal,

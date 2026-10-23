@@ -77,7 +77,7 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/help",     description="显示命令菜单。用法 `/help` 或 `/help /命令`"),
             CommandSpec(name="/h",        description="同 /help"),
             CommandSpec(name="/clear",    description="清空当前会话上下文"),
-            CommandSpec(name="/agent",    description="用指定 agent 开新会话,无参列出可选"),
+            CommandSpec(name="/agent",    description="用指定 agent 开新会话,无参列出可选;allow-exec / deny-exec <名字> 开关其 Bash"),
             CommandSpec(name="/compact",  description="用 LLM 把本会话历史压缩成摘要"),
             CommandSpec(name="/model",    description="切换本会话模型，无参列出可选"),
             CommandSpec(name="/effort",   description="推理强度切换，无参列出可选"),
@@ -196,6 +196,9 @@ class DefaultCommandRouter(CommandRouter):
             await self.agent_registry.refresh(force=True)   # 用户主动查看:立即扫描,不受节流影响
         agents = dict(getattr(self.gateway, "agents", {}) or {}) if self.gateway is not None else {}
         name = args.strip()
+        op, _, rest = name.partition(" ")
+        if op in ("allow-exec", "deny-exec"):
+            return await self._agent_exec(op == "allow-exec", rest)
         if not name:
             cfg = await self._current_config(inbound.session_id)
             current = (cfg.agent if cfg else None) or self.default_agent
@@ -214,6 +217,24 @@ class DefaultCommandRouter(CommandRouter):
             ok=True, message=f"[agent] 已开新会话 {new_sid},由 {name} 负责",
             payload={"new_session_id": new_sid},
         )
+
+    async def _agent_exec(self, allowed: bool, rest: str) -> CommandResult:
+        """/agent allow-exec <名字> <原因> | /agent deny-exec <名字>:用户开关文件 agent 的 Bash
+        (iteration-agent-design §5.4;模型改不了这一项)。"""
+        name, _, reason = rest.strip().partition(" ")
+        if not name or (allowed and not reason.strip()):
+            return CommandResult(ok=False, message="用法:/agent allow-exec <名字> <原因> 或 /agent deny-exec <名字>")
+        if self.agent_registry is None:
+            return CommandResult(ok=False, message="agent_registry 未配置")
+        try:
+            path = await self.agent_registry.set_allow_exec(name, allowed, reason)
+        except (LookupError, ValueError) as exc:
+            return CommandResult(ok=False, message=str(exc))
+        if allowed:
+            return CommandResult(ok=True, message=(
+                f"[agent] 已给 {name} 开启 Bash(原因:{reason.strip()}),写入 {path}。它在 tools 里选了 exec 组才会拿到 Bash;"
+                "评测时它的结果会标注可信度降低。"))
+        return CommandResult(ok=True, message=f"[agent] 已关闭 {name} 的 Bash,写入 {path}")
 
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
         from xana.harness_sdk.compact import (

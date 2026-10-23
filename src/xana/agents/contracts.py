@@ -12,6 +12,28 @@ from xana.harness_sdk.contracts import HarnessEvent, PromptProfile, VerifyCheck
 
 AgentEventKind = Literal["draft", "tool", "final", "control_result", "error", "cancelled"]
 
+# 默认可以用 Bash(exec 组)的内置 agent;其余 agent 需用户开启 allow_exec(iteration-agent-design §5.4)
+EXEC_AGENTS = frozenset({"chat", "iterator"})
+
+
+@dataclass(frozen=True)
+class GoalContract:
+    """agent 的目标契约(iteration-agent-design §4):只有人能改;迭代者只改工作流正文与 playbook。
+    goal 做什么;success 怎么算做好({eval, metrics});constraints 硬约束;non_goals 不做什么;
+    eval 评测套件名;allow_exec 用户开启的 Bash 权限(须写原因)。"""
+    goal: str = ""
+    success: dict[str, Any] = field(default_factory=dict)
+    constraints: tuple[str, ...] = ()
+    non_goals: tuple[str, ...] = ()
+    eval: str | None = None
+    allow_exec: bool = False
+    allow_exec_reason: str = ""
+
+    @property
+    def iterable(self) -> bool:
+        """有 success 与评测套件才能被迭代。"""
+        return bool(self.success) and bool(self.eval or self.success.get("eval"))
+
 
 @dataclass(frozen=True)
 class AgentSpec:
@@ -34,6 +56,7 @@ class AgentSpec:
     prompt_profile: PromptProfile | None = None
     # 回合结束时的检查命令(命令型验证,对应 CC 命令型 Stop hook)
     verify: tuple[VerifyCheck, ...] = ()
+    contract: GoalContract = field(default_factory=GoalContract)
 
 
 @dataclass(frozen=True)

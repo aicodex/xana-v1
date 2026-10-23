@@ -38,6 +38,7 @@ _DESCRIPTION = (
     "只属于当前项目,scope=user 所有项目通用;同名时项目级覆盖用户级。\n"
     "- action=delete:删除指定 name 的 agent,立即生效(内置 agent 不能删)。\n"
     "tools 是工具选择:default(默认组合)、组名、工具名或 *;[] 表示不给任何工具;不填 = default。"
+    "新 agent 没有 Bash(exec 组);需要执行某个程序就先用 tool_creator 派生工具,再把工具名写进 tools。"
     "system_prompt 是该 agent 的系统提示词,通常以 ${base_prompt} 开头(保留 xana 默认提示词与环境信息,在其后写角色说明);"
     "不含 ${base_prompt} 则完全替换,连工作目录等环境信息也没有,只在用户明确要求完全自定义时这样做。"
 )
@@ -155,7 +156,11 @@ class AgentDefineTool(Tool):
         unknown = unknown_names((*selection, *disallowed), specs, toolsets)
         if unknown:
             errors.append(f"未知的组或工具:{', '.join(unknown)}(用 action=catalog 查看可选)")
-        granted = resolve_tools(selection, disallowed, specs, toolsets)
+        if any(t in ("exec", "Bash") for t in selection):
+            errors.append("新 agent 不能有 Bash(exec 组):需要执行某个程序时用 tool_creator 把它派生成工具,"
+                          "再把工具名写进 tools;确实需要 Bash 只能由用户 /agent allow-exec <name> <原因> 开启")
+        # 与加载时一致:文件 agent 没有 exec 组(iteration-agent-design §5.4)
+        granted = resolve_tools(selection, (*disallowed, "exec"), specs, toolsets)
         if context.available_tools is not None and not granted <= context.available_tools:
             extra = sorted(granted - context.available_tools)
             errors.append(f"新 agent 不能拥有你当前没有的工具:{', '.join(extra)}")
