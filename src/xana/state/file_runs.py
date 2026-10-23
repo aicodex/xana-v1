@@ -5,6 +5,7 @@ new_run_id() 生成 8 字符 hex（与 scheduler 风格一致）；冲突由 Fil
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -149,6 +150,20 @@ class FileRunStore(RunStore):
 RunTerminalStatus = Literal["completed", "cancelled", "failed"]
 
 
+def prompt_path(runs_dir: Path, sha: str) -> Path:
+    return Path(runs_dir) / "prompts" / f"{sha}.md"
+
+
+def save_prompt(runs_dir: Path, text: str) -> str:
+    """system prompt 按内容哈希存一份(runs/prompts/<sha>.md),返回 sha;trace 行只记 sha。"""
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    path = prompt_path(runs_dir, sha)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(path, text)
+    return sha
+
+
 class RunJsonlWriter:
     """每个 run 写一个 {sessions_root}/runs/{run_id}.jsonl；finalize 写终止 marker。"""
 
@@ -181,3 +196,25 @@ class RunJsonlWriter:
         )
         with self._path(run_id).open("a", encoding="utf-8") as f:
             f.write(marker + "\n")
+
+
+def read_run_transcript(runs_dir: Path, run_id: str) -> tuple[list[dict], str | None] | None:
+    """读 runs/<run_id>.jsonl(续跑过的读 .aborted.jsonl)→ (行列表, 终止状态)。没有该 run 返回 None;损坏行跳过。"""
+    runs_dir = Path(runs_dir)
+    path = runs_dir / f"{run_id}.jsonl"
+    if not path.exists():
+        path = runs_dir / f"{run_id}.aborted.jsonl"
+        if not path.exists():
+            return None
+    rows: list[dict] = []
+    end_status: str | None = None
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if row.get("marker") == "run_completed":
+            end_status = row.get("status")
+        elif isinstance(row.get("payload"), dict):
+            rows.append(row)
+    return rows, end_status

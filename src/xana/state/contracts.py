@@ -32,6 +32,7 @@ CheckpointName = Literal[
 
 @dataclass(frozen=True)
 class UsageSnapshot:
+    """exact_* = 最近一次模型调用(上下文占用);total_* / model_calls = 本 run 全部调用之和(消耗,预算按它算)。"""
     estimated_input_tokens: int = 0
     estimated_output_tokens: int = 0
     exact_input_tokens: int | None = None
@@ -39,6 +40,10 @@ class UsageSnapshot:
     exact_cost_usd: float | None = None
     model: str | None = None
     provider: str | None = None
+    total_input_tokens: int = 0         # 含缓存命中
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    model_calls: int = 0
 
 
 @dataclass(frozen=True)

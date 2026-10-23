@@ -98,6 +98,7 @@ from xana.memory.contracts import (ActiveContext, ExtractionRequest, HistoryRow,
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror
 from xana.policy.contracts import PermissionContext, PermissionResult
 from xana.state.contracts import RunRecord, UsageSnapshot
+from xana.state.file_runs import save_prompt
 from xana.tools.contracts import ToolActivity, ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset
 from xana.tools.interfaces import Tool
 from xana.tools.toolsets import resolve_tools
@@ -265,7 +266,7 @@ class DefaultHarness(Harness):
         await context.active_context_store.append_message(session_id, agent_name, note)
         await context.history_mirror.append(HistoryRow(
             row_id=f"{run_id}:note:{seq}", session_id=session_id, agent_name=agent_name,
-            kind="user", payload=note, ts=0.0,
+            kind="user", payload=note, ts=time.time(),
         ))
 
     async def close_thread(self, session_id: str) -> None:
@@ -1351,6 +1352,10 @@ class DefaultHarness(Harness):
             stream_error_yielded = False
             stop_reason = ""
 
+            # trace(docs/design/iteration-agent-design.md §7):本次调用的耗时、首 token、用量、system 版本
+            call_started = time.monotonic()
+            first_token_ms: int | None = None
+            call_usage: dict[str, Any] = {}
             # break 出循环时显式关闭 provider 流,避免由 GC 在别的上下文里 aclose。
             model_stream = client.stream(model_request)
             try:
@@ -1359,6 +1364,8 @@ class DefaultHarness(Harness):
                     # 否则要等模型自己 done 才被 outer loop 抓到,体感很慢。
                     if context.abort.aborted:
                         break
+                    if first_token_ms is None and event.kind in ("text_delta", "tool_call"):
+                        first_token_ms = int((time.monotonic() - call_started) * 1000)
                     if event.kind == "text_delta":
                         delta = event.payload.get("text", "")
                         # thinking-channel deltas stream out as model_delta
@@ -1381,6 +1388,11 @@ class DefaultHarness(Harness):
                             _tc["input_error"] = event.payload["input_error"]
                         iter_tool_calls.append(_tc)
                     elif event.kind == "usage":
+                        if event.usage is not None:
+                            call_usage = {k: v for k, v in (
+                                ("input", event.usage.input_tokens), ("output", event.usage.output_tokens),
+                                ("cache_read", event.usage.cache_read_tokens),
+                                ("cache_write", event.usage.cache_write_tokens)) if v is not None}
                         usage = await self.usage_accumulator.apply_model_event(usage, event)
                         # §4.3:RunRecord.budget 有上限的 run 每轮检查,超限置
                         # 收尾标记;循环在 assistant 落库后优雅退出(非裸死)。
@@ -1497,7 +1509,14 @@ class DefaultHarness(Harness):
                         agent_name=agent_name,
                         kind="assistant",
                         payload=asst_msg,
-                        ts=0.0,
+                        ts=time.time(),
+                        metadata={"trace": {
+                            "model": context.model, "provider": provider,
+                            "latency_ms": int((time.monotonic() - call_started) * 1000),
+                            "first_token_ms": first_token_ms,
+                            "usage": call_usage, "stop_reason": stop_reason,
+                            "system_sha": _save_system_prompt(context, system_content),
+                        }},
                     )
                 )
 
@@ -1525,7 +1544,7 @@ class DefaultHarness(Harness):
                     await context.active_context_store.append_message(session_id, agent_name, skipped)
                     await context.history_mirror.append(HistoryRow(
                         row_id=f"{run_id}:tool:{turn_index}:{call_idx}", session_id=session_id,
-                        agent_name=agent_name, kind="tool", payload=skipped, ts=0.0))
+                        agent_name=agent_name, kind="tool", payload=skipped, ts=time.time()))
                 continue                      # 循环结束 → 报 max_turns 错误
 
             if not iter_tool_calls:
@@ -1623,7 +1642,12 @@ class DefaultHarness(Harness):
                             agent_name=agent_name,
                             kind="tool",
                             payload=tool_msg,
-                            ts=0.0,
+                            ts=time.time(),
+                            metadata={"trace": {
+                                "elapsed_ms": _tool_elapsed_ms,
+                                **({} if result.ok else {"error": result.error or "",
+                                                         "failure_kind": result.failure_kind or ""}),
+                            }},
                         )
                     )
                     # UI 展示可被 display_text 覆盖(如 tool_search 的友好文案);
@@ -1744,6 +1768,15 @@ def _assemble_for_model(system_content: str, history: tuple[MemoryMessage, ...])
 
 def _default_permission(session_id: str) -> PermissionContext:
     return PermissionContext(mode="default", session_id=session_id)
+
+
+def _save_system_prompt(context: HarnessContext, text: str) -> str | None:
+    """system prompt 存进 runs/prompts/(按哈希去重),trace 行记 sha;写失败不影响回答。"""
+    try:
+        return save_prompt(_sessions_root_from(context) / "runs", text)
+    except OSError:
+        _logger.warning("system prompt 存档失败", exc_info=True)
+        return None
 
 
 def _sessions_root_from(context: HarnessContext) -> Path:

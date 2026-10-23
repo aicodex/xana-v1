@@ -49,4 +49,10 @@ class DefaultUsageAccumulator(UsageAccumulator):
         has_prompt = any(p is not None for p in prompt_parts) and prompt_total > 0
         new_in = prompt_total if has_prompt else current.exact_input_tokens
         new_out = u.output_tokens if u.output_tokens is not None else current.exact_output_tokens
-        return replace(current, exact_input_tokens=new_in, exact_output_tokens=new_out)
+        return replace(
+            current, exact_input_tokens=new_in, exact_output_tokens=new_out,
+            total_input_tokens=current.total_input_tokens + prompt_total,
+            total_output_tokens=current.total_output_tokens + (u.output_tokens or 0),
+            total_cache_read_tokens=current.total_cache_read_tokens + (u.cache_read_tokens or 0),
+            model_calls=current.model_calls + 1,
+        )

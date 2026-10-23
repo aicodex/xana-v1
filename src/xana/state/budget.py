@@ -17,10 +17,10 @@ from xana.state.contracts import UsageSnapshot
 
 
 def _tokens(usage: UsageSnapshot) -> int:
-    """本 run 消耗 token:优先 exact,缺失退回 estimated(UsageAccumulator 语义)。"""
-    exact = (usage.exact_input_tokens or 0) + (usage.exact_output_tokens or 0)
-    if exact:
-        return exact
+    """本 run 消耗 token:全部模型调用之和;provider 没报用量时退回 estimated。"""
+    total = usage.total_input_tokens + usage.total_output_tokens
+    if total:
+        return total
     return (usage.estimated_input_tokens or 0) + (usage.estimated_output_tokens or 0)
 
 

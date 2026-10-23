@@ -227,6 +227,20 @@ def _retry_after_raw(resp: httpx.Response) -> dict[str, Any]:
         return {}
 
 
+def _usage(payload: dict[str, Any]) -> ModelUsage:
+    """OpenAI 口径的 prompt_tokens 含缓存命中部分;内部契约(同 Anthropic)input_tokens 只算未命中部分。
+    缓存数 Moonshot 放在顶层 cached_tokens 或 prompt_tokens_details.cached_tokens(同 Kimi Code)。"""
+    prompt = payload.get("prompt_tokens")
+    cached = payload.get("cached_tokens")
+    if cached is None:
+        cached = (payload.get("prompt_tokens_details") or {}).get("cached_tokens")
+    return ModelUsage(
+        input_tokens=prompt - (cached or 0) if prompt is not None else None,
+        output_tokens=payload.get("completion_tokens"),
+        cache_read_tokens=cached,
+    )
+
+
 def _normalize_tool_call_id(call_id: str) -> str:
     return _TOOL_CALL_ID_UNSAFE.sub("_", call_id)[:_TOOL_CALL_ID_MAX] or "tool_call"
 
@@ -421,14 +435,6 @@ async def _parse_sse_stream(resp: httpx.Response) -> AsyncGenerator[ModelEvent, 
             payload["input"] = tool_input or {}
             yield ModelEvent(kind="tool_call", payload=payload)
 
-    usage_payload = usage_payload or {}
-    yield ModelEvent(
-        kind="usage",
-        usage=ModelUsage(
-            input_tokens=usage_payload.get("prompt_tokens"),
-            output_tokens=usage_payload.get("completion_tokens"),
-            cache_read_tokens=(usage_payload.get("prompt_tokens_details") or {}).get("cached_tokens"),
-        ),
-    )
+    yield ModelEvent(kind="usage", usage=_usage(usage_payload or {}))
     # stop_reason 归一:length = 输出被 max tokens 截断(harness 据此续写)
     yield ModelEvent(kind="done", payload={"stop_reason": finish_reason or ""})

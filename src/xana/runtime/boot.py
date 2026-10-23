@@ -91,6 +91,7 @@ from xana.runtime.session_resolver import SessionResolver
 from xana.agent_adapter.agent_runner import GatewayAgentRunner
 from xana.tools.builtin.agent_define import AgentDefineTool
 from xana.tools.builtin.agent_run import AgentRunTool
+from xana.tools.builtin.trace_view import TraceViewTool
 from xana.tools.builtin.bash import BashTool
 from xana.tools.builtin.project_manage import ProjectManageTool
 from xana.tools.builtin.cron import CronCreateTool, CronDeleteTool, CronListTool
@@ -376,6 +377,7 @@ async def boot(
     if history_root is not None:
         run_store = FileRunStore(root=history_root.parent / "runs")
         state = _CompositeStateRepository(sessions=InMemorySessionStore(), runs=run_store)
+        await _register(TraceViewTool(run_store=run_store, runs_dir=history_root / "runs"))
     else:
         state = InMemoryStateRepository()
 
