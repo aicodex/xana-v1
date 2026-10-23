@@ -328,3 +328,29 @@ class KimiTokenStore:
             with contextlib.suppress(OSError):
                 fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
+
+
+async def fetch_usages(store: KimiTokenStore, *, base_url: str | None = None, timeout_s: float = 15.0) -> dict[str, Any]:
+    """Kimi Code 订阅额度:GET {base}/usages(同 Kimi Code 的 managed-usage)。返回
+    {limit5h | limit7d | monthTotal | monthCode: {usedRatio, resetAt}, ...};取不到抛 httpx 错误。"""
+    token = await store.access_token()
+    tokens = store.load()
+    base = (base_url or api_base(tokens.region if tokens else _DEFAULT_REGION)).rstrip("/")
+    async with httpx.AsyncClient(trust_env=False, timeout=timeout_s) as client:
+        resp = await client.get(f"{base}/usages", headers={"Authorization": f"Bearer {token}"})
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("usages") if isinstance(data.get("usages"), dict) else data
+
+
+def quota_exhausted(usages: dict[str, Any], *, threshold: float = 0.9) -> str | None:
+    """5 小时 / 7 天 / 月额度的已用比例到阈值 → 返回原因(含重置时间),否则 None。
+    接口字段是 snake_case(limit_5h.used_ratio / reset_time);Kimi Code 前端转成 camelCase,两种都认。"""
+    for keys, label in ((("limit_5h", "limit5h"), "5 小时额度"), (("limit_7d", "limit7d"), "7 天额度"),
+                        (("limit_month_total", "monthTotal"), "月额度")):
+        entry = next((usages[k] for k in keys if isinstance(usages.get(k), dict)), {})
+        ratio = entry.get("used_ratio", entry.get("usedRatio"))
+        if isinstance(ratio, (int, float)) and ratio >= threshold:
+            reset = entry.get("reset_time") or entry.get("resetAt") or "未知"
+            return f"Kimi {label}已用 {ratio:.0%}(重置于 {reset})"
+    return None

@@ -11,9 +11,12 @@
 from __future__ import annotations
 
 import time as _time
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from xana.state.contracts import UsageSnapshot
+
+if TYPE_CHECKING:
+    from xana.state.interfaces import RunStore
 
 
 def _tokens(usage: UsageSnapshot) -> int:
@@ -76,3 +79,15 @@ class BudgetTracker:
 
     def _day_key(self) -> str:
         return _time.strftime("%Y-%m-%d", _time.localtime(self._clock()))
+
+
+async def day_usage(runs: "RunStore", day: str | None = None) -> int:
+    """某天(本地日期 YYYY-MM-DD,缺省今天)开始的全部 run 的 token 消耗之和,按持久化的 RunRecord 计算
+    (跨进程、重启不丢;BudgetTracker 的内存累计只覆盖本进程)。"""
+    day = day or _time.strftime("%Y-%m-%d")
+    total = 0
+    for rec in await runs.list_all():
+        started = rec.metadata.get("started_at")
+        if isinstance(started, (int, float)) and _time.strftime("%Y-%m-%d", _time.localtime(started)) == day:
+            total += _tokens(rec.usage)
+    return total

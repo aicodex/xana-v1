@@ -171,6 +171,16 @@ class _CompositeStateRepository(StateRepository):
     def runs(self) -> RunStore: return self._runs
 
 
+def _kimi_quota_check():
+    """评测前查 Kimi 订阅额度(iteration-agent-design §12):5 小时 / 月额度用到 90% 就停止开新样本。"""
+    from xana.llm_driver.providers.kimi_oauth import fetch_usages, quota_exhausted
+    store = KimiTokenStore()
+
+    async def check() -> str | None:
+        return quota_exhausted(await fetch_usages(store))
+    return check
+
+
 def _search_db_path(project_root: Path) -> Path:
     """记忆树检索索引(memory_search)的持久文件 projects/<id>/sessions/search-{project_hash}.db。
 
@@ -514,7 +524,8 @@ async def boot(
                                  tool_registry=tools))
     await _register(ToolDefineTool(registry=tools, project_root=project_root))
     # 评测套件(iteration-agent-design §8):eval_run 经 agent_runner 跑样本,eval_score 调套件的打分命令
-    _evals = EvalRunner(runner=agent_runner, run_store=run_store, evals_root=evals_dir)
+    _evals = EvalRunner(runner=agent_runner, run_store=run_store, evals_root=evals_dir,
+                        quota_check=_kimi_quota_check() if provider.startswith("kimi") else None)
     await _register(EvalRunTool(_evals))
     await _register(EvalScoreTool(_evals))
     # 迭代智能体(§9):内置 iterator + 只改正文 / 经验条目的版本工具 + 只追加的账本

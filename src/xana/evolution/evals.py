@@ -20,11 +20,13 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import yaml
 
 from xana.extension_api.capabilities import AgentRunner
+from xana.state.budget import day_usage
 from xana.state.interfaces import RunStore
 from xana.tools.contracts import ToolEnvConfig
 
@@ -56,6 +58,7 @@ class EvalSuite:
     strategies: dict[str, str] = field(default_factory=dict)
     on_miss: str = "live"
     protected: tuple[str, ...] = ()     # 套件目录外、影响打分的文件(如计算真值的代码),一并做完整性校验
+    daily_tokens: int | None = None     # 当日 token 上限(按全部 run 的持久化用量计,iteration-agent-design §12)
 
     def fingerprint(self) -> str:
         """样本、打分命令、真值相关文件的内容哈希:批次运行后被改动则拒绝打分(防迭代者改题刷分,§9.3)。"""
@@ -102,7 +105,8 @@ def load_suite(root: Path, name: str) -> EvalSuite:
     return EvalSuite(name=name, dir=d, agent=cfg["agent"], scorer=tuple(scorer), cases=tuple(cases),
                      concurrency=int(cfg.get("concurrency", 3)), strategies=dict(env.get("strategies") or {}),
                      on_miss=str(env.get("on_miss", "live")),
-                     protected=tuple(str(x) for x in cfg.get("protected") or ()))
+                     protected=tuple(str(x) for x in cfg.get("protected") or ()),
+                     daily_tokens=int(cfg["daily_tokens"]) if cfg.get("daily_tokens") else None)
 
 
 @dataclass
@@ -124,10 +128,25 @@ class RunRow:
 class EvalRunner:
     """按套件跑样本:每个样本一个独立会话,工具环境 = 样本的 as_of + 套件策略;结果写进批次目录。"""
 
-    def __init__(self, *, runner: AgentRunner, run_store: RunStore | None, evals_root: Path) -> None:
+    def __init__(self, *, runner: AgentRunner, run_store: RunStore | None, evals_root: Path,
+                 quota_check: Callable[[], Awaitable[str | None]] | None = None) -> None:
+        """quota_check:模型服务额度检查(如 Kimi 订阅额度),返回停止原因或 None;每个样本开跑前调用。"""
         self._runner = runner
         self._runs = run_store
         self.root = Path(evals_root)
+        self._quota_check = quota_check
+
+    async def _stop_reason(self, suite: EvalSuite) -> str | None:
+        if suite.daily_tokens and self._runs is not None:
+            used = await day_usage(self._runs)
+            if used >= suite.daily_tokens:
+                return f"当日预算已用完(已用 {used} / 上限 {suite.daily_tokens} token)"
+        if self._quota_check is not None:
+            try:
+                return await self._quota_check()
+            except Exception:   # 额度接口不可用不阻断评测
+                return None
+        return None
 
     def suite(self, name: str) -> EvalSuite:
         return load_suite(self.root, name)
@@ -147,7 +166,10 @@ class EvalRunner:
 
         async def one(case: EvalCase, rep: int) -> None:
             async with slots:
-                row = await self._run_case(suite, case, rep, agent or suite.agent, batch, tape)
+                reason = await self._stop_reason(suite)
+                row = (RunRow(case_id=case.id, rep=rep, split=case.split, run_id="", status="skipped", text="",
+                              error=reason) if reason
+                       else await self._run_case(suite, case, rep, agent or suite.agent, batch, tape))
             async with lock:
                 with (out_dir / "runs.jsonl").open("a", encoding="utf-8") as f:
                     f.write(json.dumps(asdict(row), ensure_ascii=False) + "\n")
