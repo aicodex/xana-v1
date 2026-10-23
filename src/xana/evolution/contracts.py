@@ -35,6 +35,12 @@ class LedgerEntry:
     delta_vs_base: float | None = None
     closure_tokens_used: int = 0
     continuation: tuple[str, ...] = ()
+    # 迭代记录(iteration-agent-design §9.5):被迭代的 agent、假设、改动、归因、证据(批次与指标)
+    agent: str = ""
+    hypothesis: str = ""
+    change: str = ""
+    attribution: str = ""
+    evidence: dict = field(default_factory=dict)
 
     def to_json(self) -> "dict[str, Any]":
         return {
@@ -48,6 +54,11 @@ class LedgerEntry:
             "delta_vs_base": self.delta_vs_base,
             "closure_tokens_used": self.closure_tokens_used,
             "continuation": list(self.continuation),
+            "agent": self.agent,
+            "hypothesis": self.hypothesis,
+            "change": self.change,
+            "attribution": self.attribution,
+            "evidence": dict(self.evidence),
         }
 
     @classmethod
@@ -63,6 +74,11 @@ class LedgerEntry:
             delta_vs_base=raw.get("delta_vs_base"),
             closure_tokens_used=int(raw.get("closure_tokens_used") or 0),
             continuation=tuple(raw.get("continuation") or ()),
+            agent=str(raw.get("agent") or ""),
+            hypothesis=str(raw.get("hypothesis") or ""),
+            change=str(raw.get("change") or ""),
+            attribution=str(raw.get("attribution") or ""),
+            evidence=dict(raw.get("evidence") or {}),
         )
 
 

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 import uuid
@@ -54,6 +55,17 @@ class EvalSuite:
     concurrency: int = 3
     strategies: dict[str, str] = field(default_factory=dict)
     on_miss: str = "live"
+    protected: tuple[str, ...] = ()     # 套件目录外、影响打分的文件(如计算真值的代码),一并做完整性校验
+
+    def fingerprint(self) -> str:
+        """样本、打分命令、真值相关文件的内容哈希:批次运行后被改动则拒绝打分(防迭代者改题刷分,§9.3)。"""
+        h = hashlib.sha256()
+        files = sorted(p for p in self.dir.rglob("*") if p.is_file() and "batches" not in p.relative_to(self.dir).parts)
+        files += [(self.dir / extra).resolve() for extra in self.protected]
+        for p in files:
+            h.update(str(p.relative_to(self.dir) if p.is_relative_to(self.dir) else p).encode())
+            h.update(p.read_bytes() if p.exists() else b"<missing>")
+        return h.hexdigest()[:16]
 
     def select(self, *, split: str | None = None, case_ids: tuple[str, ...] = ()) -> tuple[EvalCase, ...]:
         if case_ids:
@@ -89,7 +101,8 @@ def load_suite(root: Path, name: str) -> EvalSuite:
     env = cfg.get("env") or {}
     return EvalSuite(name=name, dir=d, agent=cfg["agent"], scorer=tuple(scorer), cases=tuple(cases),
                      concurrency=int(cfg.get("concurrency", 3)), strategies=dict(env.get("strategies") or {}),
-                     on_miss=str(env.get("on_miss", "live")))
+                     on_miss=str(env.get("on_miss", "live")),
+                     protected=tuple(str(x) for x in cfg.get("protected") or ()))
 
 
 @dataclass
@@ -126,7 +139,8 @@ class EvalRunner:
         out_dir.mkdir(parents=True)
         (out_dir / "batch.json").write_text(json.dumps({
             "suite": suite.name, "agent": agent or suite.agent, "label": label, "repeat": repeat,
-            "cases": [c.id for c in cases], "started": time.time(), "tape": list(tape)}, ensure_ascii=False),
+            "cases": [c.id for c in cases], "started": time.time(), "tape": list(tape),
+            "fingerprint": suite.fingerprint()}, ensure_ascii=False),
             encoding="utf-8")
         slots = asyncio.Semaphore(max(1, suite.concurrency))
         lock = asyncio.Lock()
@@ -164,7 +178,17 @@ class EvalRunner:
                 row.model_calls = rec.usage.model_calls
         return row
 
+    def resolve_batch(self, suite: EvalSuite, batch: str) -> str:
+        """batch="latest" → 最近一个批次。"""
+        if batch != "latest":
+            return batch
+        done = sorted(p.name for p in (suite.dir / "batches").glob("*") if (p / "runs.jsonl").exists())
+        if not done:
+            raise SuiteError(f"套件 {suite.name} 还没有批次")
+        return done[-1]
+
     def batch_runs(self, suite: EvalSuite, batch: str) -> list[dict]:
+        batch = self.resolve_batch(suite, batch)
         path = suite.dir / "batches" / batch / "runs.jsonl"
         if not path.exists():
             raise SuiteError(f"套件 {suite.name} 没有批次 {batch}")
@@ -172,7 +196,12 @@ class EvalRunner:
 
     async def score(self, suite: EvalSuite, batch: str) -> dict:
         """调套件的打分命令(确定性脚本),结果写 scores.json 并返回。"""
+        batch = self.resolve_batch(suite, batch)
         runs = self.batch_runs(suite, batch)
+        meta = json.loads((suite.dir / "batches" / batch / "batch.json").read_text(encoding="utf-8"))
+        if meta.get("fingerprint") != suite.fingerprint():
+            raise SuiteError("评测套件(样本 / 打分命令 / 真值相关文件)在这个批次运行后被改动过,拒绝打分;"
+                             "需要改套件请让用户来改,然后重新跑批次")
         payload = {"suite": suite.name, "cases": [{"id": c.id, "split": c.split, "as_of": c.as_of, **c.meta}
                                                    for c in suite.cases],
                    "runs": runs}
@@ -183,6 +212,7 @@ class EvalRunner:
         if proc.returncode != 0:
             raise SuiteError(f"打分命令失败(退出码 {proc.returncode}):{err.decode('utf-8', 'replace')[-2000:]}")
         result = json.loads(out.decode("utf-8"))
+        result["batch"] = batch
         (suite.dir / "batches" / batch / "scores.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
         return result

@@ -45,7 +45,7 @@ _SCORE_SPEC = _spec(
     "eval_score",
     "调评测套件的打分命令给一个批次打分(确定性脚本,不用模型),返回汇总指标(分训练 / 留出 / 实时集)、"
     "与基线的对比,以及每个样本的结果(实际值、误差、是否大偏差及类型)。分数只认这个工具的输出。",
-    {"suite": {"type": "string"}, "batch": {"type": "string", "description": "eval_run 返回的批次号"}},
+    {"suite": {"type": "string"}, "batch": {"type": "string", "description": "eval_run 返回的批次号;latest = 最近一批"}},
     ["suite", "batch"], "评测打分")
 
 
@@ -105,6 +105,6 @@ class EvalScoreTool(Tool):
         per_case = result.get("per_case") or []
         if context.agent_name in _HELDOUT_BLIND:   # 留出集只给汇总,样本细节不回流给迭代者
             per_case = [r for r in per_case if r.get("split") != "heldout"]
-        text = ("[eval_score] 汇总:\n" + json.dumps(result.get("summary") or {}, ensure_ascii=False, indent=1)
+        text = (f"[eval_score] 批次 {result.get('batch')} 汇总:\n" + json.dumps(result.get("summary") or {}, ensure_ascii=False, indent=1)
                 + "\n\n样本结果:\n" + "\n".join(json.dumps(r, ensure_ascii=False) for r in per_case))
         return ToolResult(ok=True, content={"summary": result.get("summary")}, rendered=text)

@@ -25,6 +25,7 @@ from xana.agent_adapter.gateway import DefaultAgentGateway
 from xana.agent_adapter.progress import AdapterProgressSink
 from xana.agent_adapter.router import DefaultAgentRequestRouter
 from xana.agents.chat_agent import ChatAgent, build_chat_agent_spec
+from xana.agents.iterator import ITERATOR_AGENT, build_iterator_agent_spec
 from xana.agents.researcher import RESEARCHER_AGENT
 from xana.agents.interfaces import Agent
 from xana.config.loader import (
@@ -93,7 +94,9 @@ from xana.agent_adapter.agent_runner import GatewayAgentRunner
 from xana.tools.builtin.agent_define import AgentDefineTool
 from xana.tools.builtin.agent_run import AgentRunTool
 from xana.evolution.evals import EvalRunner
+from xana.agents.versions import AgentVersions
 from xana.tools.builtin.eval_tools import EvalRunTool, EvalScoreTool
+from xana.tools.builtin.iteration_tools import AgentVersionTool, LedgerTool
 from xana.tools.builtin.tool_define import ToolDefineTool
 from xana.tools.builtin.trace_view import TraceViewTool
 from xana.tools.builtin.bash import BashTool
@@ -124,7 +127,7 @@ from xana.tools.toolsets import BUILTIN_TOOLSETS, unknown_names
 
 
 _FAKE_PROVIDER = "fake"
-BUILTIN_AGENT_NAMES = ("chat", RESEARCHER_AGENT)   # 内置 agent:不能被 AGENT.md 覆盖或删除
+BUILTIN_AGENT_NAMES = ("chat", RESEARCHER_AGENT, ITERATOR_AGENT)   # 内置 agent:不能被 AGENT.md 覆盖或删除
 _logger = logging.getLogger(__name__)
 
 
@@ -515,6 +518,10 @@ async def boot(
     _evals = EvalRunner(runner=agent_runner, run_store=run_store, evals_root=evals_dir)
     await _register(EvalRunTool(_evals))
     await _register(EvalScoreTool(_evals))
+    # 迭代智能体(§9):内置 iterator + 只改正文 / 经验条目的版本工具 + 只追加的账本
+    await _register(AgentVersionTool(AgentVersions(registry=agent_registry, agents=gateway.agents)))
+    await _register(LedgerTool(ledger))
+    gateway.agents[ITERATOR_AGENT] = _doc_agent_factory(build_iterator_agent_spec())
     await _register(AgentDefineTool(
         roots={"user": xana_home() / "agents", "project": project_root / ".xana" / "agents"},
         agents=gateway.agents, agent_registry=agent_registry, tool_registry=tools))
@@ -542,7 +549,8 @@ async def boot(
                                - {sp.component.name for sp in _all_specs})
     if _unknown_disabled:
         _logger.info("tools.disabled 中未匹配到已注册组 / 工具的条目(可能本就未注册):%s", _unknown_disabled)
-    _checked_specs = [build_chat_agent_spec(system_cfg.agent_defaults), *await agent_registry.list_specs()]
+    _checked_specs = [build_chat_agent_spec(system_cfg.agent_defaults), build_iterator_agent_spec(),
+                      *await agent_registry.list_specs()]
     if system_cfg.web_search.xana_search_url:
         _checked_specs.append(build_researcher_agent_spec())
     _models = {e.name for e in system_cfg.models if e.type == provider} | {model}

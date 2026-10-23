@@ -102,6 +102,19 @@ def agent_spec_from_doc(manifest: SkillManifest, *, body: str, path: Path,
     )
 
 
+PLAYBOOK_NAME = "playbook.md"
+PLAYBOOK_HEADING = "# 经验条目(迭代中积累,每条注明来源)"
+
+
+def _playbook_version(agent_doc: Path) -> tuple[int, int]:
+    """同目录 playbook.md 的版本:它变了 agent 也要重新加载(经验条目拼在系统提示词末尾)。"""
+    try:
+        st = (agent_doc.parent / PLAYBOOK_NAME).stat()
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return 0, 0
+
+
 class FileAgentRegistry(AgentRegistry):
     """两级目录的 AGENT.md → gateway 共用的 agent 表,支持热加载与删除。"""
 
@@ -125,9 +138,9 @@ class FileAgentRegistry(AgentRegistry):
         self._min_interval_s = min_interval_s
         self._defaults = defaults            # 项目给 agent 的默认配置(没写 tools / skills 的 AGENT.md 用)
         # 文件版本 = (修改时间 ns, 大小):同一时间刻度内的连续修改靠大小区分
-        self._parsed: dict[Path, tuple[tuple[int, int], AgentSpec]] = {}   # 每个文件最近一次成功解析的版本
-        self._loaded: dict[str, tuple[Path, tuple[int, int]]] = {}         # 表中由本注册表维护的 agent → 来源版本
-        self._reported: set[tuple[Path, tuple[int, int]]] = set()          # 已告警过的 (路径, 版本)
+        self._parsed: dict[Path, tuple[tuple, AgentSpec]] = {}   # 每个文件最近一次成功解析的版本
+        self._loaded: dict[str, tuple[Path, tuple]] = {}         # 表中由本注册表维护的 agent → 来源版本
+        self._reported: set[tuple[Path, tuple]] = set()          # 已告警过的 (路径, 版本)
         self._last_scan = float("-inf")
         self._lock = asyncio.Lock()
 
@@ -146,7 +159,7 @@ class FileAgentRegistry(AgentRegistry):
 
     async def _sync(self) -> tuple[SkillManifestError, ...]:
         errors: list[SkillManifestError] = []
-        chosen: dict[str, tuple[Path, tuple[int, int], AgentSpec]] = {}
+        chosen: dict[str, tuple[Path, tuple, AgentSpec]] = {}
         seen: set[Path] = set()
         for scope, root in self._roots:                     # 低 → 高,后写覆盖
             if not root.is_dir():
@@ -156,7 +169,7 @@ class FileAgentRegistry(AgentRegistry):
                     st = path.stat()
                 except OSError:
                     continue
-                mtime = (st.st_mtime_ns, st.st_size)
+                mtime = (st.st_mtime_ns, st.st_size, _playbook_version(path))
                 seen.add(path)
                 cached = self._parsed.get(path)
                 if cached is None or cached[0] != mtime:
@@ -194,6 +207,9 @@ class FileAgentRegistry(AgentRegistry):
     async def _parse(self, path: Path, scope: ComponentScope) -> AgentSpec:
         manifest = await self._parser.parse(path)
         _fm, body = split_frontmatter(path.read_text(encoding="utf-8"), path=path)
+        playbook = path.parent / PLAYBOOK_NAME
+        if playbook.exists() and playbook.read_text(encoding="utf-8").strip():
+            body = body.rstrip() + "\n\n" + PLAYBOOK_HEADING + "\n\n" + playbook.read_text(encoding="utf-8").strip()
         return agent_spec_from_doc(manifest, body=body, path=path, scope=scope, defaults=self._defaults)
 
     async def remove(self, name: str) -> Path:
