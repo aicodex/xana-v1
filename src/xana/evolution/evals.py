@@ -63,7 +63,10 @@ class EvalSuite:
     def fingerprint(self) -> str:
         """样本、打分命令、真值相关文件的内容哈希:批次运行后被改动则拒绝打分(防迭代者改题刷分,§9.3)。"""
         h = hashlib.sha256()
-        files = sorted(p for p in self.dir.rglob("*") if p.is_file() and "batches" not in p.relative_to(self.dir).parts)
+        # suite.yaml 只计打分命令与受保护文件清单:改并发、预算等运行配置不影响已有批次的打分
+        h.update(json.dumps([list(self.scorer), list(self.protected)]).encode())
+        files = sorted(p for p in self.dir.rglob("*") if p.is_file() and p.name != "suite.yaml"
+                       and "batches" not in p.relative_to(self.dir).parts)
         files += [(self.dir / extra).resolve() for extra in self.protected]
         for p in files:
             h.update(str(p.relative_to(self.dir) if p.is_relative_to(self.dir) else p).encode())
