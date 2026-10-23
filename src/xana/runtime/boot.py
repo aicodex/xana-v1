@@ -161,7 +161,6 @@ class BootResult:
     agent_registry: Any = None
     ledger: Any = None
     episode_runner: Any = None
-    meta_service: Any = None
 
 
 class _CompositeStateRepository(StateRepository):
@@ -563,29 +562,12 @@ async def boot(
             _logger.warning("agent %s 指定的模型 %s 不在当前 provider(%s)已配置的模型里,调用会失败",
                             _spec.component.name, _spec.model, provider)
 
-    # §6.3: 元 agent 服务。迭代对象 = 首个文档 agent(没有则 builtin.chat);
-    # cron 幂等安装,首个 episode 时创建。
-    from xana.evolution.meta import MetaEvolutionService
-    _meta_agent_name = "chat"
-    _agent_specs = await agent_registry.list_specs()
-    if _agent_specs:
-        _meta_agent_name = _agent_specs[0].component.name
-    meta_service = MetaEvolutionService(
-        scheduler=scheduler,
-        gateway=gateway,
-        episode_runner=episode_runner,
-        ledger=ledger,
-        todo_store=todo_store,
-        agents_root=xana_home() / "agents",
-        agent_name=_meta_agent_name,
-    )
-
     # 定时任务到点执行(docs/design/scheduled-task-design.md):无人值守的独立子会话,按通知方式插回当前会话;
     # notify_user 经它送达通知、登记待决策的问题。serve 只负责启动 SchedulerRunner。
     scheduler_dispatch = ScheduledTaskDispatcher(
         gateway=gateway, runner=agent_runner, runs_dir=project_home() / "sessions" / "runs",
         scheduler=scheduler, session_config_store=session_config_store,
-        resolver=session_resolver, meta_service=meta_service)
+        resolver=session_resolver)
     await _register(NotifyUserTool(dispatcher=scheduler_dispatch))
 
     # §1.5 Compact-as-PH: /compact reaches the SDK through active_ctx.sdk() (same buffer).
@@ -638,7 +620,6 @@ async def boot(
         agent_registry=agent_registry,
         ledger=ledger,
         episode_runner=episode_runner,
-        meta_service=meta_service,
     )
 
 

@@ -9,7 +9,7 @@ RunRecord.budget + metadata["episode"](§6.2: harness 升级,不是新 loop)。
   在途评估等待完成。
 - closing 两阶段:① canary 回归({home}/canary/*.txt 固定小任务集,
   验收"迭代后的 Agent 没坏") ② 增益判决(Δ vs base,评估集 visible /
-  held-out 两账;held-out 分数不回流给元 prompt,见 render_eval_summary)。
+  held-out 两账;评测套件见 evolution/evals.py)。
 - 硬阈值:累计 token 超 budget.max_tokens → 强制 closing。
 - 开启新 episode(declare)前扫描僵尸 episode(closed 之外)→ 强制闭合
   为 abandoned 并落账本。
@@ -30,8 +30,6 @@ from typing import Any
 
 from xana.evolution.contracts import (
     EpisodeState,
-    EvalCase,
-    EvalSet,
     LedgerEntry,
 )
 
@@ -79,29 +77,6 @@ def load_canary_prompts(home: Path) -> tuple[str, ...]:
         if prompts:
             return prompts
     return DEFAULT_CANARY_PROMPTS
-
-
-def load_eval_set(home: Path) -> EvalSet:
-    """{home}/evalset.json → 评估集(visible/held-out 两账)。"""
-    path = Path(home) / "evalset.json"
-    if not path.exists():
-        return EvalSet()
-    try:
-        return EvalSet.from_json(json.loads(path.read_text(encoding="utf-8")))
-    except (json.JSONDecodeError, OSError):
-        return EvalSet()
-
-
-def render_eval_summary(
-    eval_set: EvalSet, scores: dict[str, float], *, include_held_out: bool = False,
-) -> str:
-    """评估结果摘要。元 prompt 注入用可见集;held-out 分数不回流(§6.2)。"""
-    cases: tuple[EvalCase, ...] = eval_set.cases if include_held_out else eval_set.visible()
-    lines = []
-    for case in cases:
-        mark = "held-out" if case.group == "held_out" else "visible"
-        lines.append(f"  - {case.case_id} ({mark}): {scores.get(case.case_id, 'n/a')}")
-    return "\n".join(lines) if lines else "  (无评估记录)"
 
 
 class EpisodeRunner:

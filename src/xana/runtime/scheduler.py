@@ -246,24 +246,19 @@ class ScheduledTaskDispatcher:
                  scheduler: FileSchedulerService | None = None,
                  session_config_store: SessionConfigStore | None = None,
                  resolver: SessionResolver | None = None,
-                 meta_service: Any = None, default_agent: str = "chat") -> None:
-        """meta_service:元 agent 的 cron(marker 任务)由它的 fire() 消费(evolution/meta.py)。"""
+                 default_agent: str = "chat") -> None:
         self._gateway = gateway
         self._runner = runner
         self._runs_dir = runs_dir
         self._scheduler = scheduler
         self._session_configs = session_config_store
         self._resolver = resolver
-        self._meta = meta_service
         self._default_agent = default_agent
         self._decisions: dict[str, dict[str, Any] | None] = {}   # 正在执行的子会话 → 待决策的问题
         self._info_counts: dict[str, int] = {}
 
     async def __call__(self, job: dict[str, Any]) -> None:
         prompt = job["prompt"]
-        if self._meta is not None and self._meta.owns(prompt):
-            await self._meta.fire()
-            return
         route = tuple(job["route"]) if job.get("route") else None
         session_id = self._current_session(route, job["session_id"])
         agent_name = job.get("agent") or self._default_agent

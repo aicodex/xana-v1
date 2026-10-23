@@ -1,7 +1,6 @@
 """进化迭代数据合约（计划 §6)——纯数据(dataclass/Literal/常量)。
 
 - LedgerEntry(§6.1):append-only 账本条目,verdict ∈ {kept, rolled_back, abandoned}
-- EvalCase/EvalSet(§6.2):评估集两账(visible 迭代用 / held-out 选择用)
 - LintViolation(§6.1):账本 lint 违例
 
 EpisodeGateError 是类型化错误(Exception 非 dataclass),按 checker 规则
@@ -14,7 +13,6 @@ from typing import Any, Literal
 
 EpisodeVerdict = Literal["kept", "rolled_back", "abandoned"]
 EpisodeState = Literal["declared", "running", "landing", "closing", "closed"]
-EvalGroup = Literal["visible", "held_out"]
 ChangeVerdict = Literal["pending", "accepted", "rejected"]
 
 # closing 两阶段的落地动作类型(landing 期拒绝新动作的理由)
@@ -88,35 +86,3 @@ class LintViolation:
 
     line_no: int
     reason: str
-
-
-@dataclass(frozen=True)
-class EvalCase:
-    """评估集单条(§6.2)。group=visible 的分数可回流给元 agent;held-out 不回流。"""
-
-    case_id: str
-    prompt: str
-    group: EvalGroup = "visible"
-
-
-@dataclass(frozen=True)
-class EvalSet:
-    cases: tuple[EvalCase, ...] = ()
-
-    @classmethod
-    def from_json(cls, raw: dict[str, Any]) -> "EvalSet":
-        cases = tuple(
-            EvalCase(
-                case_id=str(c.get("case_id") or f"case-{i}"),
-                prompt=str(c.get("prompt") or ""),
-                group="held_out" if c.get("group") == "held_out" else "visible",
-            )
-            for i, c in enumerate(raw.get("cases") or ())
-        )
-        return cls(cases=cases)
-
-    def visible(self) -> tuple[EvalCase, ...]:
-        return tuple(c for c in self.cases if c.group == "visible")
-
-    def held_out(self) -> tuple[EvalCase, ...]:
-        return tuple(c for c in self.cases if c.group == "held_out")
