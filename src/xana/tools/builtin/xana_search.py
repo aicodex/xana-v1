@@ -25,7 +25,7 @@ MAX_URLS = 10
 MAX_DOMAINS = 10
 
 _SEARCH_SPEC = ToolSpec(
-    temporal="live",
+    temporal="as_of",
     toolset="web",
     component=ComponentSpec(
         kind="tool", name="web_search", qualified_name="builtin.web_search",
@@ -34,6 +34,7 @@ _SEARCH_SPEC = ToolSpec(
             f"(不是网页全文),几秒内返回。彼此独立的搜索(不同对象、不同角度)超过 {MAX_QUERIES} 条时,在同一条回复里发出"
             "多个 web_search 调用,它们会并行执行。\n"
             "摘要里看起来相关、需要细节或核实的结果,用 web_open_url 打开读全文;只打开真正需要的几个。"
+            "需要某段时间的信息(如某季度的公告、某日之前的新闻)时给 start_date / end_date,按发布日期过滤。"
             "查询要具体、简短,从不同角度切入;结果里没有需要的内容就换关键词再搜。回答中引用来源用 [标题](url)。"),
         source=ComponentSource(source_type="builtin", scope="system")),
     input_schema={
@@ -44,6 +45,10 @@ _SEARCH_SPEC = ToolSpec(
             "recency_days": {"type": "integer", "minimum": 1, "description": "只要最近 N 天的结果(可选)"},
             "domains": {"type": "array", "items": {"type": "string"}, "maxItems": MAX_DOMAINS,
                         "description": "限定站点,如 [\"cninfo.com.cn\"](可选)"},
+            "start_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                           "description": "只要这天及之后发布的结果,YYYY-MM-DD(可选)"},
+            "end_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                         "description": "只要这天及之前发布的结果,YYYY-MM-DD(可选;确认不了发布日期的结果不返回)"},
         },
         "required": ["queries"],
     },
@@ -52,7 +57,7 @@ _SEARCH_SPEC = ToolSpec(
 )
 
 _OPEN_SPEC = ToolSpec(
-    temporal="live",
+    temporal="as_of",
     toolset="web",
     component=ComponentSpec(
         kind="tool", name="web_open_url", qualified_name="builtin.web_open_url",
@@ -68,6 +73,10 @@ _OPEN_SPEC = ToolSpec(
             "urls": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": MAX_URLS,
                      "description": f"要打开的完整 http/https 链接,1–{MAX_URLS} 个"},
             "objective": {"type": "string", "description": "要从这些页面里找什么(可选,提炼要点的依据)"},
+            "start_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                           "description": "只要这天及之后发布的结果,YYYY-MM-DD(可选)"},
+            "end_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                         "description": "只要这天及之前发布的结果,YYYY-MM-DD(可选;确认不了发布日期的结果不返回)"},
         },
         "required": ["urls"],
     },
@@ -159,6 +168,20 @@ class XanaSearchError(RuntimeError):
         self.retryable = retryable
 
 
+def _date_range(inp: dict, context: ToolContext) -> dict[str, Any]:
+    """模型给的日期范围;评测 run 的研究时点(ToolContext.as_of)是硬上限,且严格过滤(iteration-agent-design §10)。"""
+    out: dict[str, Any] = {}
+    if inp.get("start_date"):
+        out["start_date"] = str(inp["start_date"])
+    end = str(inp.get("end_date") or "") or None
+    if context.as_of:
+        end = min(end, context.as_of) if end else context.as_of
+        out["strict"] = True
+    if end:
+        out["end_date"] = end
+    return out
+
+
 def _failure(tool: str, exc: Exception) -> ToolResult:
     retryable = isinstance(exc, httpx.HTTPError) or getattr(exc, "retryable", False)
     msg = f"{type(exc).__name__}: {exc}" if isinstance(exc, httpx.HTTPError) else str(exc)
@@ -193,6 +216,7 @@ class XanaWebSearchTool(_Base):
             body["recency_days"] = int(inp["recency_days"])
         if inp.get("domains"):
             body["domains"] = list(inp["domains"])[:MAX_DOMAINS]
+        body.update(_date_range(inp, context))
         try:
             data = await self.client.request("POST", "/v1/search", json=body, timeout=60)
         except (httpx.HTTPError, XanaSearchError) as exc:
@@ -215,7 +239,7 @@ class WebOpenUrlTool(_Base):
         try:
             job = await self.client.request("POST", "/v1/fetch", timeout=30, json={
                 "urls": [str(u) for u in inp["urls"]][:MAX_URLS], "objective": str(inp.get("objective") or ""),
-                "background": True})
+                "background": True, **_date_range(inp, context)})
             row = await self.client.follow(job["job_id"], timeout_s=_OPEN_TIMEOUT_S,
                                            progress=context.report_progress, cancel_on_abort=True)
             if row["status"] != "completed":
