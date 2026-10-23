@@ -35,6 +35,7 @@ from xana.tools.contracts import ToolContext, ToolDisplay, ToolInvocation, ToolR
 from xana.tools.interfaces import Tool
 
 TOOL_DOC_NAME = "TOOL.md"
+DERIVED_TOOLSET = "derived"     # 派生工具所在组(默认组合内:委派时不会被调用方的上限截掉)
 TOOL_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{1,39}")
 _TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool}
 _TEMPORALS = ("static", "as_of", "live")
@@ -225,6 +226,7 @@ class CommandTool(Tool):
             read_only=not d.destructive,
             destructive=d.destructive,
             temporal=d.temporal,
+            toolset=DERIVED_TOOLSET,
             concurrency="serialized" if d.destructive else "parallel",
             timeout_s=d.timeout_s,
             max_result_chars=MAX_OUTPUT_CHARS,
