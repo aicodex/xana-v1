@@ -209,6 +209,17 @@ class EvalRunner:
                 row.model_calls = rec.usage.model_calls
         return row
 
+    def heldout_run_ids(self) -> frozenset[str]:
+        """所有套件、所有批次里留出集样本的 run_id(迭代团队不能查看这些运行的过程)。"""
+        ids: set[str] = set()
+        for runs in self.root.glob("*/batches/*/runs.jsonl"):
+            for line in runs.read_text(encoding="utf-8").splitlines():
+                if '"heldout"' in line:
+                    row = json.loads(line)
+                    if row.get("split") == "heldout" and row.get("run_id"):
+                        ids.add(row["run_id"])
+        return frozenset(ids)
+
     def resolve_batch(self, suite: EvalSuite, batch: str) -> str:
         """batch="latest" → 最近一个批次。"""
         if batch != "latest":

@@ -26,7 +26,8 @@ from xana.agent_adapter.progress import AdapterProgressSink
 from xana.agent_adapter.router import DefaultAgentRequestRouter
 from xana.agents.chat_agent import ChatAgent, build_chat_agent_spec
 from xana.agents.iterator import (
-    ITER_DIAGNOSE_AGENT, ITER_RESEARCH_AGENT, ITER_REVIEW_AGENT, ITERATOR_AGENT, build_iteration_team_specs,
+    ITER_DIAGNOSE_AGENT, ITER_RESEARCH_AGENT, ITER_REVIEW_AGENT, ITERATION_TEAM, ITERATOR_AGENT,
+    build_iteration_team_specs,
     build_iterator_agent_spec,
 )
 from xana.agents.researcher import RESEARCHER_AGENT
@@ -421,7 +422,6 @@ async def boot(
     if history_root is not None:
         run_store = FileRunStore(root=history_root.parent / "runs")
         state = _CompositeStateRepository(sessions=InMemorySessionStore(), runs=run_store)
-        await _register(TraceViewTool(run_store=run_store, runs_dir=history_root / "runs"))
     else:
         state = InMemoryStateRepository()
 
@@ -552,6 +552,9 @@ async def boot(
     await _register(EvalRunTool(_evals, background=background))
     await _register(EvalScoreTool(_evals))
     await _register(EvalCompareTool(_evals))
+    if run_store is not None and history_root is not None:
+        await _register(TraceViewTool(run_store=run_store, runs_dir=history_root / "runs",
+                                      hidden_runs=_evals.heldout_run_ids, blind_agents=ITERATION_TEAM))
     # 迭代智能体(§9):内置 iterator + 只改正文 / 经验条目的版本工具 + 只追加的账本
     await _register(AgentVersionTool(AgentVersions(registry=agent_registry, agents=gateway.agents)))
     await _register(LedgerTool(ledger))

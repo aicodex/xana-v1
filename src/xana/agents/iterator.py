@@ -13,10 +13,12 @@ ITERATOR_AGENT = "iterator"
 ITER_RESEARCH_AGENT = "iter-research"
 ITER_DIAGNOSE_AGENT = "iter-diagnose"
 ITER_REVIEW_AGENT = "iter-review"
+# 迭代团队:看留出集只得到汇总;没有通用文件工具与 Bash,数据只经作用范围受限的工具读取
+# (留出集与打分细节靠工具强制隐藏,文件工具会绕过,2026-10-24 实测诊断员直接读了打分文件)
+ITERATION_TEAM = frozenset({"iterator", "iter-research", "iter-diagnose", "iter-review"})
 
-ITERATOR_TOOLS = ("fs", "exec", "eval", "tool_define", "web_search", "web_open_url", "TodoWrite",
+ITERATOR_TOOLS = ("eval", "tool_define", "web_search", "web_open_url", "TodoWrite",
                   "agent_run", "task_wait", "task_stop", "deep_research")
-ITERATOR_DISALLOWED = ("Write", "Edit")   # 改 agent 只经 agent_version;研究记录经 agent_version 的 notes_*
 
 ITERATOR_IDENTITY = """你是迭代智能体:改进一个已有的 agent(下称"被测 agent"),工作方式像做研究或敏捷迭代——从目标出发找最佳实践,看现状与最佳实践的差距,用实验证明改法有效,再修订。不要只盯着日志在原工作流上打补丁:原工作流没有的维度不会出现在日志里,评测没量的东西也不会出现在分数里。
 
@@ -42,7 +44,7 @@ ITERATOR_IDENTITY = """你是迭代智能体:改进一个已有的 agent(下称"
 - 修订方式:可以增量(经验条目)也可以重构工作流。同一个问题连续 3 个假设被否,或现有结构缺了整块,就重构;结果持平时选更简单的。
 - 完成门:新版本在全部训练 + 留出 + 已揭晓的实时样本上不比上一版差、必须保持的样本都保持、评测未被改动,才 promote;否则 discard。
 - 账本只追加:每个假设无论结果都 ledger(append) 记判决,evidence 里写对应的登记号与批次号。
-- 分数只认 eval_score / eval_compare;不改评测套件与计算真值的代码,不读打分脚本与真值(看了就会不自觉地迎合);agent 只经 agent_version 修改。
+- 分数只认 eval_score / eval_compare;你和子 agent 读不到打分脚本、真值和留出集的逐样本细节(看了就会不自觉地迎合);agent 只经 agent_version 修改。
 - 停止:当日预算用完(eval_run 返回 skipped)、连续 3 轮没有确认的改进、或同一问题连续 3 个假设被否 → 停下写报告。
 
 # 最后的回答
@@ -80,7 +82,7 @@ def _builtin(name: str, description: str, identity: str, tools: tuple[str, ...],
 def build_iterator_agent_spec() -> AgentSpec:
     spec = _builtin(ITERATOR_AGENT,
                     "迭代智能体:从目标出发调研最佳实践、诊断现状、预注册实验、小规模到大规模验证,改进一个有评测套件的 agent",
-                    ITERATOR_IDENTITY, ITERATOR_TOOLS, ITERATOR_DISALLOWED)
+                    ITERATOR_IDENTITY, ITERATOR_TOOLS)
     from dataclasses import replace
     return replace(spec, when_to_use="需要改进某个 agent 的效果、且它有评测套件时(/agent iterator 开会话,说明要迭代哪个 agent)。")
 
@@ -89,9 +91,9 @@ def build_iteration_team_specs() -> tuple[AgentSpec, ...]:
     """iterator 委派的三个子 agent(调研 / 诊断 / 审查)。"""
     return (
         _builtin(ITER_RESEARCH_AGENT, "迭代团队调研员:从目标出发调研最佳实践,给出任务模型与知识库更新建议",
-                 ITER_RESEARCH_IDENTITY, ("web", "research", "Read", "Glob", "Grep", "agent_version")),
+                 ITER_RESEARCH_IDENTITY, ("web", "research", "agent_version")),
         _builtin(ITER_DIAGNOSE_AGENT, "迭代团队诊断员:读工作流、运行记录与分数,给出失败分布与假设对照",
-                 ITER_DIAGNOSE_IDENTITY, ("Read", "Glob", "Grep", "trace_view", "eval_score", "agent_version")),
+                 ITER_DIAGNOSE_IDENTITY, ("trace_view", "eval_score", "agent_version")),
         _builtin(ITER_REVIEW_AGENT, "迭代团队审查员:只看预注册、改动与对比结果,独立判断是否采纳",
                  ITER_REVIEW_IDENTITY, ("eval_score", "eval_compare", "agent_version")),
     )

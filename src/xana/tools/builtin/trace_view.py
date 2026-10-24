@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -129,9 +130,14 @@ def _expand(i: int, row: dict) -> str:
 
 
 class TraceViewTool(Tool):
-    def __init__(self, *, run_store: RunStore, runs_dir: Path) -> None:
+    def __init__(self, *, run_store: RunStore, runs_dir: Path,
+                 hidden_runs: Callable[[], frozenset[str]] | None = None,
+                 blind_agents: frozenset[str] = frozenset()) -> None:
+        """hidden_runs + blind_agents:这些 agent 不能查看的运行(评测留出集样本,iteration-agent-design §9.1)。"""
         self._runs = run_store
         self._dir = Path(runs_dir)       # sessions/runs:run 记录与 prompts/
+        self._hidden = hidden_runs
+        self._blind = blind_agents
 
     def spec(self) -> ToolSpec:
         return _SPEC
@@ -156,6 +162,9 @@ class TraceViewTool(Tool):
             text = path.read_text(encoding="utf-8")
             return ToolResult(ok=True, content=text, rendered=text)
         run_id = str(inp["run_id"]).strip()
+        if self._hidden is not None and context.agent_name in self._blind and (
+                run_id in self._hidden() or any(run_id.startswith(h + "-agent-") for h in self._hidden())):
+            return self._fail(f"run {run_id} 属于评测留出集,迭代时不能查看它的过程(只看汇总指标)")
         loaded = read_run_transcript(self._dir, run_id)
         if loaded is None:
             return self._fail(f"没有 run {run_id} 的记录")

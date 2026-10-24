@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from xana.agents.iterator import ITERATION_TEAM
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
 from xana.skills.markdown_loader import SkillManifestError, split_frontmatter
@@ -21,7 +22,8 @@ from xana.tools.file_registry import FileToolRegistry
 from xana.tools.interfaces import Tool
 
 TOOL_DEFINE_TOOL = "tool_define"
-_READ_ONLY_AGENTS = frozenset({"iterator"})    # 只能起草 / 试跑,不能注册
+_READ_ONLY_AGENTS = ITERATION_TEAM    # 只能起草,不能注册
+_DRY_RUN_AGENTS = ITERATION_TEAM     # 试跑只校验、不执行
 
 _DESCRIPTION = (
     "管理派生工具:把一个现成的命令行程序声明成有类型参数的工具(TOOL.md),给 agent 执行能力而不给 Bash。"
@@ -134,6 +136,10 @@ class ToolDefineTool(Tool):
             argv = tool.argv(example, as_of)
         except ValueError as exc:
             return _fail(f"示例参数不合法:{exc}")
+        if context.agent_name in _DRY_RUN_AGENTS:   # 迭代团队只校验不执行:试跑任意命令可绕过它读不到的评测细节
+            return ToolResult(ok=True, content={"argv": argv, "dry_run": True}, rendered=(
+                f"[tool_define test] 草稿合法,将执行 {json.dumps(argv, ensure_ascii=False)}"
+                + (f"(as_of={as_of})" if as_of else "") + "。迭代时不实际执行;注册时由用户试跑。"))
         run_ctx = ToolContext(session_id=context.session_id, agent_name=context.agent_name, cwd=context.cwd,
                               permission=context.permission, run_id=context.run_id,
                               env=ToolEnvConfig(as_of=as_of) if as_of else None)

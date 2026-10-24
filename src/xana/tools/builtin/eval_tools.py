@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from xana.agents.iterator import ITERATION_TEAM
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.evolution.evals import EvalRunner, SuiteError, compare_batches
 from xana.harness_sdk.background import BackgroundTasks, TaskOutcome
@@ -17,7 +18,7 @@ from xana.tools.contracts import ToolContext, ToolDisplay, ToolInvocation, ToolR
 from xana.tools.interfaces import Tool
 
 # 迭代者与它的子 agent 看留出集只得到汇总(子 agent 看到细节会转述给迭代者)
-_HELDOUT_BLIND = frozenset({"iterator", "iter-research", "iter-diagnose", "iter-review"})
+_HELDOUT_BLIND = ITERATION_TEAM
 
 
 def _spec(name: str, description: str, props: dict, required: list[str], verb: str) -> ToolSpec:
@@ -88,7 +89,12 @@ class EvalRunTool(Tool):
                                           on_case=progress)
             rows = self._evals.batch_runs(suite, batch)
             lines = [f"[eval_run] 套件 {suite.name} · 批次 {batch} · {len(rows)} 次运行"]
-            for r in sorted(rows, key=lambda r: (r["case_id"], r["rep"])):
+            blind = context.agent_name in _HELDOUT_BLIND
+            hidden = [r for r in rows if blind and r.get("split") == "heldout"]
+            if hidden:
+                lines.append(f"- 留出集 {len(hidden)} 次运行:完成 {sum(r['status'] == 'completed' for r in hidden)}"
+                             "(逐样本细节不提供,看 eval_score / eval_compare 的汇总)")
+            for r in sorted((r for r in rows if r not in hidden), key=lambda r: (r["case_id"], r["rep"])):
                 lines.append(f"- {r['case_id']}#{r['rep']} {r['status']} · run {r['run_id']} · {r['elapsed_s']}s · "
                              f"模型调用 {r['model_calls']} 次 · 输入 {r['tokens_in']} 输出 {r['tokens_out']}"
                              + (f" · 错误 {r['error']}" if r.get("error") else ""))
