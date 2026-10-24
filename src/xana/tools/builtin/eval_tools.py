@@ -183,9 +183,11 @@ class EvalCompareTool(Tool):
             held = compare_batches(
                 {"per_case": [r for r in base.get("per_case", []) if r.get("case_id") in heldout]},
                 {"per_case": [r for r in cand.get("per_case", []) if r.get("case_id") in heldout]})
-            result = {**visible, "heldout_summary": {k: (len(v) if isinstance(v, list) else v)
-                                                     for k, v in held.items() if k != "per_case"},
-                      "trustworthy": full["trustworthy"]}
+            heldout_summary = {k: (len(v) if isinstance(v, list) else v) for k, v in held.items() if k != "per_case"}
+            result = {"heldout": {**heldout_summary,
+                                  "note": "留出集只给汇总:improved / worse / imbalanced_cases 是样本个数;"
+                                          "paired_cases 为 0 表示两个批次没有共同的留出集样本"},
+                      "train_and_live": visible, "trustworthy": full["trustworthy"]}
         else:
             result = compare_batches(base, cand)
         return ToolResult(ok=True, content={k: v for k, v in result.items() if k != "per_case"},

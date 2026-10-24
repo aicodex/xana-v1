@@ -247,19 +247,24 @@ class EvalRunner:
         return frozenset(ids)
 
     def resolve_batch(self, suite: EvalSuite, batch: str) -> str:
-        """batch="latest" → 最近一个批次。"""
-        if batch != "latest":
-            return batch
+        """batch="latest" → 最近一个批次;否则接受完整批次号或它的唯一前缀(不带标签的写法)。"""
         done = sorted(p.name for p in (suite.dir / "batches").glob("*") if (p / "runs.jsonl").exists())
-        if not done:
-            raise SuiteError(f"套件 {suite.name} 还没有批次")
-        return done[-1]
+        if batch == "latest":
+            if not done:
+                raise SuiteError(f"套件 {suite.name} 还没有批次")
+            return done[-1]
+        if batch in done:
+            return batch
+        hits = [b for b in done if b.startswith(batch)]
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            raise SuiteError(f"批次号 {batch} 对应多个批次:{', '.join(hits)}")
+        raise SuiteError(f"套件 {suite.name} 没有批次 {batch}(最近的批次:{', '.join(done[-5:]) or '无'})")
 
     def batch_runs(self, suite: EvalSuite, batch: str) -> list[dict]:
         batch = self.resolve_batch(suite, batch)
         path = suite.dir / "batches" / batch / "runs.jsonl"
-        if not path.exists():
-            raise SuiteError(f"套件 {suite.name} 没有批次 {batch}")
         return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
 
     async def score(self, suite: EvalSuite, batch: str, *, max_age_s: float = SCORE_CACHE_S) -> dict:
