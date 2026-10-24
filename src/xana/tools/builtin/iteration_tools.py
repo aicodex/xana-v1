@@ -37,21 +37,27 @@ _VERSION_SPEC = _spec(
     "- show:当前 frontmatter(只读)、正文、经验条目、存档版本、候选。\n"
     "- candidate:基于当前版本建候选 <名>-c<N>(body / playbook 不给则沿用当前),返回候选名;"
     "用 eval_run(agent=候选名) 与当前版本对比。\n"
-    "- promote:采纳候选(当前版本先存档)。discard:丢弃候选。rollback:恢复某个存档版本(version 如 v2)。",
-    {"action": {"type": "string", "enum": ["show", "candidate", "promote", "discard", "rollback"]},
+    "- promote:采纳候选(当前版本先存档)。discard:丢弃候选。rollback:恢复某个存档版本(version 如 v2)。\n"
+    "- notes_list / notes_read / notes_write:该 agent 的研究知识库(research/ 下的 .md:task_model.md、"
+    "practices.md、sources/…、rounds/…、decisions/…;path 为相对路径),跨轮维护,只增量更新。",
+    {"action": {"type": "string", "enum": ["show", "candidate", "promote", "discard", "rollback",
+                                           "notes_list", "notes_read", "notes_write"]},
      "name": {"type": "string", "description": "agent 名(promote / discard 传候选名)"},
      "body": {"type": "string", "description": "candidate:新的工作流正文(不含 frontmatter)"},
      "playbook": {"type": "string", "description": "candidate:新的经验条目全文(markdown 列表,每条注明来源样本)"},
      "note": {"type": "string", "description": "candidate:这个候选改了什么、依据哪些样本"},
-     "version": {"type": "string", "description": "rollback:存档版本,如 v2"}},
+     "version": {"type": "string", "description": "rollback:存档版本,如 v2"},
+     "path": {"type": "string", "description": "notes_*:研究知识库内的相对路径,如 practices.md"},
+     "content": {"type": "string", "description": "notes_write:文件全文"}},
     ["action", "name"], "管理版本", destructive=True)
 
 _LEDGER_SPEC = _spec(
     "ledger",
-    "迭代账本(只追加)。append:记一轮迭代——hypothesis(假设)、change(改了什么)、attribution(归因类别)、"
-    "evidence(批次号与前后指标)、verdict(kept 保留 / rolled_back 回滚 / abandoned 放弃)。"
+    "迭代账本(只追加)。preregister:实验前登记——hypothesis、什么结果会推翻它、目标样本、必须保持的样本、"
+    "判据与投入上限写进 evidence,返回登记号;append:记结论——hypothesis、change、attribution、"
+    "evidence(批次号、前后指标、对应的登记号 preregistration)、verdict(kept 保留 / rolled_back 回滚 / abandoned 放弃)。"
     "recent:读最近 n 条,开始新一轮前先看以往的假设与判决,避免重复试错。",
-    {"action": {"type": "string", "enum": ["append", "recent"]},
+    {"action": {"type": "string", "enum": ["preregister", "append", "recent"]},
      "name": {"type": "string", "description": "被迭代的 agent"},
      "hypothesis": {"type": "string"}, "change": {"type": "string"}, "attribution": {"type": "string"},
      "evidence": {"type": "object"}, "verdict": {"type": "string", "enum": ["kept", "rolled_back", "abandoned"]},
@@ -96,13 +102,22 @@ class AgentVersionTool(Tool):
             if action == "discard":
                 await self._v.discard(name)
                 return ToolResult(ok=True, content=None, rendered=f"[agent_version] 已丢弃候选 {name}")
+            if action == "notes_list":
+                files = await self._v.notes_list(name)
+                return ToolResult(ok=True, content=files, rendered="\n".join(files) or "(研究知识库为空)")
+            if action == "notes_read":
+                text = await self._v.notes_read(name, str(inp.get("path") or ""))
+                return ToolResult(ok=True, content=None, rendered=text)
+            if action == "notes_write":
+                path = await self._v.notes_write(name, str(inp.get("path") or ""), str(inp.get("content") or ""))
+                return ToolResult(ok=True, content={"path": str(path)}, rendered=f"[agent_version] 已写入 {path}")
             if action == "rollback":
                 archived = await self._v.rollback(name, str(inp.get("version") or ""))
                 return ToolResult(ok=True, content={"archived": archived}, rendered=(
                     f"[agent_version] 已把 {name} 恢复到 {inp.get('version')};回滚前的版本存档为 {archived}。"))
         except VersionError as exc:
             return _fail("agent_version", str(exc))
-        return _fail("agent_version", "action 必须是 show / candidate / promote / discard / rollback")
+        return _fail("agent_version", "action 不认识")
 
 
 class LedgerTool(Tool):
@@ -123,10 +138,14 @@ class LedgerTool(Tool):
                 entries = tuple(e for e in entries if e.agent == inp["name"])
             text = "\n".join(json.dumps(e.to_json(), ensure_ascii=False) for e in entries) or "(账本为空)"
             return ToolResult(ok=True, content=len(entries), rendered=text)
-        if inp.get("action") == "append":
+        if inp.get("action") in ("append", "preregister"):
+            prereg = inp["action"] == "preregister"
+            if prereg and not inp.get("evidence"):
+                return _fail("ledger", "预注册要把判据写进 evidence(推翻条件、目标样本、必须保持的样本、指标)")
             entry = LedgerEntry(
                 episode_id=f"it-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}",
-                goal=str(inp.get("hypothesis") or ""), started_at=time.time(), verdict=inp.get("verdict"),
+                goal=str(inp.get("hypothesis") or ""), started_at=time.time(),
+                verdict="preregistered" if prereg else inp.get("verdict"),
                 agent=str(inp.get("name") or ""), hypothesis=str(inp.get("hypothesis") or ""),
                 change=str(inp.get("change") or ""), attribution=str(inp.get("attribution") or ""),
                 evidence=dict(inp.get("evidence") or {}))

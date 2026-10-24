@@ -10,13 +10,14 @@ import asyncio
 import json
 
 from xana.component.contracts import ComponentSource, ComponentSpec
-from xana.evolution.evals import EvalRunner, SuiteError
+from xana.evolution.evals import EvalRunner, SuiteError, compare_batches
 from xana.harness_sdk.background import BackgroundTasks, TaskOutcome
 from xana.policy.contracts import PermissionResult
 from xana.tools.contracts import ToolContext, ToolDisplay, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
-_HELDOUT_BLIND = frozenset({"iterator"})
+# 迭代者与它的子 agent 看留出集只得到汇总(子 agent 看到细节会转述给迭代者)
+_HELDOUT_BLIND = frozenset({"iterator", "iter-research", "iter-diagnose", "iter-review"})
 
 
 def _spec(name: str, description: str, props: dict, required: list[str], verb: str) -> ToolSpec:
@@ -136,3 +137,50 @@ class EvalScoreTool(Tool):
         text = (f"[eval_score] 批次 {result.get('batch')} 汇总:\n" + json.dumps(result.get("summary") or {}, ensure_ascii=False, indent=1)
                 + "\n\n样本结果:\n" + "\n".join(json.dumps(r, ensure_ascii=False) for r in per_case))
         return ToolResult(ok=True, content={"summary": result.get("summary")}, rendered=text)
+
+
+_COMPARE_SPEC = _spec(
+    "eval_compare",
+    "配对对比两个已打分批次(基线 vs 候选,同一批样本):逐样本均值 ± 标准差与差值,差值超过 2 倍噪声才算改善 / 变坏"
+    "(噪声取两边重复运行的标准差,没有重复时用默认值,所以要判断小差异就用 repeat ≥ 2);"
+    "列出变坏的样本(必须保持的样本出现在这里就一票否决)和两边打分次数不一致的样本(不一致时对比不可信)。"
+    "迭代者看不到留出集的逐样本对比,只有汇总。",
+    {"suite": {"type": "string"}, "base": {"type": "string", "description": "基线批次号"},
+     "candidate": {"type": "string", "description": "候选批次号"}},
+    ["suite", "base", "candidate"], "对比批次")
+
+
+class EvalCompareTool(Tool):
+    def __init__(self, evals: EvalRunner) -> None:
+        self._evals = evals
+
+    def spec(self) -> ToolSpec:
+        return _COMPARE_SPEC
+
+    async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
+        return PermissionResult(decision="allow", reason="eval_compare")
+
+    async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
+        inp = invocation.input
+        try:
+            suite = self._evals.suite(str(inp["suite"]))
+            base = await self._evals.score(suite, str(inp["base"]))
+            cand = await self._evals.score(suite, str(inp["candidate"]))
+        except SuiteError as exc:
+            return _fail("eval_compare", str(exc))
+        if context.agent_name in _HELDOUT_BLIND:   # 留出集只给汇总
+            heldout = {c.id for c in suite.cases if c.split == "heldout"}
+            full = compare_batches(base, cand)
+            visible = compare_batches(
+                {"per_case": [r for r in base.get("per_case", []) if r.get("case_id") not in heldout]},
+                {"per_case": [r for r in cand.get("per_case", []) if r.get("case_id") not in heldout]})
+            held = compare_batches(
+                {"per_case": [r for r in base.get("per_case", []) if r.get("case_id") in heldout]},
+                {"per_case": [r for r in cand.get("per_case", []) if r.get("case_id") in heldout]})
+            result = {**visible, "heldout_summary": {k: (len(v) if isinstance(v, list) else v)
+                                                     for k, v in held.items() if k != "per_case"},
+                      "trustworthy": full["trustworthy"]}
+        else:
+            result = compare_batches(base, cand)
+        return ToolResult(ok=True, content={k: v for k, v in result.items() if k != "per_case"},
+                          rendered="[eval_compare]\n" + json.dumps(result, ensure_ascii=False, indent=1))

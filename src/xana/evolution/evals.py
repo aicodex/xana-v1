@@ -247,3 +247,42 @@ class EvalRunner:
         (suite.dir / "batches" / batch / "scores.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
         return result
+
+
+def compare_batches(base: dict, cand: dict, *, default_noise: float = 0.05) -> dict:
+    """两批打分结果的配对对比(只用评测约定的 per_case.score,越高越好;§9.1 I4)。
+    逐样本:两边均值 ± 标准差、差值;差值超过 2 倍噪声(两边标准差取大,没有重复时用 default_noise)
+    才算改善 / 变坏。可信度:两边已打分次数不一致 → 列出(样本数失衡时对比不可信)。"""
+    import statistics
+
+    def by_case(result: dict) -> dict[str, list[float]]:
+        out: dict[str, list[float]] = {}
+        for r in result.get("per_case") or []:
+            if r.get("status") == "scored" and isinstance(r.get("score"), (int, float)):
+                out.setdefault(r["case_id"], []).append(float(r["score"]))
+        return out
+
+    def stats(xs: list[float]) -> tuple[float, float]:
+        return statistics.fmean(xs), (statistics.stdev(xs) if len(xs) > 1 else 0.0)
+
+    b, c = by_case(base), by_case(cand)
+    rows, improved, worse, same = [], [], [], []
+    for case in sorted(set(b) & set(c)):
+        (bm, bs), (cm, cs) = stats(b[case]), stats(c[case])
+        noise = max(bs, cs) if (len(b[case]) > 1 or len(c[case]) > 1) else default_noise
+        diff = cm - bm
+        verdict = "improved" if diff > 2 * noise else "worse" if diff < -2 * noise else "same"
+        (improved if verdict == "improved" else worse if verdict == "worse" else same).append(case)
+        rows.append({"case_id": case, "base": [round(bm, 3), round(bs, 3), len(b[case])],
+                     "cand": [round(cm, 3), round(cs, 3), len(c[case])], "diff": round(diff, 3), "verdict": verdict})
+    imbalance = sorted(k for k in set(b) | set(c) if len(b.get(k, [])) != len(c.get(k, [])))
+    diffs = [r["diff"] for r in rows]
+    return {
+        "paired_cases": len(rows),
+        "mean_diff": round(statistics.fmean(diffs), 4) if diffs else None,
+        "median_diff": round(statistics.median(diffs), 4) if diffs else None,
+        "improved": improved, "worse": worse, "same": len(same),
+        "imbalanced_cases": imbalance,
+        "trustworthy": not imbalance,
+        "per_case": rows,
+    }

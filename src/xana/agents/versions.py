@@ -28,6 +28,10 @@ class VersionError(ValueError):
     pass
 
 
+RESEARCH_DIR = "research"            # 研究知识库:任务模型、最佳实践、资料摘录、A3、决策记录(§9.6)
+_MAX_NOTE_CHARS = 200_000
+
+
 def _write_doc(path: Path, front: dict, body: str) -> None:
     path.write_text("---\n" + yaml.safe_dump(front, allow_unicode=True, sort_keys=False) + "---\n"
                     + body.strip() + "\n", encoding="utf-8")
@@ -132,3 +136,36 @@ class AgentVersions:
         cdoc = await self._doc(cand)
         shutil.rmtree(cdoc.parent)
         await self._registry.refresh(force=True)
+
+    # ---- 研究知识库(.xana/agents/<名>/research/,只经这里读写) ----
+
+    async def _research(self, name: str) -> Path:
+        doc = await self._doc(name)
+        if _CANDIDATE.match(name):
+            raise VersionError("研究知识库属于正式 agent,不属于候选")
+        return doc.parent / RESEARCH_DIR
+
+    @staticmethod
+    def _safe(root: Path, rel: str) -> Path:
+        path = (root / rel).resolve()
+        if root.resolve() not in path.parents or path.suffix != ".md":
+            raise VersionError("路径必须是研究知识库内的 .md 文件,如 practices.md、sources/xxx.md")
+        return path
+
+    async def notes_list(self, name: str) -> list[str]:
+        root = await self._research(name)
+        return sorted(str(p.relative_to(root)) for p in root.rglob("*.md")) if root.exists() else []
+
+    async def notes_read(self, name: str, rel: str) -> str:
+        path = self._safe(await self._research(name), rel)
+        if not path.exists():
+            raise VersionError(f"研究知识库里没有 {rel}")
+        return path.read_text(encoding="utf-8")
+
+    async def notes_write(self, name: str, rel: str, content: str) -> Path:
+        if len(content) > _MAX_NOTE_CHARS:
+            raise VersionError(f"单个文件不超过 {_MAX_NOTE_CHARS} 字符,拆成多个文件")
+        path = self._safe(await self._research(name), rel)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path

@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-EpisodeVerdict = Literal["kept", "rolled_back", "abandoned"]
+EpisodeVerdict = Literal["kept", "rolled_back", "abandoned", "preregistered"]
 EpisodeState = Literal["declared", "running", "landing", "closing", "closed"]
 ChangeVerdict = Literal["pending", "accepted", "rejected"]
 

@@ -15,7 +15,7 @@ from pathlib import Path
 from xana.config.paths import project_home
 from xana.evolution.contracts import LedgerEntry, LintViolation
 
-_VERDICTS = ("kept", "rolled_back", "abandoned")
+_VERDICTS = ("kept", "rolled_back", "abandoned", "preregistered")   # preregistered:实验前的登记(§9.1 I1)
 
 
 def default_evolution_home() -> Path:
