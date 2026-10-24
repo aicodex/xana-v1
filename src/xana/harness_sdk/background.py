@@ -32,6 +32,21 @@ Deliver = Callable[[str, str], Awaitable[None]]          # (会话 id, 通知文
 Progress = Callable[[str], None]
 
 
+class QuotaFreeze:
+    """模型额度用完时的全局冻结状态:harness 冻结非聊天 run 时设置,后台任务的硬上限计时在冻结期间暂停
+    (否则冻结中的子 agent 会被当成跑不完而中止)。"""
+
+    def __init__(self) -> None:
+        self.until = 0.0
+
+    def freeze(self, until: float) -> None:
+        self.until = max(self.until, until)
+
+    @property
+    def active(self) -> bool:
+        return time.time() < self.until
+
+
 @dataclass(frozen=True)
 class TaskOutcome:
     """任务协程的结果:ok、给模型看的文本、可选的结构化内容。"""
@@ -69,8 +84,9 @@ class TaskRecord:
 
 class BackgroundTasks:
     def __init__(self, *, deliver: Deliver | None = None, state_path: Path | None = None,
-                 hard_timeout_s: float = DEFAULT_HARD_TIMEOUT_S) -> None:
+                 hard_timeout_s: float = DEFAULT_HARD_TIMEOUT_S, freeze: QuotaFreeze | None = None) -> None:
         self._deliver = deliver
+        self._freeze = freeze
         self._state = Path(state_path) if state_path else None
         self._hard = hard_timeout_s
         self._records: dict[str, TaskRecord] = {}
@@ -111,7 +127,7 @@ class BackgroundTasks:
     async def _run(self, rec: TaskRecord, run: Callable[[Progress], Awaitable[TaskOutcome]], progress: Progress,
                    hard: float) -> None:
         try:
-            out = await asyncio.wait_for(run(progress), timeout=hard)
+            out = await self._with_hard_timeout(run(progress), hard)
             rec.status, rec.rendered, rec.content = ("completed" if out.ok else "failed"), out.rendered, out.content
         except asyncio.TimeoutError:
             rec.status = "timeout"
@@ -126,6 +142,24 @@ class BackgroundTasks:
         self._done[rec.id].set()
         self._save()
         await self._route(rec)
+
+    async def _with_hard_timeout(self, coro: Awaitable[TaskOutcome], hard: float) -> TaskOutcome:
+        """硬上限只计非冻结时间:额度冻结期间截止时间顺延。"""
+        task = asyncio.ensure_future(coro)
+        deadline = time.monotonic() + hard
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=min(30.0, max(0.0, deadline - time.monotonic())))
+                if done:
+                    return task.result()
+                if self._freeze is not None and self._freeze.active:
+                    deadline += 30.0
+                elif time.monotonic() >= deadline:
+                    task.cancel()
+                    raise asyncio.TimeoutError
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
 
     async def _route(self, rec: TaskRecord) -> None:
         """完成后的送达:有人在等 → 由等待方取走;父 run 仍在运行 → 留给它的下一轮;父 run 已结束 → 通知父会话。"""

@@ -33,7 +33,6 @@ from xana.tools.contracts import ToolEnvConfig
 
 SPLITS = ("train", "heldout", "live")
 SCORE_CACHE_S = 6 * 3600.0     # 打分结果的复用期限(无 pending 样本时)
-MAX_PAUSE_S = 6 * 3600.0       # 额度 / 预算用完时原地等待的上限
 EVAL_PREAMBLE = "这是一次评测运行:独立完成下面的任务,不要提问;最终回答按任务要求的格式给出,会被自动打分。"
 
 
@@ -140,15 +139,13 @@ class EvalRunner:
     """按套件跑样本:每个样本一个独立会话,工具环境 = 样本的 as_of + 套件策略;结果写进批次目录。"""
 
     def __init__(self, *, runner: AgentRunner, run_store: RunStore | None, evals_root: Path,
-                 quota_wait: Callable[[], Awaitable[tuple[str, float] | None]] | None = None,
-                 max_wait_s: float = MAX_PAUSE_S) -> None:
+                 quota_wait: Callable[[], Awaitable[tuple[str, float] | None]] | None = None) -> None:
         """quota_wait:模型服务额度检查(如 Kimi 订阅额度),用到阈值时返回 (原因, 距重置秒数);每个样本开跑前调用。
-        额度 / 当日预算用完时暂停开新样本,等重置后接着跑;要等的时间超过 max_wait_s 才把剩下的样本记为 skipped。"""
+        额度 / 当日预算用完时暂停开新样本,等重置后接着跑——不跳过样本(评测结果必须完整)。"""
         self._runner = runner
         self._runs = run_store
         self.root = Path(evals_root)
         self._quota_wait = quota_wait
-        self._max_wait = max_wait_s
 
     async def _blocked(self, suite: EvalSuite) -> tuple[str, float] | None:
         """(原因, 要等多少秒) 或 None(可以开跑)。"""
@@ -164,18 +161,13 @@ class EvalRunner:
                 return None
         return None
 
-    async def _gate(self, suite: EvalSuite, progress: Callable[[str], None] | None) -> str | None:
-        """额度 / 预算用完 → 原地等到重置再放行;等待超过上限返回跳过原因。"""
-        waited = 0.0
+    async def _gate(self, suite: EvalSuite, progress: Callable[[str], None] | None) -> None:
+        """额度 / 预算用完 → 原地等到重置再放行(每 10 分钟复查一次,提前恢复就提前放行)。"""
         while (blocked := await self._blocked(suite)) is not None:
             reason, wait_s = blocked
-            if waited + wait_s > self._max_wait:
-                return f"{reason};要等 {wait_s / 3600:.1f} 小时,超过上限,跳过"
             if progress is not None:
-                progress(f"{reason},暂停到 {time.strftime('%H:%M', time.localtime(time.time() + wait_s))} 后继续")
-            await asyncio.sleep(wait_s)
-            waited += wait_s
-        return None
+                progress(f"{reason},暂停到 {time.strftime('%m-%d %H:%M', time.localtime(time.time() + wait_s))} 后继续")
+            await asyncio.sleep(min(max(wait_s, 1.0), 600.0))
 
     def suite(self, name: str) -> EvalSuite:
         return load_suite(self.root, name)
@@ -198,10 +190,8 @@ class EvalRunner:
 
         async def one(case: EvalCase, rep: int) -> None:
             async with slots:
-                reason = await self._gate(suite, on_case)
-                row = (RunRow(case_id=case.id, rep=rep, split=case.split, run_id="", status="skipped", text="",
-                              error=reason) if reason
-                       else await self._run_case(suite, case, rep, agent or suite.agent, batch, tape))
+                await self._gate(suite, on_case)
+                row = await self._run_case(suite, case, rep, agent or suite.agent, batch, tape)
             async with lock:
                 with (out_dir / "runs.jsonl").open("a", encoding="utf-8") as f:
                     f.write(json.dumps(asdict(row), ensure_ascii=False) + "\n")

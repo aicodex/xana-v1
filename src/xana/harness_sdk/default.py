@@ -102,7 +102,7 @@ from xana.state.file_runs import save_prompt
 from xana.tools.contracts import (
     ToolActivity, ToolContext, ToolEnvConfig, ToolInvocation, ToolResult, ToolSpec, Toolset,
 )
-from xana.harness_sdk.background import BackgroundTasks
+from xana.harness_sdk.background import BackgroundTasks, QuotaFreeze
 from xana.tools.interfaces import Tool, ToolEnvironment
 from xana.tools.toolsets import resolve_tools
 from xana.config.paths import project_home
@@ -149,7 +149,6 @@ _SYNTHETIC_WARNING_TEXT_READONLY = (
     "[只读工具被用户取消。该工具未产生副作用,可由用户决定是否在下一轮重试。]"
 )
 _TOOL_ABORT_GRACE_SECONDS = 2.0
-_MAX_QUOTA_WAIT_S = 6 * 3600.0   # 一个 run 因额度用完原地等待的累计上限
 _MAX_BACKGROUND_NUDGES = 20   # 无人接收结果的 run 等后台任务的续跑上限(每次一般是一次 task_wait)
 
 
@@ -208,7 +207,8 @@ class DefaultHarness(Harness):
                  memory_extractor: MemoryExtractor | None = None,
                  tool_environment: ToolEnvironment | None = None,
                  background: BackgroundTasks | None = None,
-                 quota_wait: Callable[[], Awaitable[tuple[str, float] | None]] | None = None) -> None:
+                 quota_wait: Callable[[], Awaitable[tuple[str, float] | None]] | None = None,
+                 quota_freeze: QuotaFreeze | None = None) -> None:
         """today:返回本地日期 YYYY-MM-DD(缺省系统时钟;测试可替换)。
         memory_extractor:每轮完成后在后台提取漏记的记忆(docs/design/memory-dream-design.md §3.1);None = 不提取。
         tool_environment:评测 run(request.metadata["tool_env"])的工具调用经它执行(回放 / 时点 / 拒绝);
@@ -218,8 +218,10 @@ class DefaultHarness(Harness):
         # 后台任务(超时转后台的 agent_run / eval_run):运行中把结束的任务作为注记插入;run 结束时登记,
         # 之后结束的任务改为通知会话
         self._background = background
-        # 模型额度用完时原地等待重置:返回 (原因, 等待秒数),None = 不是额度问题(按错误收尾)
+        # 模型额度用完:非聊天 run 冻结到重置后从断点继续(不设上限);用户在场的聊天直接报错,由用户决定何时继续。
+        # quota_wait 返回 (原因, 等待秒数),None = 不是额度问题(按错误收尾)
         self._quota_wait = quota_wait
+        self._quota_freeze = quota_freeze
         self._today = today or (lambda: date.today().isoformat())
         self.last_assembled_messages: tuple[ModelMessage, ...] | None = None
         self.usage_accumulator = DefaultUsageAccumulator()
@@ -270,18 +272,15 @@ class DefaultHarness(Harness):
                 notes.append(switch)
         return text, notes
 
-    async def _quota_wait_for(self, waited_s: float) -> tuple[str, float] | None:
-        """限流时问额度:确实用完、且本 run 累计等待不超过上限,返回 (原因, 秒数);否则 None。"""
+    async def _quota_wait_for(self) -> tuple[str, float] | None:
+        """限流时问额度:确实用完返回 (原因, 距重置秒数);不是额度问题或查不到返回 None。"""
         if self._quota_wait is None:
             return None
         try:
-            got = await self._quota_wait()
+            return await self._quota_wait()
         except Exception:
             _logger.warning("查询模型额度失败", exc_info=True)
             return None
-        if got is None or waited_s + got[1] > _MAX_QUOTA_WAIT_S:
-            return None
-        return got
 
     async def _append_note(
         self,
@@ -1394,7 +1393,7 @@ class DefaultHarness(Harness):
                 metadata=request_metadata,
             )
 
-            quota_waited = 0.0          # 本 run 因额度用完已等待的秒数
+            interactive = profile.mode == "interactive" and not request.metadata.get("parent_run_id")
             while True:
                 quota_wait: tuple[str, float] | None = None
                 iter_text: list[str] = []
@@ -1508,7 +1507,7 @@ class DefaultHarness(Harness):
                         elif (event.kind == "rate_limited" or (
                                 event.kind == "error" and event.error is not None and event.error.kind == "rate_limit")) \
                                 and not iter_text and not iter_tool_calls \
-                                and (quota_wait := await self._quota_wait_for(quota_waited)) is not None:
+                                and (quota_wait := await self._quota_wait_for()) is not None:
                             break                      # 额度用完:原地等待重置后重发同一请求(循环末尾)
                         elif event.kind == "rate_limited":
                             # provider 已放弃重试的限流:按错误收尾,避免静默空回复。
@@ -1548,11 +1547,19 @@ class DefaultHarness(Harness):
                 if quota_wait is None or context.abort.aborted:
                     break
                 reason, wait_s = quota_wait
-                quota_waited += wait_s
-                resume_at = time.strftime("%H:%M", time.localtime(time.time() + wait_s))
-                _logger.warning("run %s:%s,原地等待 %.0f 秒", run_id, reason, wait_s)
+                resume_at = time.strftime("%m-%d %H:%M", time.localtime(time.time() + wait_s))
+                if interactive:          # 用户在场:报错并说明何时可以继续,不让用户干等
+                    await self._fire_turn_end(
+                        ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                        thread_store=thread_store, turn_store=turn_store, status="error")
+                    yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id, payload={
+                        "error": f"{reason}。{resume_at} 后额度恢复,到时发\"继续\"即可接着做。"})
+                    return
+                _logger.warning("run %s:%s,冻结 %.0f 秒后从断点继续", run_id, reason, wait_s)
                 yield HarnessEvent(kind="progress_update", session_id=session_id, run_id=run_id,
-                                   payload={"text": f"{reason}:暂停,{resume_at} 后从这里继续(可以取消)"})
+                                   payload={"text": f"{reason}:冻结,{resume_at} 后从这里继续(可以取消)"})
+                if self._quota_freeze is not None:
+                    self._quota_freeze.freeze(time.time() + wait_s)
                 deadline = time.monotonic() + wait_s
                 while time.monotonic() < deadline and not context.abort.aborted:
                     await asyncio.sleep(min(5.0, deadline - time.monotonic()))

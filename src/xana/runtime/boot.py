@@ -125,7 +125,7 @@ from xana.tools.builtin.xana_search import (BackgroundResearchTool, WebOpenUrlTo
                                             XanaWebSearchTool)
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import Tool, ToolRegistry
-from xana.harness_sdk.background import BackgroundTasks
+from xana.harness_sdk.background import BackgroundTasks, QuotaFreeze
 from xana.runtime.delivery import SessionDelivery
 from xana.tools.builtin.task_tools import TaskStopTool, TaskWaitTool
 from xana.tools.environment import TapeToolEnvironment
@@ -181,8 +181,8 @@ class _CompositeStateRepository(StateRepository):
 
 
 def _kimi_quota_wait(threshold: float):
-    """Kimi 订阅额度用到阈值时返回 (原因, 距重置秒数)(iteration-agent-design §12):评测在 90% 时暂停开新样本,
-    模型调用被限流且额度确已用完(≥ 99%)时原地等待重置。"""
+    """Kimi 订阅额度用到阈值时返回 (原因, 距重置秒数)(iteration-agent-design §12):评测在 90% 时暂停开新样本;
+    模型调用被限流且额度确已用完(≥ 99%)时,非聊天 run 冻结到重置,聊天报错让用户自己继续。"""
     from xana.llm_driver.providers.kimi_oauth import fetch_usages, quota_reset_wait
     store = KimiTokenStore()
 
@@ -305,15 +305,17 @@ async def boot(
         if _delivery:
             await _delivery[0].deliver(session_id, text, source="background")
 
+    quota_freeze = QuotaFreeze()      # 额度冻结期间后台任务的硬上限计时暂停
     background = BackgroundTasks(
-        deliver=_deliver_background,
+        deliver=_deliver_background, freeze=quota_freeze,
         state_path=(project_home() / "run" / "background.json") if history_root is not None else None)
     _harness = DefaultHarness(
         extension_registry=extension_registry, memory_extractor=memory_extractor,
         tool_environment=TapeToolEnvironment(runs_dir=Path(history_root) / "runs") if history_root is not None else None,
         background=background,
         # 模型调用被限流且 Kimi 额度确已用完:原地等重置后重发同一请求(不让一次 run 因额度报错结束)
-        quota_wait=_kimi_quota_wait(0.99) if provider.startswith("kimi") else None)
+        quota_wait=_kimi_quota_wait(0.99) if provider.startswith("kimi") else None,
+        quota_freeze=quota_freeze)
 
     active_ctx_inner = InMemoryActiveContextStore(
         context_sdk=context_sdk,
