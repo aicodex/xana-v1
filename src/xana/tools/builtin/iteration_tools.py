@@ -53,15 +53,19 @@ _VERSION_SPEC = _spec(
 
 _LEDGER_SPEC = _spec(
     "ledger",
-    "迭代账本(只追加)。preregister:实验前登记——hypothesis、什么结果会推翻它、目标样本、必须保持的样本、"
-    "判据与投入上限写进 evidence,返回登记号;append:记结论——hypothesis、change、attribution、"
+    "迭代账本(只追加)。preregister:实验前登记——hypothesis、target_cases(应改善的样本)、keep_cases(不许变坏的样本)、"
+    "min_gain(目标样本平均分至少提高多少,分数 0–1),推翻条件与投入上限写进 evidence;返回登记号,eval_verdict 用它判定。"
+    "append:记结论——hypothesis、change、attribution、"
     "evidence(批次号、前后指标、对应的登记号 preregistration)、verdict(kept 保留 / rolled_back 回滚 / abandoned 放弃)。"
     "recent:读最近 n 条,开始新一轮前先看以往的假设与判决,避免重复试错。",
     {"action": {"type": "string", "enum": ["preregister", "append", "recent"]},
      "name": {"type": "string", "description": "被迭代的 agent"},
      "hypothesis": {"type": "string"}, "change": {"type": "string"}, "attribution": {"type": "string"},
      "evidence": {"type": "object"}, "verdict": {"type": "string", "enum": ["kept", "rolled_back", "abandoned"]},
-     "n": {"type": "integer", "minimum": 1, "maximum": 50}},
+     "n": {"type": "integer", "minimum": 1, "maximum": 50},
+     "target_cases": {"type": "array", "items": {"type": "string"}, "description": "preregister:应改善的样本"},
+     "keep_cases": {"type": "array", "items": {"type": "string"}, "description": "preregister:不许变坏的样本"},
+     "min_gain": {"type": "number", "description": "preregister:目标样本平均分至少提高多少"}},
     ["action"], "记账", destructive=True)
 
 
@@ -140,15 +144,18 @@ class LedgerTool(Tool):
             return ToolResult(ok=True, content=len(entries), rendered=text)
         if inp.get("action") in ("append", "preregister"):
             prereg = inp["action"] == "preregister"
-            if prereg and not inp.get("evidence"):
-                return _fail("ledger", "预注册要把判据写进 evidence(推翻条件、目标样本、必须保持的样本、指标)")
+            if prereg and not (isinstance(inp.get("target_cases"), list) and inp["target_cases"]
+                               and isinstance(inp.get("keep_cases"), list) and inp.get("min_gain") is not None):
+                return _fail("ledger", "预注册要给 target_cases、keep_cases、min_gain(eval_verdict 按它们判定)")
             entry = LedgerEntry(
                 episode_id=f"it-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}",
                 goal=str(inp.get("hypothesis") or ""), started_at=time.time(),
                 verdict="preregistered" if prereg else inp.get("verdict"),
                 agent=str(inp.get("name") or ""), hypothesis=str(inp.get("hypothesis") or ""),
                 change=str(inp.get("change") or ""), attribution=str(inp.get("attribution") or ""),
-                evidence=dict(inp.get("evidence") or {}))
+                evidence={**dict(inp.get("evidence") or {}),
+                          **({"target_cases": list(inp["target_cases"]), "keep_cases": list(inp["keep_cases"]),
+                              "min_gain": float(inp["min_gain"])} if prereg else {})})
             try:
                 await self._ledger.append(entry)
             except ValueError as exc:

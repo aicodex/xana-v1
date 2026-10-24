@@ -11,7 +11,8 @@ import json
 
 from xana.agents.iterator import ITERATION_TEAM
 from xana.component.contracts import ComponentSource, ComponentSpec
-from xana.evolution.evals import EvalRunner, SuiteError, compare_batches
+from xana.evolution.evals import EvalRunner, SuiteError, compare_batches, plan_for_version, verdict
+from xana.evolution.ledger import Ledger
 from xana.harness_sdk.background import BackgroundTasks, TaskOutcome
 from xana.policy.contracts import PermissionResult
 from xana.tools.contracts import ToolContext, ToolDisplay, ToolInvocation, ToolResult, ToolSpec
@@ -227,3 +228,82 @@ class EvalDescribeTool(Tool):
             else:
                 lines.append(f"- {split}:{len(ids)} 个 — {', '.join(ids)}")
         return ToolResult(ok=True, content={k: len(v) for k, v in by_split.items()}, rendered="\n".join(lines))
+
+
+_PLAN_SPEC = _spec(
+    "eval_plan",
+    "当前版本(按 agent 版本指纹,跨批次汇总已有运行)的逐样本表现与噪声:noise(样本内标准差的中位数)、"
+    "gate(差异门槛 = max(2·noise, 0.05))、建议的目标样本(训练集里做得差 / 出过大偏差 / 不稳定的)与必须保持的样本"
+    "(训练集里稳定做对的)、还缺重复次数的样本。预注册与小规模实验直接用它的数字,不要自己估。",
+    {"suite": {"type": "string"}, "agent": {"type": "string", "description": "默认套件的被测 agent"}},
+    ["suite"], "评测规划")
+
+_VERDICT_SPEC = _spec(
+    "eval_verdict",
+    "按预注册的判据给出判定(代码判定):pass / fail / invalid 及原因。读登记号对应的 target_cases、keep_cases、min_gain,"
+    "对比基线批次与候选批次(都可给多个,会合并;留出集结果必须包含在内):目标样本平均改善要达到 max(min_gain, gate)"
+    "且没有目标样本变坏,必须保持的样本不能变坏,留出集平均不能差于 −gate,两边打分次数要一致;"
+    "留出集改善好得反常会给出提醒。采纳只能在 pass 之后。",
+    {"suite": {"type": "string"}, "preregistration": {"type": "string", "description": "ledger(preregister) 返回的登记号"},
+     "base": {"type": "array", "items": {"type": "string"}, "description": "基线批次号(可多个)"},
+     "candidate": {"type": "array", "items": {"type": "string"}, "description": "候选批次号(可多个)"}},
+    ["suite", "preregistration", "base", "candidate"], "评测判定")
+
+
+class EvalPlanTool(Tool):
+    def __init__(self, evals: EvalRunner) -> None:
+        self._evals = evals
+
+    def spec(self) -> ToolSpec:
+        return _PLAN_SPEC
+
+    async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
+        return PermissionResult(decision="allow", reason="eval_plan")
+
+    async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
+        try:
+            suite = self._evals.suite(str(invocation.input["suite"]))
+            plan = await plan_for_version(self._evals, suite, str(invocation.input.get("agent") or suite.agent))
+        except SuiteError as exc:
+            return _fail("eval_plan", str(exc))
+        if context.agent_name in _HELDOUT_BLIND:
+            held = [k for k, v in plan["per_case"].items() if v["split"] == "heldout"]
+            plan = {**plan, "per_case": {k: v for k, v in plan["per_case"].items() if v["split"] != "heldout"},
+                    "heldout_cases_with_results": len(held)}
+        return ToolResult(ok=True, content={k: v for k, v in plan.items() if k != "per_case"},
+                          rendered="[eval_plan]\n" + json.dumps(plan, ensure_ascii=False, indent=1))
+
+
+class EvalVerdictTool(Tool):
+    def __init__(self, evals: EvalRunner, ledger: Ledger) -> None:
+        self._evals = evals
+        self._ledger = ledger
+
+    def spec(self) -> ToolSpec:
+        return _VERDICT_SPEC
+
+    async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
+        return PermissionResult(decision="allow", reason="eval_verdict")
+
+    async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
+        inp = invocation.input
+        entry = next((e for e in await self._ledger.read_all()
+                      if e.episode_id == inp["preregistration"] and e.verdict == "preregistered"), None)
+        if entry is None:
+            return _fail("eval_verdict", f"没有登记号 {inp['preregistration']} 的预注册")
+        crit = entry.evidence
+        if not isinstance(crit.get("target_cases"), list) or not isinstance(crit.get("keep_cases"), list):
+            return _fail("eval_verdict", "这条预注册没有 target_cases / keep_cases,无法按判据判定")
+        try:
+            suite = self._evals.suite(str(inp["suite"]))
+            base = [r for b in inp["base"] for r in (await self._evals.score(suite, str(b))).get("per_case") or []]
+            cand = [r for b in inp["candidate"] for r in (await self._evals.score(suite, str(b))).get("per_case") or []]
+            gate = (await plan_for_version(self._evals, suite, suite.agent))["gate"]
+        except SuiteError as exc:
+            return _fail("eval_verdict", str(exc))
+        heldout = {c.id for c in suite.cases if c.split == "heldout"}
+        result = verdict(base, cand, target=list(crit["target_cases"]), keep=list(crit["keep_cases"]),
+                         min_gain=float(crit.get("min_gain") or 0.0), heldout=heldout, gate=gate)
+        result["gate"] = gate
+        return ToolResult(ok=True, content={"verdict": result["verdict"]},
+                          rendered="[eval_verdict]\n" + json.dumps(result, ensure_ascii=False, indent=1))

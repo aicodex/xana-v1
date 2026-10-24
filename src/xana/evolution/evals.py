@@ -139,13 +139,16 @@ class EvalRunner:
     """按套件跑样本:每个样本一个独立会话,工具环境 = 样本的 as_of + 套件策略;结果写进批次目录。"""
 
     def __init__(self, *, runner: AgentRunner, run_store: RunStore | None, evals_root: Path,
-                 quota_wait: Callable[[], Awaitable[tuple[str, float] | None]] | None = None) -> None:
+                 quota_wait: Callable[[], Awaitable[tuple[str, float] | None]] | None = None,
+                 agent_fingerprint: Callable[[str], str | None] | None = None) -> None:
         """quota_wait:模型服务额度检查(如 Kimi 订阅额度),用到阈值时返回 (原因, 距重置秒数);每个样本开跑前调用。
         额度 / 当日预算用完时暂停开新样本,等重置后接着跑——不跳过样本(评测结果必须完整)。"""
         self._runner = runner
         self._runs = run_store
         self.root = Path(evals_root)
         self._quota_wait = quota_wait
+        # 被测 agent 的版本指纹(提示词 + 经验条目 + 工具 + 模型):同一版本已跑过的样本可复用,不重跑
+        self._agent_fp = agent_fingerprint or (lambda _name: None)
 
     async def _blocked(self, suite: EvalSuite) -> tuple[str, float] | None:
         """(原因, 要等多少秒) 或 None(可以开跑)。"""
@@ -172,26 +175,72 @@ class EvalRunner:
     def suite(self, name: str) -> EvalSuite:
         return load_suite(self.root, name)
 
+    def _run_key(self, suite: EvalSuite, agent: str, tape: tuple[str, ...]) -> dict | None:
+        """可复用的条件:同一 agent 版本、同一套件指纹、同一环境策略、没有用回放。"""
+        fp = self._agent_fp(agent)
+        if fp is None or tape:
+            return None
+        return {"agent_fp": fp, "fingerprint": suite.fingerprint(),
+                "env": {"strategies": dict(suite.strategies), "on_miss": suite.on_miss}}
+
+    def reusable_rows(self, suite: EvalSuite, agent: str) -> dict[str, list[dict]]:
+        """当前版本已完成的运行,按样本归组(跨批次;复用来的行不重复计)。"""
+        key = self._run_key(suite, agent, ())
+        out: dict[str, list[dict]] = {}
+        if key is None:
+            return out
+        for bdir in sorted((suite.dir / "batches").glob("*")):
+            meta_path, runs_path = bdir / "batch.json", bdir / "runs.jsonl"
+            if not meta_path.exists() or not runs_path.exists():
+                continue
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if any(meta.get(k) != v for k, v in key.items()):
+                continue
+            for line in runs_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if row.get("status") == "completed" and not row.get("reused_from"):
+                    out.setdefault(row["case_id"], []).append({**row, "_batch": bdir.name})
+        return out
+
     async def run(self, suite: EvalSuite, cases: tuple[EvalCase, ...], *, repeat: int = 1,
                   agent: str | None = None, label: str = "", tape: tuple[str, ...] = (),
-                  on_case: Callable[[str], None] | None = None) -> str:
-        """on_case:每个样本跑完回调一句进度(后台任务显示用)。"""
+                  on_case: Callable[[str], None] | None = None, reuse: bool = True) -> str:
+        """on_case:每个样本跑完回调一句进度(后台任务显示用)。
+        reuse:同一 agent 版本在同一套件 / 环境下已完成的运行直接复用(记 reused_from),只补跑不够的次数。"""
+        agent = agent or suite.agent
         batch = time.strftime("%Y%m%d-%H%M%S") + f"-{uuid.uuid4().hex[:4]}" + (f"-{label}" if label else "")
         out_dir = suite.dir / "batches" / batch
         out_dir.mkdir(parents=True)
+        key = self._run_key(suite, agent, tape) or {}
+        prior = self.reusable_rows(suite, agent) if (reuse and key) else {}
         (out_dir / "batch.json").write_text(json.dumps({
-            "suite": suite.name, "agent": agent or suite.agent, "label": label, "repeat": repeat,
+            "suite": suite.name, "agent": agent, "label": label, "repeat": repeat,
             "cases": [c.id for c in cases], "started": time.time(), "tape": list(tape),
-            "fingerprint": suite.fingerprint()}, ensure_ascii=False),
+            "fingerprint": suite.fingerprint(), **key}, ensure_ascii=False),
             encoding="utf-8")
+        reused_rows = []
+        todo: list[tuple[EvalCase, int]] = []
+        for c in cases:
+            have = prior.get(c.id, [])[:repeat]
+            for rep, row in enumerate(have):
+                reused_rows.append({**{k: v for k, v in row.items() if k != "_batch"}, "rep": rep,
+                                    "reused_from": row["_batch"]})
+            todo += [(c, rep) for rep in range(len(have), repeat)]
+        with (out_dir / "runs.jsonl").open("a", encoding="utf-8") as f:
+            for row in reused_rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        if reused_rows and on_case is not None:
+            on_case(f"复用同一版本已有的 {len(reused_rows)} 次运行,补跑 {len(todo)} 次")
         slots = asyncio.Semaphore(max(1, suite.concurrency))
         lock = asyncio.Lock()
-        done, total = [0], len(cases) * repeat
+        done, total = [0], len(todo)
 
         async def one(case: EvalCase, rep: int) -> None:
             async with slots:
                 await self._gate(suite, on_case)
-                row = await self._run_case(suite, case, rep, agent or suite.agent, batch, tape)
+                row = await self._run_case(suite, case, rep, agent, batch, tape)
             async with lock:
                 with (out_dir / "runs.jsonl").open("a", encoding="utf-8") as f:
                     f.write(json.dumps(asdict(row), ensure_ascii=False) + "\n")
@@ -199,7 +248,7 @@ class EvalRunner:
                 if on_case is not None:
                     on_case(f"{done[0]}/{total} · {case.id}#{rep} {row.status}")
 
-        await asyncio.gather(*(one(c, r) for c in cases for r in range(repeat)))
+        await asyncio.gather(*(one(c, r) for c, r in todo))
         return batch
 
     async def _run_case(self, suite: EvalSuite, case: EvalCase, rep: int, agent: str, batch: str,
@@ -291,6 +340,9 @@ class EvalRunner:
         if proc.returncode != 0:
             raise SuiteError(f"打分命令失败(退出码 {proc.returncode}):{err.decode('utf-8', 'replace')[-2000:]}")
         result = json.loads(out.decode("utf-8"))
+        run_ids = {(r["case_id"], r["rep"]): r.get("run_id") for r in runs}
+        for row in result.get("per_case") or []:          # 打分命令不必回传 run_id:按 (样本, 第几次) 补上
+            row.setdefault("run_id", run_ids.get((row.get("case_id"), row.get("rep"))))
         result.update(batch=batch, fingerprint=fingerprint, scored_at=time.time())
         cached.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
         return result
@@ -333,3 +385,89 @@ def compare_batches(base: dict, cand: dict, *, default_noise: float = 0.05) -> d
         "trustworthy": not imbalance,
         "per_case": rows,
     }
+
+
+def _scored(result: dict) -> list[dict]:
+    return [r for r in result.get("per_case") or [] if r.get("status") == "scored"
+            and isinstance(r.get("score"), (int, float))]
+
+
+async def plan_for_version(evals: "EvalRunner", suite: EvalSuite, agent: str) -> dict:
+    """当前版本(按指纹)跨批次的逐样本表现与噪声,建议小规模实验的样本(代码算,不让模型算)。
+    noise = 有 ≥2 次结果的样本的标准差中位数;gate = max(2·noise, 0.05) 为差异门槛。
+    目标候选:训练集平均分 < 0.7 或出现过大偏差,或波动明显高于噪声;保持候选:训练集平均分 ≥ 0.85 且稳定。"""
+    import statistics
+
+    rows = evals.reusable_rows(suite, agent)
+    by_run: dict[str, dict] = {}
+    for batch in sorted({r["_batch"] for rs in rows.values() for r in rs}):
+        for r in _scored(await evals.score(suite, batch)):
+            by_run[r.get("run_id") or ""] = r
+    split = {c.id: c.split for c in suite.cases}
+    stats: dict[str, dict] = {}
+    for case, rs in rows.items():
+        scored = [by_run[r["run_id"]] for r in rs if r.get("run_id") in by_run]
+        scores = [r["score"] for r in scored]
+        if not scores:
+            continue
+        stats[case] = {"split": split.get(case, "?"), "n": len(scores), "mean": round(statistics.fmean(scores), 3),
+                       "sd": round(statistics.stdev(scores), 3) if len(scores) > 1 else None,
+                       "big_miss": any(r.get("big_miss") for r in scored)}
+    sds = [v["sd"] for v in stats.values() if v["sd"] is not None]
+    noise = round(statistics.median(sds), 3) if sds else None
+    gate = round(max(2 * (noise or 0.025), 0.05), 3)
+    train = {k: v for k, v in stats.items() if v["split"] == "train"}
+    targets = sorted(k for k, v in train.items()
+                     if v["mean"] < 0.7 or v["big_miss"] or (v["sd"] is not None and noise and v["sd"] > 2 * noise))
+    keep = sorted((k for k, v in train.items() if v["mean"] >= 0.85 and (v["sd"] is None or v["sd"] <= gate / 2)),
+                  key=lambda k: -train[k]["mean"])[:4]
+    return {
+        "agent": agent, "agent_fp": evals._agent_fp(agent), "noise": noise, "gate": gate,
+        "suggested_target_cases": targets, "suggested_keep_cases": keep,
+        "needs_more_reps": sorted(k for c in suite.cases if c.split == "train"
+                                  for k in [c.id] if stats.get(k, {}).get("n", 0) < 2),
+        "per_case": stats,
+    }
+
+
+def verdict(base: list[dict], cand: list[dict], *, target: list[str], keep: list[str], min_gain: float,
+            heldout: set[str], gate: float) -> dict:
+    """按预注册判据判定(代码判,不让模型判):
+    - 作废:目标 / 保持 / 留出集样本两边打分次数不一致;
+    - 不通过:保持样本有超出噪声的变坏;目标样本平均改善 < max(min_gain, gate) 或有目标样本变坏;
+      留出集平均变化 < −gate;
+    - 提醒:留出集平均改善 > 3·gate(好得反常,先查泄漏 / 评测漏洞)。"""
+    comp = compare_batches({"per_case": base}, {"per_case": cand}, default_noise=gate / 2)
+    rows = {r["case_id"]: r for r in comp["per_case"]}
+    relevant = set(target) | set(keep) | heldout
+    reasons, warnings = [], []
+    imbalanced = sorted(set(comp["imbalanced_cases"]) & relevant)
+    missing = sorted(c for c in set(target) | set(keep) if c not in rows)
+    if imbalanced or missing:
+        return {"verdict": "invalid", "reasons": [f"两边打分次数不一致:{imbalanced}" if imbalanced else "",
+                                                  f"缺少结果:{missing}" if missing else ""], "warnings": []}
+    t_diffs = [rows[c]["diff"] for c in target]
+    t_worse = [c for c in target if rows[c]["verdict"] == "worse"]
+    t_mean = sum(t_diffs) / len(t_diffs) if t_diffs else 0.0
+    if t_mean < max(min_gain, gate):
+        reasons.append(f"目标样本平均改善 {t_mean:+.3f},未达 {max(min_gain, gate):.3f}")
+    if t_worse:
+        reasons.append(f"目标样本变坏:{t_worse}")
+    k_worse = [c for c in keep if rows[c]["verdict"] == "worse"]
+    if k_worse:
+        reasons.append(f"必须保持的样本变坏(一票否决):{k_worse}")
+    h_rows = [rows[c] for c in heldout if c in rows]
+    h_mean = sum(r["diff"] for r in h_rows) / len(h_rows) if h_rows else None
+    if h_mean is None:
+        reasons.append("没有留出集结果:采纳需要留出集")
+    elif h_mean < -gate:
+        reasons.append(f"留出集平均变化 {h_mean:+.3f},差于 −{gate:.3f}")
+    elif h_mean > 3 * gate:
+        warnings.append(f"留出集平均改善 {h_mean:+.3f} 超过 3 倍门槛:好得反常,先查泄漏与评测漏洞")
+    return {"verdict": "fail" if reasons else "pass", "reasons": reasons, "warnings": warnings,
+            "target": {"mean_diff": round(t_mean, 4), "worse": t_worse,
+                       "per_case": {c: rows[c]["diff"] for c in target}},
+            "keep": {"worse": k_worse},
+            "heldout": {"cases": len(h_rows), "mean_diff": round(h_mean, 4) if h_mean is not None else None,
+                        "improved": sum(r["verdict"] == "improved" for r in h_rows),
+                        "worse": sum(r["verdict"] == "worse" for r in h_rows)}}

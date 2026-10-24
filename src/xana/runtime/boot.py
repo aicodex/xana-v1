@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -99,7 +100,9 @@ from xana.tools.builtin.agent_define import AgentDefineTool
 from xana.tools.builtin.agent_run import AgentRunTool
 from xana.evolution.evals import EvalRunner
 from xana.agents.versions import AgentVersions
-from xana.tools.builtin.eval_tools import EvalCompareTool, EvalDescribeTool, EvalRunTool, EvalScoreTool
+from xana.tools.builtin.eval_tools import (
+    EvalCompareTool, EvalDescribeTool, EvalPlanTool, EvalRunTool, EvalScoreTool, EvalVerdictTool,
+)
 from xana.tools.builtin.iteration_tools import AgentVersionTool, LedgerTool
 from xana.tools.builtin.tool_define import ToolDefineTool
 from xana.tools.builtin.trace_view import TraceViewTool
@@ -552,12 +555,25 @@ async def boot(
     await _register(TaskStopTool(background))
     await _register(ToolDefineTool(registry=tools, project_root=project_root))
     # 评测套件(iteration-agent-design §8):eval_run 经 agent_runner 跑样本,eval_score 调套件的打分命令
+    def _agent_fingerprint(name: str) -> str | None:
+        """被测 agent 的版本指纹:提示词(含经验条目)+ 工具 + 模型参数;同一版本的评测运行可跨批次复用。"""
+        agent = gateway.agents.get(name)
+        if agent is None:
+            return None
+        sp = agent.spec()
+        raw = json.dumps([sp.system_prompt, list(sp.tools), list(sp.disallowed_tools), sp.model, sp.effort,
+                          sp.max_turns, list(sp.skills) if sp.skills is not None else None], ensure_ascii=False)
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
     _evals = EvalRunner(runner=agent_runner, run_store=run_store, evals_root=evals_dir,
-                        quota_wait=_kimi_quota_wait(0.9) if provider.startswith("kimi") else None)
+                        quota_wait=_kimi_quota_wait(0.9) if provider.startswith("kimi") else None,
+                        agent_fingerprint=_agent_fingerprint)
     await _register(EvalRunTool(_evals, background=background))
     await _register(EvalScoreTool(_evals))
     await _register(EvalCompareTool(_evals))
     await _register(EvalDescribeTool(_evals))
+    await _register(EvalPlanTool(_evals))
+    await _register(EvalVerdictTool(_evals, ledger))
     if run_store is not None and history_root is not None:
         await _register(TraceViewTool(run_store=run_store, runs_dir=history_root / "runs",
                                       hidden_runs=_evals.heldout_run_ids, blind_agents=ITERATION_TEAM))
