@@ -395,7 +395,8 @@ def _scored(result: dict) -> list[dict]:
 async def plan_for_version(evals: "EvalRunner", suite: EvalSuite, agent: str) -> dict:
     """当前版本(按指纹)跨批次的逐样本表现与噪声,建议小规模实验的样本(代码算,不让模型算)。
     noise = 有 ≥2 次结果的样本的标准差中位数;gate = max(2·noise, 0.05) 为差异门槛。
-    目标候选:训练集平均分 < 0.7 或出现过大偏差,或波动明显高于噪声;保持候选:训练集平均分 ≥ 0.85 且稳定。"""
+    目标候选:训练集平均分 < 0.7 或出现过大偏差,或波动明显高于噪声;保持候选:其余训练样本中平均分 ≥ 0.8
+    且波动不超过门槛的。真值未揭晓的样本单列(pending_truth),不算缺重复次数。"""
     import statistics
 
     rows = evals.reusable_rows(suite, agent)
@@ -419,13 +420,15 @@ async def plan_for_version(evals: "EvalRunner", suite: EvalSuite, agent: str) ->
     train = {k: v for k, v in stats.items() if v["split"] == "train"}
     targets = sorted(k for k, v in train.items()
                      if v["mean"] < 0.7 or v["big_miss"] or (v["sd"] is not None and noise and v["sd"] > 2 * noise))
-    keep = sorted((k for k, v in train.items() if v["mean"] >= 0.85 and (v["sd"] is None or v["sd"] <= gate / 2)),
-                  key=lambda k: -train[k]["mean"])[:4]
+    keep = sorted((k for k, v in train.items() if k not in targets and v["mean"] >= 0.8
+                   and (v["sd"] is None or v["sd"] <= gate)), key=lambda k: -train[k]["mean"])[:4]
+    pending = sorted(k for k in rows if k not in stats)          # 有完成的运行但还打不了分(真值未揭晓)
     return {
         "agent": agent, "agent_fp": evals._agent_fp(agent), "noise": noise, "gate": gate,
         "suggested_target_cases": targets, "suggested_keep_cases": keep,
-        "needs_more_reps": sorted(k for c in suite.cases if c.split == "train"
-                                  for k in [c.id] if stats.get(k, {}).get("n", 0) < 2),
+        "needs_more_reps": sorted(c.id for c in suite.cases if c.split == "train" and c.id not in pending
+                                  and stats.get(c.id, {}).get("n", 0) < 2),
+        "pending_truth": pending,
         "per_case": stats,
     }
 
