@@ -99,7 +99,7 @@ from xana.tools.builtin.agent_define import AgentDefineTool
 from xana.tools.builtin.agent_run import AgentRunTool
 from xana.evolution.evals import EvalRunner
 from xana.agents.versions import AgentVersions
-from xana.tools.builtin.eval_tools import EvalCompareTool, EvalRunTool, EvalScoreTool
+from xana.tools.builtin.eval_tools import EvalCompareTool, EvalDescribeTool, EvalRunTool, EvalScoreTool
 from xana.tools.builtin.iteration_tools import AgentVersionTool, LedgerTool
 from xana.tools.builtin.tool_define import ToolDefineTool
 from xana.tools.builtin.trace_view import TraceViewTool
@@ -552,6 +552,7 @@ async def boot(
     await _register(EvalRunTool(_evals, background=background))
     await _register(EvalScoreTool(_evals))
     await _register(EvalCompareTool(_evals))
+    await _register(EvalDescribeTool(_evals))
     if run_store is not None and history_root is not None:
         await _register(TraceViewTool(run_store=run_store, runs_dir=history_root / "runs",
                                       hidden_runs=_evals.heldout_run_ids, blind_agents=ITERATION_TEAM))

@@ -190,3 +190,38 @@ class EvalCompareTool(Tool):
             result = compare_batches(base, cand)
         return ToolResult(ok=True, content={k: v for k, v in result.items() if k != "per_case"},
                           rendered="[eval_compare]\n" + json.dumps(result, ensure_ascii=False, indent=1))
+
+
+_DESCRIBE_SPEC = _spec(
+    "eval_describe",
+    "查看评测套件的说明:评测量的是什么、指标怎么算、基线是什么,以及样本构成(训练集样本 id、留出 / 实时集数量)。"
+    "审视评测是否量到了目标的关键组成时用它(打分代码与真值不可见)。",
+    {"suite": {"type": "string"}}, ["suite"], "查看评测说明")
+
+
+class EvalDescribeTool(Tool):
+    def __init__(self, evals: EvalRunner) -> None:
+        self._evals = evals
+
+    def spec(self) -> ToolSpec:
+        return _DESCRIBE_SPEC
+
+    async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
+        return PermissionResult(decision="allow", reason="eval_describe")
+
+    async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
+        try:
+            suite = self._evals.suite(str(invocation.input["suite"]))
+        except SuiteError as exc:
+            return _fail("eval_describe", str(exc))
+        by_split: dict[str, list[str]] = {}
+        for c in suite.cases:
+            by_split.setdefault(c.split, []).append(c.id)
+        lines = [f"# 评测套件 {suite.name}(被测 agent:{suite.agent})", suite.metrics_doc or "(套件没有 METRICS.md)",
+                 "## 样本构成"]
+        for split, ids in by_split.items():
+            if split == "heldout" and context.agent_name in _HELDOUT_BLIND:
+                lines.append(f"- {split}:{len(ids)} 个(样本不列出)")
+            else:
+                lines.append(f"- {split}:{len(ids)} 个 — {', '.join(ids)}")
+        return ToolResult(ok=True, content={k: len(v) for k, v in by_split.items()}, rendered="\n".join(lines))

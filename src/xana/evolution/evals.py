@@ -3,6 +3,7 @@
 <项目>/.xana/evals/<名>/
   suite.yaml     agent(被测 agent)、scorer(打分命令,参数数组,在套件目录下运行)、concurrency、
                  env(按工具名的策略,同 ToolEnvConfig.strategies)、on_miss
+  METRICS.md     评测说明(量什么、怎么算;对迭代者可见,打分代码与真值不可见)
   cases.jsonl    一行一个样本:{id, split(train / heldout / live), input(原样交给被测 agent), as_of?, ...}
   batches/<批次>/runs.jsonl    每次运行一行(核心写入):case_id、rep、run_id、status、text、用量
   batches/<批次>/scores.json   打分命令的输出
@@ -31,6 +32,7 @@ from xana.state.interfaces import RunStore
 from xana.tools.contracts import ToolEnvConfig
 
 SPLITS = ("train", "heldout", "live")
+SCORE_CACHE_S = 6 * 3600.0     # 打分结果的复用期限(无 pending 样本时)
 EVAL_PREAMBLE = "这是一次评测运行:独立完成下面的任务,不要提问;最终回答按任务要求的格式给出,会被自动打分。"
 
 
@@ -59,6 +61,11 @@ class EvalSuite:
     on_miss: str = "live"
     protected: tuple[str, ...] = ()     # 套件目录外、影响打分的文件(如计算真值的代码),一并做完整性校验
     daily_tokens: int | None = None     # 当日 token 上限(按全部 run 的持久化用量计,iteration-agent-design §12)
+
+    @property
+    def metrics_doc(self) -> str:
+        path = self.dir / "METRICS.md"
+        return path.read_text(encoding="utf-8") if path.exists() else ""
 
     def fingerprint(self) -> str:
         """样本、打分命令、真值相关文件的内容哈希:批次运行后被改动则拒绝打分(防迭代者改题刷分,§9.3)。"""
@@ -236,27 +243,42 @@ class EvalRunner:
             raise SuiteError(f"套件 {suite.name} 没有批次 {batch}")
         return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
 
-    async def score(self, suite: EvalSuite, batch: str) -> dict:
-        """调套件的打分命令(确定性脚本),结果写 scores.json 并返回。"""
+    async def score(self, suite: EvalSuite, batch: str, *, max_age_s: float = SCORE_CACHE_S) -> dict:
+        """调套件的打分命令(确定性脚本),结果写 scores.json 并返回。
+        复用已有结果:同一指纹、批次之后没有新运行、没有 pending 样本(真值可能已揭晓)、且不超过 max_age_s。"""
         batch = self.resolve_batch(suite, batch)
         runs = self.batch_runs(suite, batch)
-        meta = json.loads((suite.dir / "batches" / batch / "batch.json").read_text(encoding="utf-8"))
-        if meta.get("fingerprint") != suite.fingerprint():
+        bdir = suite.dir / "batches" / batch
+        meta = json.loads((bdir / "batch.json").read_text(encoding="utf-8"))
+        fingerprint = suite.fingerprint()
+        if meta.get("fingerprint") != fingerprint:
             raise SuiteError("评测套件(样本 / 打分命令 / 真值相关文件)在这个批次运行后被改动过,拒绝打分;"
                              "需要改套件请让用户来改,然后重新跑批次")
+        cached = bdir / "scores.json"
+        if cached.exists():
+            prev = json.loads(cached.read_text(encoding="utf-8"))
+            fresh = (prev.get("fingerprint") == fingerprint
+                     and prev.get("scored_at", 0) >= (bdir / "runs.jsonl").stat().st_mtime
+                     and time.time() - prev.get("scored_at", 0) < max_age_s
+                     and not any(r.get("status") == "pending" for r in prev.get("per_case") or []))
+            if fresh:
+                return prev
         payload = {"suite": suite.name, "cases": [{"id": c.id, "split": c.split, "as_of": c.as_of, **c.meta}
                                                    for c in suite.cases],
                    "runs": runs}
-        proc = await asyncio.create_subprocess_exec(
-            *suite.scorer, cwd=str(suite.dir), stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        out, err = await proc.communicate(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        for attempt in range(2):          # 打分进程偶发异常退出(如 -6):重试一次
+            proc = await asyncio.create_subprocess_exec(
+                *suite.scorer, cwd=str(suite.dir), stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            out, err = await proc.communicate(data)
+            if proc.returncode == 0 or (proc.returncode or 0) > 0:
+                break
         if proc.returncode != 0:
             raise SuiteError(f"打分命令失败(退出码 {proc.returncode}):{err.decode('utf-8', 'replace')[-2000:]}")
         result = json.loads(out.decode("utf-8"))
-        result["batch"] = batch
-        (suite.dir / "batches" / batch / "scores.json").write_text(
-            json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+        result.update(batch=batch, fingerprint=fingerprint, scored_at=time.time())
+        cached.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
         return result
 
 
