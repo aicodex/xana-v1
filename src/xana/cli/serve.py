@@ -284,6 +284,9 @@ async def _run_inner(argv: argparse.Namespace) -> int:
 
     running_ids = ["cli", *(a.adapter_id for a in adapters)]
     print(f"[xana serve] running adapters: {', '.join(running_ids)}")
+    if boot_result.background is not None:
+        # 渠道已起来:上次进程里被中断的后台任务通知父会话(不阻塞启动)
+        asyncio.create_task(boot_result.background.recover(), name="xana-background-recover")
 
     # P5.6 — SIGTERM graceful drain: abort inflight runs, wait ≤2s, then exit.
     import signal as _signal

@@ -155,7 +155,9 @@ class EvalRunner:
         return load_suite(self.root, name)
 
     async def run(self, suite: EvalSuite, cases: tuple[EvalCase, ...], *, repeat: int = 1,
-                  agent: str | None = None, label: str = "", tape: tuple[str, ...] = ()) -> str:
+                  agent: str | None = None, label: str = "", tape: tuple[str, ...] = (),
+                  on_case: Callable[[str], None] | None = None) -> str:
+        """on_case:每个样本跑完回调一句进度(后台任务显示用)。"""
         batch = time.strftime("%Y%m%d-%H%M%S") + f"-{uuid.uuid4().hex[:4]}" + (f"-{label}" if label else "")
         out_dir = suite.dir / "batches" / batch
         out_dir.mkdir(parents=True)
@@ -166,6 +168,7 @@ class EvalRunner:
             encoding="utf-8")
         slots = asyncio.Semaphore(max(1, suite.concurrency))
         lock = asyncio.Lock()
+        done, total = [0], len(cases) * repeat
 
         async def one(case: EvalCase, rep: int) -> None:
             async with slots:
@@ -176,6 +179,9 @@ class EvalRunner:
             async with lock:
                 with (out_dir / "runs.jsonl").open("a", encoding="utf-8") as f:
                     f.write(json.dumps(asdict(row), ensure_ascii=False) + "\n")
+                done[0] += 1
+                if on_case is not None:
+                    on_case(f"{done[0]}/{total} · {case.id}#{rep} {row.status}")
 
         await asyncio.gather(*(one(c, r) for c in cases for r in range(repeat)))
         return batch

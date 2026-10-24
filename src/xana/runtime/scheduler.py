@@ -25,11 +25,11 @@ from typing import Any, Awaitable, Callable
 
 from croniter import croniter
 
-from xana.agent_adapter.contracts import InboundMessage, SessionBinding
 from xana.agent_adapter.gateway import DefaultAgentGateway
 from xana.extension_api.capabilities import AgentRunner, SchedulerService
 from xana.extension_api.contracts import AgentRunOutcome
 from xana.harness_sdk.contracts import PromptProfile
+from xana.runtime.delivery import SessionDelivery
 from xana.runtime.session_resolver import SessionResolver
 from xana.session_config.interfaces import SessionConfigStore
 
@@ -246,13 +246,14 @@ class ScheduledTaskDispatcher:
                  scheduler: FileSchedulerService | None = None,
                  session_config_store: SessionConfigStore | None = None,
                  resolver: SessionResolver | None = None,
-                 default_agent: str = "chat") -> None:
+                 default_agent: str = "chat", delivery: SessionDelivery | None = None) -> None:
         self._gateway = gateway
         self._runner = runner
         self._runs_dir = runs_dir
         self._scheduler = scheduler
         self._session_configs = session_config_store
         self._resolver = resolver
+        self._delivery = delivery or SessionDelivery(gateway=gateway, resolver=resolver)
         self._default_agent = default_agent
         self._decisions: dict[str, dict[str, Any] | None] = {}   # 正在执行的子会话 → 待决策的问题
         self._info_counts: dict[str, int] = {}
@@ -323,21 +324,4 @@ class ScheduledTaskDispatcher:
         return True
 
     async def _deliver(self, session_id: str, route: tuple[str, str] | None, text: str) -> None:
-        adapters = self._gateway.adapters
-        if route is None and self._resolver is not None:
-            route = self._resolver.route_of(session_id)      # 任务没记路由:按会话反查它属于哪个聊天
-        adapter_id = route[0] if route else session_id.split("-", 1)[0]
-        if adapter_id not in adapters:
-            adapter_id = next(iter(adapters), None)
-        if adapter_id is None:
-            _logger.warning("没有可用的渠道,定时任务结果无法送达会话 %s", session_id)
-            return
-        metadata: dict[str, Any] = {"source": "scheduler"}
-        if route and route[0] == adapter_id:
-            # serve 重启后渠道还不知道这个会话对应哪个聊天:先绑定,回复卡片才能发出去
-            await adapters[adapter_id].bind_session(SessionBinding(
-                adapter_id=adapter_id, external_thread_id=route[1], session_id=session_id))
-            metadata["chat_id"] = route[1]
-        async for _rendered in self._gateway.submit(InboundMessage(
-                adapter_id=adapter_id, session_id=session_id, text=text, metadata=metadata)):
-            pass
+        await self._delivery.deliver(session_id, text, route=route)

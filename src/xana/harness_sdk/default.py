@@ -102,6 +102,7 @@ from xana.state.file_runs import save_prompt
 from xana.tools.contracts import (
     ToolActivity, ToolContext, ToolEnvConfig, ToolInvocation, ToolResult, ToolSpec, Toolset,
 )
+from xana.harness_sdk.background import BackgroundTasks
 from xana.tools.interfaces import Tool, ToolEnvironment
 from xana.tools.toolsets import resolve_tools
 from xana.config.paths import project_home
@@ -137,6 +138,7 @@ class _StopState:
     # 无进度提醒(照 CC 2.1.281 silent_turn_reminder):连续无可见输出的模型调用数 / 本静默期已提醒次数
     silent_calls: int = 0
     silent_reminders: int = 0
+    background_nudges: int = 0  # 还有后台任务在跑却想结束时的续跑次数
 
 # P5.2 — synthetic warning 中文文案,注入到 tool_result.content,告诉模型勿自动重试。
 _SYNTHETIC_WARNING_TEXT_KILLED = (
@@ -147,6 +149,7 @@ _SYNTHETIC_WARNING_TEXT_READONLY = (
     "[只读工具被用户取消。该工具未产生副作用,可由用户决定是否在下一轮重试。]"
 )
 _TOOL_ABORT_GRACE_SECONDS = 2.0
+_MAX_BACKGROUND_NUDGES = 20   # 无人接收结果的 run 等后台任务的续跑上限(每次一般是一次 task_wait)
 
 
 def _available_tools(
@@ -202,13 +205,17 @@ class DefaultHarness(Harness):
     def __init__(self, extension_registry: "ExtensionRegistry | None" = None,
                  today: Callable[[], str] | None = None,
                  memory_extractor: MemoryExtractor | None = None,
-                 tool_environment: ToolEnvironment | None = None) -> None:
+                 tool_environment: ToolEnvironment | None = None,
+                 background: BackgroundTasks | None = None) -> None:
         """today:返回本地日期 YYYY-MM-DD(缺省系统时钟;测试可替换)。
         memory_extractor:每轮完成后在后台提取漏记的记忆(docs/design/memory-dream-design.md §3.1);None = 不提取。
         tool_environment:评测 run(request.metadata["tool_env"])的工具调用经它执行(回放 / 时点 / 拒绝);
         None = 只注入时点,工具原样执行。"""
         self._memory_extractor = memory_extractor
         self._tool_environment = tool_environment
+        # 后台任务(超时转后台的 agent_run / eval_run):运行中把结束的任务作为注记插入;run 结束时登记,
+        # 之后结束的任务改为通知会话
+        self._background = background
         self._today = today or (lambda: date.today().isoformat())
         self.last_assembled_messages: tuple[ModelMessage, ...] | None = None
         self.usage_accumulator = DefaultUsageAccumulator()
@@ -927,6 +934,8 @@ class DefaultHarness(Harness):
                     except Exception:
                         _logger.exception("run_jsonl_writer.finalize failed")
                     await _finalize_writeback(produced, status)
+                    if self._background is not None:
+                        await self._background.run_ended(run_id)
 
             task = _asyncio.create_task(_bg_run(), name=f"xana-async-run-{run_id}")
             self._background_tasks.add(task)
@@ -977,6 +986,8 @@ class DefaultHarness(Harness):
                     content=f"此回答未完成（status={status}）。",
                 ))
             await _finalize_writeback(produced, status)
+            if self._background is not None:
+                await self._background.run_ended(run_id)
 
     async def _run_query_loop(
         self, request: HarnessRequest, context: HarnessContext
@@ -1342,6 +1353,9 @@ class DefaultHarness(Harness):
                     loop_notes.append(todo_note)
             if wrap_up:
                 loop_notes.append(continuation_note("max_turns", max_turns_text(max_turns)))
+            if self._background is not None:
+                for rec in self._background.pop_finished_for_run(run_id):
+                    loop_notes.append(continuation_note("background_done", rec.notification()))
             for n_idx, note in enumerate(loop_notes):
                 await self._append_note(context, session_id, agent_name, run_id,
                                         note, f"{turn_index}:{n_idx}")
@@ -1564,6 +1578,19 @@ class DefaultHarness(Harness):
                         agent_name=agent_name, kind="tool", payload=skipped, ts=time.time()))
                 continue                      # 循环结束 → 报 max_turns 错误
 
+            if not iter_tool_calls and self._background is not None and (
+                    request.metadata.get("parent_run_id") or profile.mode == "unattended"):
+                pending = self._background.running_for_run(run_id)
+                if pending and stop_state.background_nudges < _MAX_BACKGROUND_NUDGES:
+                    stop_state.background_nudges += 1
+                    ids = "、".join(r.id for r in pending)
+                    await self._append_note(context, session_id, agent_name, run_id, continuation_note(
+                        "background_pending",
+                        f"你启动的后台任务 {ids} 还在运行,结束前要拿到它们的结果:用 task_wait 等待"
+                        "(不需要就用 task_stop 停掉)。没人会在你结束后替你接收结果。"), f"{turn_index}:bg")
+                    yield HarnessEvent(kind="continuation", session_id=session_id, run_id=run_id,
+                                       payload={"reason": "background_pending", "text": ids})
+                    continue
             if not iter_tool_calls:
                 decision = await self._stop_decision(
                     ext, stop_state, session_id=session_id, agent_name=agent_name, run_id=run_id,

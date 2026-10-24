@@ -121,6 +121,9 @@ from xana.tools.builtin.xana_search import (BackgroundResearchTool, WebOpenUrlTo
                                             XanaWebSearchTool)
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import Tool, ToolRegistry
+from xana.harness_sdk.background import BackgroundTasks
+from xana.runtime.delivery import SessionDelivery
+from xana.tools.builtin.task_tools import TaskStopTool, TaskWaitTool
 from xana.tools.environment import TapeToolEnvironment
 from xana.tools.file_registry import FileToolRegistry
 from xana.tools.toolsets import BUILTIN_TOOLSETS, unknown_names
@@ -161,6 +164,7 @@ class BootResult:
     agent_registry: Any = None
     ledger: Any = None
     episode_runner: Any = None
+    background: BackgroundTasks | None = None    # serve 在渠道起来后调 recover():上次中断的后台任务通知父会话
 
 
 class _CompositeStateRepository(StateRepository):
@@ -287,9 +291,21 @@ async def boot(
     # harness 提前构造:/clear 时经 on_clear 丢弃它记下的 prompt 占用
     # (docs/design/session-and-card-state.md §1.5)。
     # 评测 run 的工具环境:录制回放读 sessions/runs(iteration-agent-design §6)
+    # 后台任务(超时转后台的 agent_run / eval_run):完成时若父 run 已结束,经 SessionDelivery 通知父会话;
+    # delivery 依赖下文组装的 gateway,这里先持有引用
+    _delivery: list[SessionDelivery] = []
+
+    async def _deliver_background(session_id: str, text: str) -> None:
+        if _delivery:
+            await _delivery[0].deliver(session_id, text, source="background")
+
+    background = BackgroundTasks(
+        deliver=_deliver_background,
+        state_path=(project_home() / "run" / "background.json") if history_root is not None else None)
     _harness = DefaultHarness(
         extension_registry=extension_registry, memory_extractor=memory_extractor,
-        tool_environment=TapeToolEnvironment(runs_dir=Path(history_root) / "runs") if history_root is not None else None)
+        tool_environment=TapeToolEnvironment(runs_dir=Path(history_root) / "runs") if history_root is not None else None,
+        background=background)
 
     active_ctx_inner = InMemoryActiveContextStore(
         context_sdk=context_sdk,
@@ -517,16 +533,19 @@ async def boot(
     # episode landing/closing/closed 期拒绝派生子 run(§6.2 机制兜底)。
     agent_runner = GatewayAgentRunner(agents=gateway.agents, session_store=state.sessions(),
                                       gate=episode_runner.ensure_gate)
+    _delivery.append(SessionDelivery(gateway=gateway, resolver=session_resolver, session_store=state.sessions()))
 
     # agent 委派与创建(docs/design/agent-delegation-design.md):agent_run 同步委派;agent_define 写 / 删 AGENT.md
     # 后刷新注册表,立即生效。
     await _register(AgentRunTool(runner=agent_runner, agents=gateway.agents, agent_registry=agent_registry,
-                                 tool_registry=tools))
+                                 tool_registry=tools, background=background))
+    await _register(TaskWaitTool(background))
+    await _register(TaskStopTool(background))
     await _register(ToolDefineTool(registry=tools, project_root=project_root))
     # 评测套件(iteration-agent-design §8):eval_run 经 agent_runner 跑样本,eval_score 调套件的打分命令
     _evals = EvalRunner(runner=agent_runner, run_store=run_store, evals_root=evals_dir,
                         quota_check=_kimi_quota_check() if provider.startswith("kimi") else None)
-    await _register(EvalRunTool(_evals))
+    await _register(EvalRunTool(_evals, background=background))
     await _register(EvalScoreTool(_evals))
     # 迭代智能体(§9):内置 iterator + 只改正文 / 经验条目的版本工具 + 只追加的账本
     await _register(AgentVersionTool(AgentVersions(registry=agent_registry, agents=gateway.agents)))
@@ -578,7 +597,7 @@ async def boot(
     scheduler_dispatch = ScheduledTaskDispatcher(
         gateway=gateway, runner=agent_runner, runs_dir=project_home() / "sessions" / "runs",
         scheduler=scheduler, session_config_store=session_config_store,
-        resolver=session_resolver)
+        resolver=session_resolver, delivery=_delivery[0])
     await _register(NotifyUserTool(dispatcher=scheduler_dispatch))
 
     # §1.5 Compact-as-PH: /compact reaches the SDK through active_ctx.sdk() (same buffer).
@@ -631,6 +650,7 @@ async def boot(
         agent_registry=agent_registry,
         ledger=ledger,
         episode_runner=episode_runner,
+        background=background,
     )
 
 
