@@ -180,14 +180,15 @@ class _CompositeStateRepository(StateRepository):
     def runs(self) -> RunStore: return self._runs
 
 
-def _kimi_quota_check():
-    """评测前查 Kimi 订阅额度(iteration-agent-design §12):5 小时 / 月额度用到 90% 就停止开新样本。"""
-    from xana.llm_driver.providers.kimi_oauth import fetch_usages, quota_exhausted
+def _kimi_quota_wait(threshold: float):
+    """Kimi 订阅额度用到阈值时返回 (原因, 距重置秒数)(iteration-agent-design §12):评测在 90% 时暂停开新样本,
+    模型调用被限流且额度确已用完(≥ 99%)时原地等待重置。"""
+    from xana.llm_driver.providers.kimi_oauth import fetch_usages, quota_reset_wait
     store = KimiTokenStore()
 
-    async def check() -> str | None:
-        return quota_exhausted(await fetch_usages(store))
-    return check
+    async def wait() -> tuple[str, float] | None:
+        return quota_reset_wait(await fetch_usages(store), threshold=threshold)
+    return wait
 
 
 def _search_db_path(project_root: Path) -> Path:
@@ -310,7 +311,9 @@ async def boot(
     _harness = DefaultHarness(
         extension_registry=extension_registry, memory_extractor=memory_extractor,
         tool_environment=TapeToolEnvironment(runs_dir=Path(history_root) / "runs") if history_root is not None else None,
-        background=background)
+        background=background,
+        # 模型调用被限流且 Kimi 额度确已用完:原地等重置后重发同一请求(不让一次 run 因额度报错结束)
+        quota_wait=_kimi_quota_wait(0.99) if provider.startswith("kimi") else None)
 
     active_ctx_inner = InMemoryActiveContextStore(
         context_sdk=context_sdk,
@@ -548,7 +551,7 @@ async def boot(
     await _register(ToolDefineTool(registry=tools, project_root=project_root))
     # 评测套件(iteration-agent-design §8):eval_run 经 agent_runner 跑样本,eval_score 调套件的打分命令
     _evals = EvalRunner(runner=agent_runner, run_store=run_store, evals_root=evals_dir,
-                        quota_check=_kimi_quota_check() if provider.startswith("kimi") else None)
+                        quota_wait=_kimi_quota_wait(0.9) if provider.startswith("kimi") else None)
     await _register(EvalRunTool(_evals, background=background))
     await _register(EvalScoreTool(_evals))
     await _register(EvalCompareTool(_evals))

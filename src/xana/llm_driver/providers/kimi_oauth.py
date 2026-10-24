@@ -354,3 +354,24 @@ def quota_exhausted(usages: dict[str, Any], *, threshold: float = 0.9) -> str | 
             reset = entry.get("reset_time") or entry.get("resetAt") or "未知"
             return f"Kimi {label}已用 {ratio:.0%}(重置于 {reset})"
     return None
+
+
+def quota_reset_wait(usages: dict[str, Any], *, threshold: float = 0.9,
+                     now: float | None = None) -> tuple[str, float] | None:
+    """已用到阈值的额度中最晚重置的那个:(原因, 距重置还有多少秒,含 60 秒余量);都没到阈值返回 None。"""
+    from datetime import datetime
+    now = time.time() if now is None else now
+    hit: list[tuple[str, float]] = []
+    for keys, label in ((("limit_5h", "limit5h"), "5 小时额度"), (("limit_7d", "limit7d"), "7 天额度"),
+                        (("limit_month_total", "monthTotal"), "月额度")):
+        entry = next((usages[k] for k in keys if isinstance(usages.get(k), dict)), {})
+        ratio = entry.get("used_ratio", entry.get("usedRatio"))
+        reset = entry.get("reset_time") or entry.get("resetAt")
+        if isinstance(ratio, (int, float)) and ratio >= threshold and reset:
+            try:
+                at = datetime.fromisoformat(str(reset).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            hit.append((f"Kimi {label}已用 {ratio:.0%},{time.strftime('%H:%M', time.localtime(at))} 重置",
+                        max(0.0, at - now) + 60.0))
+    return max(hit, key=lambda h: h[1]) if hit else None

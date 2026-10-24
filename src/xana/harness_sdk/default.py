@@ -29,7 +29,7 @@ import time
 from datetime import date
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Callable, Sequence
+from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 
 from xana.extension_api.assembler import PromptAssembler as ExtensionPromptAssembler
 from xana.extension_api.contracts import (
@@ -149,6 +149,7 @@ _SYNTHETIC_WARNING_TEXT_READONLY = (
     "[只读工具被用户取消。该工具未产生副作用,可由用户决定是否在下一轮重试。]"
 )
 _TOOL_ABORT_GRACE_SECONDS = 2.0
+_MAX_QUOTA_WAIT_S = 6 * 3600.0   # 一个 run 因额度用完原地等待的累计上限
 _MAX_BACKGROUND_NUDGES = 20   # 无人接收结果的 run 等后台任务的续跑上限(每次一般是一次 task_wait)
 
 
@@ -206,7 +207,8 @@ class DefaultHarness(Harness):
                  today: Callable[[], str] | None = None,
                  memory_extractor: MemoryExtractor | None = None,
                  tool_environment: ToolEnvironment | None = None,
-                 background: BackgroundTasks | None = None) -> None:
+                 background: BackgroundTasks | None = None,
+                 quota_wait: Callable[[], Awaitable[tuple[str, float] | None]] | None = None) -> None:
         """today:返回本地日期 YYYY-MM-DD(缺省系统时钟;测试可替换)。
         memory_extractor:每轮完成后在后台提取漏记的记忆(docs/design/memory-dream-design.md §3.1);None = 不提取。
         tool_environment:评测 run(request.metadata["tool_env"])的工具调用经它执行(回放 / 时点 / 拒绝);
@@ -216,6 +218,8 @@ class DefaultHarness(Harness):
         # 后台任务(超时转后台的 agent_run / eval_run):运行中把结束的任务作为注记插入;run 结束时登记,
         # 之后结束的任务改为通知会话
         self._background = background
+        # 模型额度用完时原地等待重置:返回 (原因, 等待秒数),None = 不是额度问题(按错误收尾)
+        self._quota_wait = quota_wait
         self._today = today or (lambda: date.today().isoformat())
         self.last_assembled_messages: tuple[ModelMessage, ...] | None = None
         self.usage_accumulator = DefaultUsageAccumulator()
@@ -265,6 +269,19 @@ class DefaultHarness(Harness):
             if switch is not None:
                 notes.append(switch)
         return text, notes
+
+    async def _quota_wait_for(self, waited_s: float) -> tuple[str, float] | None:
+        """限流时问额度:确实用完、且本 run 累计等待不超过上限,返回 (原因, 秒数);否则 None。"""
+        if self._quota_wait is None:
+            return None
+        try:
+            got = await self._quota_wait()
+        except Exception:
+            _logger.warning("查询模型额度失败", exc_info=True)
+            return None
+        if got is None or waited_s + got[1] > _MAX_QUOTA_WAIT_S:
+            return None
+        return got
 
     async def _append_note(
         self,
@@ -1377,149 +1394,168 @@ class DefaultHarness(Harness):
                 metadata=request_metadata,
             )
 
-            iter_text: list[str] = []
-            iter_thinking: list[str] = []
-            iter_tool_calls: list[dict[str, Any]] = []
-            stream_error_yielded = False
-            stop_reason = ""
+            quota_waited = 0.0          # 本 run 因额度用完已等待的秒数
+            while True:
+                quota_wait: tuple[str, float] | None = None
+                iter_text: list[str] = []
+                iter_thinking: list[str] = []
+                iter_tool_calls: list[dict[str, Any]] = []
+                stream_error_yielded = False
+                stop_reason = ""
 
-            # trace(docs/design/iteration-agent-design.md §7):本次调用的耗时、首 token、用量、system 版本
-            call_started = time.monotonic()
-            first_token_ms: int | None = None
-            call_usage: dict[str, Any] = {}
-            # break 出循环时显式关闭 provider 流,避免由 GC 在别的上下文里 aclose。
-            model_stream = client.stream(model_request)
-            try:
-                async for event in model_stream:
-                    # 用户在 model streaming 中点取消 → 立刻退出生成循环,
-                    # 否则要等模型自己 done 才被 outer loop 抓到,体感很慢。
-                    if context.abort.aborted:
-                        break
-                    if first_token_ms is None and event.kind in ("text_delta", "tool_call"):
-                        first_token_ms = int((time.monotonic() - call_started) * 1000)
-                    if event.kind == "text_delta":
-                        delta = event.payload.get("text", "")
-                        # thinking-channel deltas stream out as model_delta
-                        # events but never enter the final/persisted text.
-                        if event.payload.get("channel") != "thinking":
-                            iter_text.append(delta)
-                        else:
-                            # DS 工具轮次回放需要 reasoning_content —— 累积存
-                            # metadata,但不进 final/persisted content。
-                            iter_thinking.append(delta)
-                        yield HarnessEvent(kind="model_delta", session_id=session_id,
-                                           run_id=run_id, payload=dict(event.payload))
-                    elif event.kind == "tool_call":
-                        _tc: dict[str, Any] = {
-                            "tool_name": event.payload.get("tool_name", ""),
-                            "input": event.payload.get("input", {}) or {},
-                            "call_id": event.payload.get("call_id", _ANON_CALL_ID),
-                        }
-                        if event.payload.get("input_error"):
-                            _tc["input_error"] = event.payload["input_error"]
-                        iter_tool_calls.append(_tc)
-                    elif event.kind == "usage":
-                        if event.usage is not None:
-                            call_usage = {k: v for k, v in (
-                                ("input", event.usage.input_tokens), ("output", event.usage.output_tokens),
-                                ("cache_read", event.usage.cache_read_tokens),
-                                ("cache_write", event.usage.cache_write_tokens)) if v is not None}
-                        usage = await self.usage_accumulator.apply_model_event(usage, event)
-                        # §4.3:RunRecord.budget 有上限的 run 每轮检查,超限置
-                        # 收尾标记;循环在 assistant 落库后优雅退出(非裸死)。
-                        if budget_tracker is not None and budget_exceeded is None and run_budget:
-                            _reason = budget_tracker.check(
-                                session_id=session_id, budget=run_budget, usage=usage,
+                # trace(docs/design/iteration-agent-design.md §7):本次调用的耗时、首 token、用量、system 版本
+                call_started = time.monotonic()
+                first_token_ms: int | None = None
+                call_usage: dict[str, Any] = {}
+                # break 出循环时显式关闭 provider 流,避免由 GC 在别的上下文里 aclose。
+                model_stream = client.stream(model_request)
+                try:
+                    async for event in model_stream:
+                        # 用户在 model streaming 中点取消 → 立刻退出生成循环,
+                        # 否则要等模型自己 done 才被 outer loop 抓到,体感很慢。
+                        if context.abort.aborted:
+                            break
+                        if first_token_ms is None and event.kind in ("text_delta", "tool_call"):
+                            first_token_ms = int((time.monotonic() - call_started) * 1000)
+                        if event.kind == "text_delta":
+                            delta = event.payload.get("text", "")
+                            # thinking-channel deltas stream out as model_delta
+                            # events but never enter the final/persisted text.
+                            if event.payload.get("channel") != "thinking":
+                                iter_text.append(delta)
+                            else:
+                                # DS 工具轮次回放需要 reasoning_content —— 累积存
+                                # metadata,但不进 final/persisted content。
+                                iter_thinking.append(delta)
+                            yield HarnessEvent(kind="model_delta", session_id=session_id,
+                                               run_id=run_id, payload=dict(event.payload))
+                        elif event.kind == "tool_call":
+                            _tc: dict[str, Any] = {
+                                "tool_name": event.payload.get("tool_name", ""),
+                                "input": event.payload.get("input", {}) or {},
+                                "call_id": event.payload.get("call_id", _ANON_CALL_ID),
+                            }
+                            if event.payload.get("input_error"):
+                                _tc["input_error"] = event.payload["input_error"]
+                            iter_tool_calls.append(_tc)
+                        elif event.kind == "usage":
+                            if event.usage is not None:
+                                call_usage = {k: v for k, v in (
+                                    ("input", event.usage.input_tokens), ("output", event.usage.output_tokens),
+                                    ("cache_read", event.usage.cache_read_tokens),
+                                    ("cache_write", event.usage.cache_write_tokens)) if v is not None}
+                            usage = await self.usage_accumulator.apply_model_event(usage, event)
+                            # §4.3:RunRecord.budget 有上限的 run 每轮检查,超限置
+                            # 收尾标记;循环在 assistant 落库后优雅退出(非裸死)。
+                            if budget_tracker is not None and budget_exceeded is None and run_budget:
+                                _reason = budget_tracker.check(
+                                    session_id=session_id, budget=run_budget, usage=usage,
+                                )
+                                if _reason is not None:
+                                    budget_exceeded = _reason
+                                    if context.progress_sink is not None:
+                                        await context.progress_sink.report(ProgressEvent(
+                                            session_id=session_id, run_id=run_id,
+                                            message="budget_exceeded",
+                                            payload={
+                                                "kind": "budget_exceeded",
+                                                "session_id": session_id,
+                                                "run_id": run_id,
+                                                "reason": _reason,
+                                                "tokens_in": usage.exact_input_tokens or usage.estimated_input_tokens or 0,
+                                                "tokens_out": usage.exact_output_tokens or usage.estimated_output_tokens or 0,
+                                            },
+                                        ))
+                            if usage.exact_input_tokens:
+                                self._session_prompt_tokens[(session_id, agent_name)] = (
+                                    usage.exact_input_tokens, len(history_msgs))
+                            if episode_runner is not None and episode_exceeded is None:
+                                _ep_tokens = (
+                                    (usage.exact_input_tokens or usage.estimated_input_tokens or 0)
+                                    + (usage.exact_output_tokens or usage.estimated_output_tokens or 0)
+                                )
+                                _ep_reason = await episode_runner.record_usage(_ep_tokens)
+                                if _ep_reason is not None:
+                                    episode_exceeded = _ep_reason
+                                    if context.progress_sink is not None:
+                                        await context.progress_sink.report(ProgressEvent(
+                                            session_id=session_id, run_id=run_id,
+                                            message="episode_threshold",
+                                            payload={
+                                                "kind": "episode_threshold",
+                                                "session_id": session_id,
+                                                "run_id": run_id,
+                                                "reason": _ep_reason,
+                                            },
+                                        ))
+                            if context.progress_sink is not None:
+                                await context.progress_sink.report(ProgressEvent(
+                                    session_id=session_id, run_id=run_id,
+                                    message="usage_progress",
+                                    payload={
+                                        "kind": "usage_progress",
+                                        "session_id": session_id,
+                                        "model": usage.model,
+                                        "tokens_in": usage.exact_input_tokens or 0,
+                                        "tokens_out": usage.exact_output_tokens or 0,
+                                        "elapsed_s": time.monotonic() - turn_start,
+                                        "context_window": context.config_snapshot.get("context_window"),
+                                    },
+                                ))
+                        elif event.kind == "done":
+                            stop_reason = str(event.payload.get("stop_reason") or "")
+                            break
+                        elif (event.kind == "rate_limited" or (
+                                event.kind == "error" and event.error is not None and event.error.kind == "rate_limit")) \
+                                and not iter_text and not iter_tool_calls \
+                                and (quota_wait := await self._quota_wait_for(quota_waited)) is not None:
+                            break                      # 额度用完:原地等待重置后重发同一请求(循环末尾)
+                        elif event.kind == "rate_limited":
+                            # provider 已放弃重试的限流:按错误收尾,避免静默空回复。
+                            _rl = event.rate_limit
+                            _rl_msg = "模型服务限流(HTTP 429)" + (
+                                f": {_rl.reason}" if _rl is not None and _rl.reason else "")
+                            await self._fire_turn_end(
+                                ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                                thread_store=thread_store, turn_store=turn_store, status="error",
                             )
-                            if _reason is not None:
-                                budget_exceeded = _reason
-                                if context.progress_sink is not None:
-                                    await context.progress_sink.report(ProgressEvent(
-                                        session_id=session_id, run_id=run_id,
-                                        message="budget_exceeded",
-                                        payload={
-                                            "kind": "budget_exceeded",
-                                            "session_id": session_id,
-                                            "run_id": run_id,
-                                            "reason": _reason,
-                                            "tokens_in": usage.exact_input_tokens or usage.estimated_input_tokens or 0,
-                                            "tokens_out": usage.exact_output_tokens or usage.estimated_output_tokens or 0,
-                                        },
-                                    ))
-                        if usage.exact_input_tokens:
-                            self._session_prompt_tokens[(session_id, agent_name)] = (
-                                usage.exact_input_tokens, len(history_msgs))
-                        if episode_runner is not None and episode_exceeded is None:
-                            _ep_tokens = (
-                                (usage.exact_input_tokens or usage.estimated_input_tokens or 0)
-                                + (usage.exact_output_tokens or usage.estimated_output_tokens or 0)
+                            yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
+                                               payload={"error": _rl_msg})
+                            stream_error_yielded = True
+                            break
+                        elif event.kind == "error" and event.error is not None:
+                            # Fire turn-end BEFORE yielding so extensions see the
+                            # error even if the consumer never resumes the generator.
+                            await self._fire_turn_end(
+                                ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                                thread_store=thread_store, turn_store=turn_store, status="error",
                             )
-                            _ep_reason = await episode_runner.record_usage(_ep_tokens)
-                            if _ep_reason is not None:
-                                episode_exceeded = _ep_reason
-                                if context.progress_sink is not None:
-                                    await context.progress_sink.report(ProgressEvent(
-                                        session_id=session_id, run_id=run_id,
-                                        message="episode_threshold",
-                                        payload={
-                                            "kind": "episode_threshold",
-                                            "session_id": session_id,
-                                            "run_id": run_id,
-                                            "reason": _ep_reason,
-                                        },
-                                    ))
-                        if context.progress_sink is not None:
-                            await context.progress_sink.report(ProgressEvent(
-                                session_id=session_id, run_id=run_id,
-                                message="usage_progress",
-                                payload={
-                                    "kind": "usage_progress",
-                                    "session_id": session_id,
-                                    "model": usage.model,
-                                    "tokens_in": usage.exact_input_tokens or 0,
-                                    "tokens_out": usage.exact_output_tokens or 0,
-                                    "elapsed_s": time.monotonic() - turn_start,
-                                    "context_window": context.config_snapshot.get("context_window"),
-                                },
-                            ))
-                    elif event.kind == "done":
-                        stop_reason = str(event.payload.get("stop_reason") or "")
-                        break
-                    elif event.kind == "rate_limited":
-                        # provider 已放弃重试的限流:按错误收尾,避免静默空回复。
-                        _rl = event.rate_limit
-                        _rl_msg = "模型服务限流(HTTP 429)" + (
-                            f": {_rl.reason}" if _rl is not None and _rl.reason else "")
-                        await self._fire_turn_end(
-                            ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
-                            thread_store=thread_store, turn_store=turn_store, status="error",
-                        )
-                        yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
-                                           payload={"error": _rl_msg})
-                        stream_error_yielded = True
-                        break
-                    elif event.kind == "error" and event.error is not None:
-                        # Fire turn-end BEFORE yielding so extensions see the
-                        # error even if the consumer never resumes the generator.
-                        await self._fire_turn_end(
-                            ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
-                            thread_store=thread_store, turn_store=turn_store, status="error",
-                        )
-                        yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
-                                           payload={"error": event.error.message})
-                        stream_error_yielded = True
-                        break
-            except Exception as exc:
-                await self._fire_turn_end(
-                    ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
-                    thread_store=thread_store, turn_store=turn_store, status="error",
-                )
-                yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
-                                   payload={"error": str(exc)})
-                return
-            finally:
-                if isinstance(model_stream, collections.abc.AsyncGenerator):
-                    await model_stream.aclose()
+                            yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
+                                               payload={"error": event.error.message})
+                            stream_error_yielded = True
+                            break
+                except Exception as exc:
+                    await self._fire_turn_end(
+                        ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
+                        thread_store=thread_store, turn_store=turn_store, status="error",
+                    )
+                    yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
+                                       payload={"error": str(exc)})
+                    return
+                finally:
+                    if isinstance(model_stream, collections.abc.AsyncGenerator):
+                        await model_stream.aclose()
+                if quota_wait is None or context.abort.aborted:
+                    break
+                reason, wait_s = quota_wait
+                quota_waited += wait_s
+                resume_at = time.strftime("%H:%M", time.localtime(time.time() + wait_s))
+                _logger.warning("run %s:%s,原地等待 %.0f 秒", run_id, reason, wait_s)
+                yield HarnessEvent(kind="progress_update", session_id=session_id, run_id=run_id,
+                                   payload={"text": f"{reason}:暂停,{resume_at} 后从这里继续(可以取消)"})
+                deadline = time.monotonic() + wait_s
+                while time.monotonic() < deadline and not context.abort.aborted:
+                    await asyncio.sleep(min(5.0, deadline - time.monotonic()))
 
             if stream_error_yielded:
                 return  # turn-end already fired before the error yield
