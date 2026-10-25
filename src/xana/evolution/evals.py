@@ -398,14 +398,20 @@ async def plan_for_version(evals: "EvalRunner", suite: EvalSuite, agent: str) ->
     """当前版本(按指纹)跨批次的逐样本表现与噪声,建议小规模实验的样本(代码算,不让模型算)。
     noise = 有 ≥2 次结果的样本的标准差中位数;gate = max(2·noise, 0.05) 为差异门槛。
     目标候选:训练集平均分 < 0.7 或出现过大偏差,或波动明显高于噪声;保持候选:其余训练样本中平均分 ≥ 0.8
-    且波动不超过门槛的。真值未揭晓的样本单列(pending_truth),不算缺重复次数。"""
+    且波动不超过门槛的。真值未揭晓的样本单列(pending_truth),打分脚本标为其他状态的(如参考样本 reference)
+    列在 not_scored;两者都不算缺重复次数。"""
     import statistics
 
     rows = evals.reusable_rows(suite, agent)
     by_run: dict[str, dict] = {}
+    other: dict[str, str] = {}                   # 打分脚本给出的其他状态(pending / reference 等),按样本取最后一个
     for batch in sorted({r["_batch"] for rs in rows.values() for r in rs}):
-        for r in _scored(await evals.score(suite, batch)):
+        result = await evals.score(suite, batch)
+        for r in _scored(result):
             by_run[r.get("run_id") or ""] = r
+        for r in result.get("per_case") or []:
+            if r.get("status") not in ("scored", "invalid"):
+                other[r["case_id"]] = str(r.get("status"))
     split = {c.id: c.split for c in suite.cases}
     stats: dict[str, dict] = {}
     for case, rs in rows.items():
@@ -424,13 +430,16 @@ async def plan_for_version(evals: "EvalRunner", suite: EvalSuite, agent: str) ->
                      if v["mean"] < 0.7 or v["big_miss"] or (v["sd"] is not None and noise and v["sd"] > 2 * noise))
     keep = sorted((k for k, v in train.items() if k not in targets and v["mean"] >= 0.8
                    and (v["sd"] is None or v["sd"] <= gate)), key=lambda k: -train[k]["mean"])[:4]
-    pending = sorted(k for k in rows if k not in stats)          # 有完成的运行但还打不了分(真值未揭晓)
+    unscored = sorted(k for k in rows if k not in stats)         # 有完成的运行但没有分数
+    pending = [k for k in unscored if other.get(k, "pending") == "pending"]       # 真值未揭晓
+    not_scored = {k: other[k] for k in unscored if other.get(k, "pending") != "pending"}   # 如参考样本
     return {
         "agent": agent, "agent_fp": evals._agent_fp(agent), "noise": noise, "gate": gate,
         "suggested_target_cases": targets, "suggested_keep_cases": keep,
-        "needs_more_reps": sorted(c.id for c in suite.cases if c.split == "train" and c.id not in pending
+        "needs_more_reps": sorted(c.id for c in suite.cases if c.split == "train" and c.id not in unscored
                                   and stats.get(c.id, {}).get("n", 0) < 2),
         "pending_truth": pending,
+        "not_scored": not_scored,
         "per_case": stats,
     }
 
