@@ -351,7 +351,8 @@ class EvalRunner:
 def compare_batches(base: dict, cand: dict, *, default_noise: float = 0.05) -> dict:
     """两批打分结果的配对对比(只用评测约定的 per_case.score,越高越好;§9.1 I4)。
     逐样本:两边均值 ± 标准差、差值;差值超过 2 倍噪声(两边标准差取大,没有重复时用 default_noise)
-    才算改善 / 变坏。可信度:两边已打分次数不一致 → 列出(样本数失衡时对比不可信)。"""
+    才算改善 / 变坏。可信度:共同样本两边打分次数不一致 → 列出(失衡时对比不可信);
+    只有一边跑了的样本(如小规模实验只跑部分样本)不参与配对,单独列出,不影响可信度。"""
     import statistics
 
     def by_case(result: dict) -> dict[str, list[float]]:
@@ -374,7 +375,7 @@ def compare_batches(base: dict, cand: dict, *, default_noise: float = 0.05) -> d
         (improved if verdict == "improved" else worse if verdict == "worse" else same).append(case)
         rows.append({"case_id": case, "base": [round(bm, 3), round(bs, 3), len(b[case])],
                      "cand": [round(cm, 3), round(cs, 3), len(c[case])], "diff": round(diff, 3), "verdict": verdict})
-    imbalance = sorted(k for k in set(b) | set(c) if len(b.get(k, [])) != len(c.get(k, [])))
+    imbalance = sorted(k for k in set(b) & set(c) if len(b[k]) != len(c[k]))
     diffs = [r["diff"] for r in rows]
     return {
         "paired_cases": len(rows),
@@ -382,6 +383,7 @@ def compare_batches(base: dict, cand: dict, *, default_noise: float = 0.05) -> d
         "median_diff": round(statistics.median(diffs), 4) if diffs else None,
         "improved": improved, "worse": worse, "same": len(same),
         "imbalanced_cases": imbalance,
+        "base_only": sorted(set(b) - set(c)), "cand_only": sorted(set(c) - set(b)),
         "trustworthy": not imbalance,
         "per_case": rows,
     }
@@ -446,6 +448,8 @@ def verdict(base: list[dict], cand: list[dict], *, target: list[str], keep: list
     reasons, warnings = [], []
     imbalanced = sorted(set(comp["imbalanced_cases"]) & relevant)
     missing = sorted(c for c in set(target) | set(keep) if c not in rows)
+    if any(c in rows for c in heldout):           # 跑了留出集就要两边覆盖同一批留出样本
+        missing += sorted(c for c in heldout if c not in rows and (c in comp["base_only"] or c in comp["cand_only"]))
     if imbalanced or missing:
         return {"verdict": "invalid", "reasons": [f"两边打分次数不一致:{imbalanced}" if imbalanced else "",
                                                   f"缺少结果:{missing}" if missing else ""], "warnings": []}
