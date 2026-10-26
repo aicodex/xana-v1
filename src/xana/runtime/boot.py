@@ -27,7 +27,7 @@ from xana.agent_adapter.progress import AdapterProgressSink
 from xana.agent_adapter.router import DefaultAgentRequestRouter
 from xana.agents.chat_agent import ChatAgent, build_chat_agent_spec
 from xana.agents.iterator import (
-    ITER_DIAGNOSE_AGENT, ITER_RESEARCH_AGENT, ITER_REVIEW_AGENT, ITERATION_TEAM, ITERATOR_AGENT,
+    ITER_DIAGNOSE_AGENT, ITER_IDEATE_AGENT, ITER_RESEARCH_AGENT, ITER_REVIEW_AGENT, ITERATION_TEAM, ITERATOR_AGENT,
     build_iteration_team_specs,
     build_iterator_agent_spec,
 )
@@ -138,7 +138,7 @@ from xana.tools.toolsets import BUILTIN_TOOLSETS, unknown_names
 
 _FAKE_PROVIDER = "fake"
 BUILTIN_AGENT_NAMES = ("chat", RESEARCHER_AGENT, ITERATOR_AGENT, ITER_RESEARCH_AGENT, ITER_DIAGNOSE_AGENT,
-                       ITER_REVIEW_AGENT)   # 内置 agent:不能被 AGENT.md 覆盖或删除
+                       ITER_REVIEW_AGENT, ITER_IDEATE_AGENT)   # 内置 agent:不能被 AGENT.md 覆盖或删除
 _logger = logging.getLogger(__name__)
 
 
@@ -581,7 +581,7 @@ async def boot(
     await _register(AgentVersionTool(AgentVersions(registry=agent_registry, agents=gateway.agents)))
     await _register(LedgerTool(ledger))
     gateway.agents[ITERATOR_AGENT] = _doc_agent_factory(build_iterator_agent_spec())
-    for _team_spec in build_iteration_team_specs():      # iterator 委派的调研 / 诊断 / 审查子 agent
+    for _team_spec in build_iteration_team_specs():      # iterator 委派的调研 / 诊断 / 出点子 / 审查子 agent
         gateway.agents[_team_spec.component.name] = _doc_agent_factory(_team_spec, progress=False)
     await _register(AgentDefineTool(
         roots={"user": xana_home() / "agents", "project": project_root / ".xana" / "agents"},
