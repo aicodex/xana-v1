@@ -122,6 +122,8 @@ _MAX_TRUNCATION_CONTINUES = 3
 _MAX_STOP_HOOK_BLOCKS = 8
 _SILENT_CALLS_BEFORE_REMINDER = 5
 _MAX_SILENT_REMINDERS = 3
+_STREAM_RETRIES = 3          # 模型流中途可重试的错误(超时 / 5xx / 网络)最多重发几次
+_STREAM_RETRY_BASE_S = 2.0   # 重发前等待:2、4、8 秒
 
 
 @dataclass
@@ -1394,8 +1396,10 @@ class DefaultHarness(Harness):
             )
 
             interactive = profile.mode == "interactive" and not request.metadata.get("parent_run_id")
+            stream_retries = 0
             while True:
                 quota_wait: tuple[str, float] | None = None
+                stream_retry: str | None = None   # 流中途可重试的错误(超时 / 5xx / 网络):丢弃本次部分输出,重发同一请求
                 iter_text: list[str] = []
                 iter_thinking: list[str] = []
                 iter_tool_calls: list[dict[str, Any]] = []
@@ -1522,6 +1526,12 @@ class DefaultHarness(Harness):
                                                payload={"error": _rl_msg})
                             stream_error_yielded = True
                             break
+                        elif event.kind == "error" and event.error is not None and event.error.retryable \
+                                and event.error.kind != "rate_limit" and stream_retries < _STREAM_RETRIES:
+                            # provider 只在还没输出时重试;流开始后中断(如 2026-10-28 网络抖动时的 ReadTimeout)
+                            # 在这里重发。工具调用要等流结束才执行,本次的部分输出都还没落库,丢弃即可
+                            stream_retry = event.error.message
+                            break
                         elif event.kind == "error" and event.error is not None:
                             # Fire turn-end BEFORE yielding so extensions see the
                             # error even if the consumer never resumes the generator.
@@ -1544,6 +1554,14 @@ class DefaultHarness(Harness):
                 finally:
                     if isinstance(model_stream, collections.abc.AsyncGenerator):
                         await model_stream.aclose()
+                if stream_retry is not None and not context.abort.aborted:
+                    stream_retries += 1
+                    _logger.warning("run %s:模型流中断(%s),重发 %d/%d", run_id, stream_retry[:120],
+                                    stream_retries, _STREAM_RETRIES)
+                    yield HarnessEvent(kind="progress_update", session_id=session_id, run_id=run_id, payload={
+                        "text": f"模型连接中断({stream_retry[:60]}),重新请求 {stream_retries}/{_STREAM_RETRIES}"})
+                    await asyncio.sleep(_STREAM_RETRY_BASE_S * 2 ** (stream_retries - 1))
+                    continue
                 if quota_wait is None or context.abort.aborted:
                     break
                 reason, wait_s = quota_wait
