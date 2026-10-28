@@ -466,11 +466,9 @@ async def boot(
         # a session_id field but list_unfinished does not filter by it.
         if not session_ids:
             session_ids = ["default"]
-        for sid in session_ids:
-            await replace_completed_placeholders(
-                report=report, runs_root=runs_root,
-                session_id=sid, agent_name="chat", store=active_ctx,
-            )
+        # 按 run_id 替换、与会话无关:只过一遍。曾按会话循环,demo 积累 768 个会话 × 833 个 run(60MB)后
+        # 启动要把 60MB 解析 768 遍,serve 卡在启动(2026-10-28)
+        await replace_completed_placeholders(report=report, runs_root=runs_root, store=active_ctx)
         # mark_unfinished_as_resumable is idempotent per-run (get → update vs
         # create); call once with the first session_id to avoid duplicate
         # create errors across sessions.

@@ -62,11 +62,9 @@ async def replace_completed_placeholders(
     *,
     report: ScanReport,
     runs_root: pathlib.Path,
-    session_id: str,
-    agent_name: str,
     store,  # ActiveContextStore
 ) -> None:
-    """对每个 completed run,从 jsonl 读出 messages 替换 PH。"""
+    """对每个 completed run,从 jsonl 读出 messages 替换 PH(按 run_id,与会话无关,全部 run 只过一遍)。"""
     from xana.memory.runs_loader import runs_jsonl_to_memory_messages
     for rid in report.completed_run_ids:
         jsonl_path = runs_root / f"{rid}.jsonl"
@@ -74,9 +72,6 @@ async def replace_completed_placeholders(
             messages = runs_jsonl_to_memory_messages(jsonl_path)
         except Exception:
             continue
-        # ActiveContextStore.replace_placeholder takes (run_id, replace_with)
-        # only — session_id/agent_name are not forwarded; keep them in the
-        # helper signature for boot-time call sites that still pass them.
         await store.replace_placeholder(rid, tuple(messages))
 
 
