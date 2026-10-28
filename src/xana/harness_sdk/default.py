@@ -843,9 +843,25 @@ class DefaultHarness(Harness):
             async_mode=False,
         )
 
+        async def _record_end_status(status: str) -> None:
+            """失败 / 取消也回写 RunRecord(成功路径在 _run_query_loop 收尾时已写 completed 与用量)。
+            否则状态停在 running:任务面板与"重启前查有没有在跑的 run"都会误报(2026-10-28)。"""
+            if status == "completed" or context.state_repository is None:
+                return
+            try:
+                runs = context.state_repository.runs()
+                rec = await runs.get(run_id)
+                if rec is not None and rec.status == "running":
+                    md = {**rec.metadata, "finished_at": time.time()}
+                    await runs.update_status(run_id, "cancelled" if status == "cancelled" else "failed",
+                                             fields={"metadata": md})
+            except Exception:
+                _logger.exception("run %s 结束状态回写失败", run_id)
+
         async def _finalize_writeback(produced: tuple[MemoryMessage, ...], status: str) -> None:
             """Route PH replacement through write_queue (preferred) or fall
             back to direct store/main_writer write. Spec §1.6."""
+            await _record_end_status(status)
             wq = context.metadata.get("write_queue")
             runs_dir = context.metadata.get("runs_dir")
             if wq is not None:
