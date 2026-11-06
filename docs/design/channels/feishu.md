@@ -1,6 +1,6 @@
 # 飞书 View(unified_card_feishu.py)
 
-> 状态机/事件转换/不变量见 [../session-and-card-state.md](../session-and-card-state.md)。本文只写飞书 schema 渲染细节。
+> 状态机/事件转换/不变量见 [../session-and-card-state.md](../session-and-card-state.md)。本文写飞书 schema 渲染细节与出站媒体消息。
 
 ## 输出形态
 
@@ -61,3 +61,15 @@ callback `value` 形式:
 | `answer.state=cancelled` | "✦ 回答已取消" 折叠 |
 | `tools_pending>0 & streaming/terminal` | "展开 ✎×N" 按钮 |
 | `tools_pending>0 & detached` | "_后台 ✎ 中_" 静态 md(不可点) |
+
+## 出站媒体(图片/视频)
+
+卡片之外的独立原生消息,不经 `UnifiedCardState`;实现见 `feishu_api.py` 与 `FeishuAdapter.send_media`。
+
+- 两步:先上传换 key,再发消息。
+  - 图片:`POST /open-apis/im/v1/images`(multipart `image_type=message`)→ `image_key`;发 `msg_type=image`,content `{"image_key": ...}`。≤10MB;本实现放行 PNG/JPEG/WEBP/GIF。
+  - 视频:`POST /open-apis/im/v1/files`(`file_type=mp4`)→ `file_key`;封面可选,走图片上传;发 `msg_type=media`,content `{"file_key", "image_key"?, "file_name", "duration"}`。仅 MP4,≤30MB;缺省用 ffmpeg 抽首帧作封面,duration 由 ffprobe 读取。
+- 发送端点与卡片相同:`POST /open-apis/im/v1/messages?receive_id_type=chat_id`;卡片 `msg_type=interactive`,媒体 `image` / `media`。
+- 应用需开启机器人能力,并具备 `im:resource` 上传权限;否则上传阶段返回飞书错误。
+- 只由 `send_media` 工具触发,只允许 workspace 内的图片/视频;不提供任意文件,也没有 `msg_type=file` 通路。
+- 路由:工具只给 `session_id`,`MediaDelivery` 经 `SessionResolver` 找 `(feishu, chat_id)`;子会话沿 `parent_session_id` 上溯,找不到明确失败,不回退到其他渠道。

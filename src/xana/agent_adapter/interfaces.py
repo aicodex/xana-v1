@@ -4,7 +4,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import AsyncIterator
 
-from xana.agent_adapter.contracts import AdapterHealth, CommandResult, CommandSpec, InboundMessage, RenderedMessage, SessionBinding
+from xana.agent_adapter.contracts import (
+    AdapterHealth, CommandResult, CommandSpec, InboundMessage, MediaSendError, OutboundMedia,
+    RenderedMessage, SessionBinding,
+)
 from xana.agents.contracts import AgentEvent, AgentRequest
 
 
@@ -39,6 +42,11 @@ class Adapter(ABC):
 
     @abstractmethod
     async def health(self) -> AdapterHealth: ...
+
+    async def send_media(self, *, chat_id: str, media: OutboundMedia) -> str:
+        """发送图片/视频原生消息,返回渠道消息 id。默认 = 该渠道不支持。"""
+        raise MediaSendError(
+            "当前渠道不支持发送图片/视频(目前仅飞书支持)", failure_kind="unsupported")
 
 
 class AgentGateway(ABC):

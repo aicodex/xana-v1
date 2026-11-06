@@ -22,6 +22,36 @@ class InboundMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+MediaKind = Literal["image", "video"]
+MediaSendFailureKind = Literal["unsupported", "not_found", "execution"]
+
+
+@dataclass(frozen=True)
+class OutboundMedia:
+    """渠道出站媒体。只表达图片/视频,从类型上排除任意文件发送。"""
+    kind: MediaKind
+    data: bytes = field(repr=False)
+    filename: str
+    content_type: str
+    cover: bytes | None = field(default=None, repr=False)
+    cover_filename: str | None = None
+    cover_content_type: str | None = None
+    duration_ms: int | None = None
+
+
+class MediaSendError(RuntimeError):
+    """渠道发送媒体失败。failure_kind 供工具层映射成 ToolResult.failure_kind。"""
+
+    def __init__(
+        self, message: str, *,
+        failure_kind: MediaSendFailureKind = "execution",
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.failure_kind = failure_kind
+        self.retryable = retryable
+
+
 @dataclass(frozen=True)
 class CommandSpec:
     name: str

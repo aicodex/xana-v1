@@ -29,7 +29,7 @@ status: active
 - 输入校验（`Tool.validate`）与工具级权限闸门（`Tool.check_permission`）。
 - 执行与取消语义（`Tool.execute` / `Tool.cancel`，read_only 立即取消 vs write 2 秒宽限）。
 - 结构化结果与失败归因（`ToolResult` / `ToolFailureKind`）。
-- 18 个内置工具实现（`src/xana/tools/builtin/`，共 17 个工具文件、19 个工具类，cron 三工具同文件）。
+- 内置工具实现（`src/xana/tools/builtin/`，cron 三工具同文件；`send_media` 只在接了飞书机器人的项目注册）。
 
 ## Does Not Own
 
@@ -38,7 +38,7 @@ status: active
 
 ## 内置工具清单
 
-全部在 [boot()](../src/xana/runtime/boot.py) 注册进同一个 `InMemoryToolRegistry`（17 个工具文件，cron 三工具同文件，共 19 个工具类）。`defer=True` 的工具默认只对模型暴露名字，经 `tool_search` 揭示后下轮获得完整 schema（见 [tools_spec](tools_spec.md)）。
+全部在 [boot()](../src/xana/runtime/boot.py) 注册进同一个 `InMemoryToolRegistry`（cron 三工具同文件；`send_media` 只在接了飞书机器人的项目注册）。`defer=True` 的工具默认只对模型暴露名字，经 `tool_search` 揭示后下轮获得完整 schema（见 [tools_spec](tools_spec.md)）。
 
 | 工具名 | 文件 | 说明 | 关键标记 |
 |---|---|---|---|
@@ -59,6 +59,7 @@ status: active
 | `cron_create` | `cron.py` | 调度定时任务：`agent` 指定运行的 agent，`notify` = report / silent；到点在无人值守的独立子会话执行，结果按通知方式插回当前聊天（见 [runtime_scheduler](runtime_scheduler.md)） | defer |
 | `cron_list` | `cron.py` | 列出等待执行的定时任务（agent、通知方式，循环任务附最近一次执行）；`history=true` 查执行历史（时间 / 任务 / 状态 / 记录路径） | read_only, defer |
 | `notify_user` | `notify_user.py` | 只在无人值守会话可见：`info` 立即告知用户（每次任务 ≤3 条），`decision` 请用户决策并结束本次执行，答复后经 `agent_run` resume 继续 | open_world |
+| `send_media` | `send_media.py` | 把 workspace 内的图片（PNG/JPEG/WEBP/GIF，≤10MB）或 MP4 视频（≤30MB）发到当前聊天（目前仅飞书）；视频自动读时长、抽首帧作封面；只给用户聊天 agent，子 agent 排除；只在接了飞书机器人的项目注册 | destructive, open_world |
 | `cron_delete` | `cron.py` | 按 ID 删除定时任务 | defer |
 | `web_search` | `xana_search.py` | 配置了 xana-search 服务（`system.json` `web_search.xana_search_url/token`）时注册：1–4 条查询并行，只返回标题/链接/日期/搜索引擎摘要 | read_only, open_world, parallel |
 | `web_open_url` | `xana_search.py` | 同上：打开 1–10 个网页读全文，给 objective 时由小模型提炼要点（原文引用逐字核对）；执行中经 `report_progress` 上报阅读进度 | read_only, open_world, parallel |
@@ -70,7 +71,7 @@ status: active
 | `web_search`（旧） | `web_search.py` | 未配置 xana-search 时的回退：联网搜索（native/brave/duckduckgo） | read_only, open_world, defer |
 | `web_fetch`（旧） | `web_fetch.py` | 未配置 xana-search 时的回退：抓 URL 抽正文（bs4 优先，正则回退） | read_only, open_world, defer |
 
-辅助文件（非工具）：`_path.py`（相对 cwd 路径解析）、`_reindex.py`（写后 markdown 增量 reindex）、`_todo_store.py`（`TodoStore` 磁盘持久化）。
+辅助文件（非工具）：`_path.py`（相对 cwd 路径解析）、`_reindex.py`（写后 markdown 增量 reindex）、`_todo_store.py`（`TodoStore` 磁盘持久化）、`_media.py`（出站图片/视频的路径、magic bytes、大小校验与 ffprobe/ffmpeg 探测）。
 
 **memory_write（项目记忆写入）** 详见 [memory_rules_gate](memory_rules_gate.md)：`memory/*.md` 的唯一写入口（Write / Edit 写 `memory/` 被拒），create 时与已有记忆的名称 + 描述相似度 ≥0.6 即拒绝并提示 update；写后增量更新 memory_search 索引。
 
@@ -86,6 +87,13 @@ status: active
 
 - 行为：把 `SessionConfig.metadata["mode"]="plan"` 写盘（有 `SessionConfigStore` 时），返回 `metadata={"mode": "plan"}`。
 - enforcement 链路（阶段一落地）：ChatAgent 构造 `HarnessContext` 时读 session config——`metadata["mode"]=="plan"` → `PermissionContext(mode="plan")`；harness 工具分发循环在 `validate` 之后检查：`permission.mode == "plan"` 且工具 `spec().read_only` 为假 → 直接 deny（"plan 模式：只允许只读工具"），不执行工具。read_only 工具（Read/Glob/Grep/memory_search 等）不受影响。
+
+**send_media（飞书出站图片/视频）**（`send_media.py` / `_media.py` / `runtime/delivery.py`）
+
+- 只有本项目的 `channels.feishu` 配了 `app_id` + `app_secret_key`（或环境变量 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`）才注册；默认项目与 `bind_feishu` 后的新项目具备。
+- 工具组 `media` 非默认：内置 chat 由 `build_chat_agent_spec(extra_tools=("media",))` 显式选中；自建 chat agent 需在 AGENT.md 的 `tools` 里加 `media`；`SUBAGENT_EXCLUDED` 含 `media`，子 agent 永远拿不到。
+- 只接受 workspace 内的图片 / MP4 视频；扩展名 + magic bytes + 大小校验，拒绝任意文件与符号链接逃逸。
+- 发送前由 `MediaDelivery` 按 `SessionResolver` 路由到会话所属聊天（子会话沿 `parent_session_id` 上溯）；找不到就失败，不退回第一个 adapter。
 
 **tool_search 的 revealed_tools 闭环**见 [tools_spec](tools_spec.md) 的 defer 一节。
 

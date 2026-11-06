@@ -1,14 +1,15 @@
-"""SessionDelivery:以系统身份往一个会话投递一条消息,触发该会话的 agent 处理(定时任务结果、后台任务完成通知)。
+"""按会话送达:SessionDelivery 投递文本触发新的 agent turn;MediaDelivery 直接把图片/视频发到该会话的聊天。
 
-投递 = 经 gateway.submit 送一条入站消息;渠道按会话的路由选(没有路由按会话反查所属聊天,再退回会话 id 前缀)。
-子会话(agent_run / 定时任务派生的会话)没有人接收结果,不投递。
+SessionDelivery 的投递 = 经 gateway.submit 送一条入站消息;渠道按会话的路由选(没有路由按会话反查所属聊天,
+再退回会话 id 前缀)。子会话(agent_run / 定时任务派生的会话)没有人接收结果,不投递。
+MediaDelivery 只信 SessionResolver 的权威映射;子会话沿 parent_session_id 上溯;找不到就明确失败,不猜渠道。
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from xana.agent_adapter.contracts import InboundMessage, SessionBinding
+from xana.agent_adapter.contracts import InboundMessage, MediaSendError, OutboundMedia, SessionBinding
 from xana.agent_adapter.gateway import DefaultAgentGateway
 from xana.runtime.session_resolver import SessionResolver
 from xana.state.interfaces import SessionStore
@@ -50,3 +51,62 @@ class SessionDelivery:
                 adapter_id=adapter_id, session_id=session_id, text=text, metadata=metadata)):
             pass
         return True
+
+
+class MediaDelivery:
+    """把图片/视频发到会话所属聊天。
+
+    路由只信 SessionResolver;子会话(agent_run / 定时任务)沿 SessionStore.parent_session_id 上溯。
+    找不到或渠道未注册时明确失败——媒体绝不能像文本通知那样退回"第一个 adapter",否则会发错聊天。
+    """
+
+    _MAX_PARENT_DEPTH = 8
+
+    def __init__(self, *, gateway: DefaultAgentGateway, resolver: SessionResolver | None = None,
+                 session_store: SessionStore | None = None) -> None:
+        self._gateway = gateway
+        self._resolver = resolver
+        self._sessions = session_store
+
+    async def send(self, *, session_id: str, media: OutboundMedia) -> str:
+        route = await self._resolve_route(session_id)
+        if route is None:
+            raise MediaSendError(
+                "无法定位当前会话对应的聊天(会话可能已 /clear,或不是聊天渠道)",
+                failure_kind="not_found",
+            )
+        adapter_id, chat_id = route
+        adapter = self._gateway.adapters.get(adapter_id)
+        if adapter is None:
+            raise MediaSendError(
+                f"渠道 {adapter_id} 尚未启动,无法发送图片/视频", failure_kind="unsupported")
+        try:
+            return await adapter.send_media(chat_id=chat_id, media=media)
+        except MediaSendError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 统一变成工具可见的失败
+            _logger.warning("媒体发送失败(%s / %s): %s", adapter_id, session_id, exc)
+            raise MediaSendError(f"发送失败:{exc}", failure_kind="execution") from exc
+
+    async def _resolve_route(self, session_id: str) -> tuple[str, str] | None:
+        if self._resolver is not None:
+            route = self._resolver.route_of(session_id)
+            if route is not None:
+                return route
+        if self._sessions is None:
+            return None
+        current = session_id
+        seen = {session_id}
+        for _ in range(self._MAX_PARENT_DEPTH):
+            record = await self._sessions.get(current)
+            if record is None or not record.parent_session_id:
+                return None
+            current = record.parent_session_id
+            if current in seen:
+                return None
+            seen.add(current)
+            if self._resolver is not None:
+                route = self._resolver.route_of(current)
+                if route is not None:
+                    return route
+        return None

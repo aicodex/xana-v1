@@ -47,7 +47,9 @@ date: 2026-09-27
 | meta | tool_search / skill_load | ✓ |
 | research | deep_research / background_research | ✓ |
 | schedule | CronCreate / CronList / CronDelete | ✓ |
+| media | send_media(只在接了飞书机器人的项目注册) | — |
 
+- `media` 组不默认:只有项目 `channels.feishu` 配了 `app_id` + `app_secret_key` 时才注册 `send_media`,并由内置 chat 的 spec 显式选中;自建 chat agent 要在 `tools` 里加 `media`;`SUBAGENT_EXCLUDED` 含 `media`,被聊天驱动的子 agent 永远拿不到。
 - 未分组或所属组未登记的工具不属于任何组合,只能按工具名或 `*` 选中;boot 对"所属组未登记"记 warning。
 
 ### 3.2 系统级禁用
@@ -73,7 +75,7 @@ date: 2026-09-27
 
 - `()` = 零工具。
 - 结果再减去 `AgentSpec.disallowed_tools`(同样接受组名和工具名)。
-- 例:聊天 `("default",)`;迭代智能体 `("default", "evolution")`;researcher `("web", "Read")`;纯净 agent `()`。
+- 例:聊天 `("default",)`(接了飞书机器人时为 `("default", "media")`);迭代智能体 `("default", "evolution")`;researcher `("web", "Read")`;纯净 agent `()`。
 - 解析是纯函数 `resolve_tools(selection, disallowed, specs, toolsets) -> frozenset[str]`(`tools/toolsets.py`)。harness 每次 invoke 用工具目录与扩展工具的 spec 解析一次,schema 过滤与执行前校验都用这个结果(替代 `_tool_allowed`)。
 - `HarnessContext.config_snapshot` 里没有 `tools` 键时(直接使用 harness、不经 agent 层)不过滤:调用方给的工具目录本身就是范围。
 - 表达式里写了不存在的组名或工具名:boot 记 warning(沿用 B2 的检查)。
@@ -130,5 +132,6 @@ AGENT.md:`tools` 改为可选,不写 = `default`,`tools: []` = 零工具;新增�
 - `resolve_tools` 单测:default / 组名 / 工具名 / `*` / `()` / disallowed 组名 / 未分组工具。
 - harness:零工具 agent 的请求 schema 为空、无技能列表 / 记忆召回 / 按需工具清单;执行前校验拒绝范围外工具。
 - 提示词:`${base_prompt}` 包裹、完全替换(无环境段)、`${env}` 单独放置。
-- boot:`tools.disabled` 按组名 / 工具名生效;未登记组与写错名字告警;默认聊天的工具集合与改动前一致。
+- boot:`tools.disabled` 按组名 / 工具名生效;未登记组与写错名字告警;默认聊天的工具集合与改动前一致(未接飞书时不含 `send_media`)。
+- media:未接飞书不注册;接了飞书时只有内置 chat 选中 `media`,自建 agent 默认不可见,子 agent ceiling 排除 `send_media`。
 - 全量测试 + compact 回归网(merge_gate 39+1)。

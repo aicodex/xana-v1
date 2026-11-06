@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -122,6 +123,7 @@ from xana.tools.builtin.todo_write import TodoWriteTool
 from xana.tools.builtin.tool_search import ToolSearchTool
 from xana.tools.builtin.web_fetch import WebFetchTool
 from xana.tools.builtin.notify_user import NotifyUserTool
+from xana.tools.builtin.send_media import SendMediaTool
 from xana.tools.builtin.report_goal import ReportGoalTool
 from xana.tools.builtin.web_search import WebSearchTool
 from xana.tools.builtin.xana_search import (BackgroundResearchTool, WebOpenUrlTool, XanaSearchClient,
@@ -129,7 +131,7 @@ from xana.tools.builtin.xana_search import (BackgroundResearchTool, WebOpenUrlTo
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import Tool, ToolRegistry
 from xana.harness_sdk.background import BackgroundTasks, QuotaFreeze
-from xana.runtime.delivery import SessionDelivery
+from xana.runtime.delivery import MediaDelivery, SessionDelivery
 from xana.tools.builtin.task_tools import TaskStopTool, TaskWaitTool
 from xana.tools.environment import TapeToolEnvironment
 from xana.tools.file_registry import FileToolRegistry
@@ -251,6 +253,14 @@ async def boot(
     cp = config_provider or DefaultConfigProvider()
     runtime_config = await cp.load(project_root)
     system_cfg = cp.load_system_config()
+    # 出站媒体(图片/视频)只给用户聊天 agent:只有本项目接了飞书机器人才注册;
+    # 内置 chat 显式加 media 组,自建 agent / 子 agent 不自动继承。
+    _fs = system_cfg.channels.feishu
+    _has_feishu = bool(
+        (os.environ.get("FEISHU_APP_ID") or _fs.app_id)
+        and (os.environ.get("FEISHU_APP_SECRET") or _fs.app_secret_key)
+    )
+    _chat_extra_tools: tuple[str, ...] = ("media",) if _has_feishu else ()
     agents: dict[str, Agent] = {}
     # 工具目录 = 内置 / 扩展登记的工具 + 两级目录 TOOL.md 派生工具(热加载,iteration-agent-design §5.3)
     tool_dirs = (xana_home() / "tools", project_root / ".xana" / "tools")
@@ -480,7 +490,7 @@ async def boot(
     progress_sink = AdapterProgressSink(gateway.adapters)
 
     chat_agent = ChatAgent(
-        spec=build_chat_agent_spec(system_cfg.agent_defaults),
+        spec=build_chat_agent_spec(system_cfg.agent_defaults, extra_tools=_chat_extra_tools),
         harness=_harness,
         active_context_store=active_ctx,
         history_mirror=mirror,
@@ -544,6 +554,12 @@ async def boot(
     agent_runner = GatewayAgentRunner(agents=gateway.agents, session_store=state.sessions(),
                                       gate=episode_runner.ensure_gate)
     _delivery.append(SessionDelivery(gateway=gateway, resolver=session_resolver, session_store=state.sessions()))
+    # 出站图片/视频:只有本项目接了飞书机器人时才注册 send_media(默认项目 / bind_feishu 后的新项目)。
+    # 工具只给 session_id,MediaDelivery 按会话路由并沿子会话父链上溯。
+    if _has_feishu:
+        media_delivery = MediaDelivery(
+            gateway=gateway, resolver=session_resolver, session_store=state.sessions())
+        await _register(SendMediaTool(delivery=media_delivery))
 
     # agent 委派与创建(docs/design/agent-delegation-design.md):agent_run 同步委派;agent_define 写 / 删 AGENT.md
     # 后刷新注册表,立即生效。
@@ -608,7 +624,8 @@ async def boot(
                                - {sp.component.name for sp in _all_specs})
     if _unknown_disabled:
         _logger.info("tools.disabled 中未匹配到已注册组 / 工具的条目(可能本就未注册):%s", _unknown_disabled)
-    _checked_specs = [build_chat_agent_spec(system_cfg.agent_defaults), build_iterator_agent_spec(),
+    _checked_specs = [build_chat_agent_spec(system_cfg.agent_defaults, extra_tools=_chat_extra_tools),
+                      build_iterator_agent_spec(),
                       *build_iteration_team_specs(),
                       *await agent_registry.list_specs()]
     if system_cfg.web_search.xana_search_url:

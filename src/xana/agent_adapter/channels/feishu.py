@@ -27,6 +27,8 @@ from xana.agent_adapter.channels.unified_card_feishu import render as render_uni
 from xana.agent_adapter.contracts import (
     AdapterHealth,
     InboundMessage,
+    MediaSendError,
+    OutboundMedia,
     RenderedMessage,
     SessionBinding,
 )
@@ -61,6 +63,9 @@ class FeishuApiSender:
         raise NotImplementedError
 
     async def patch_card(self, *, message_id: str, card: dict) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    async def send_media(self, *, receive_id: str, media: OutboundMedia) -> str:  # pragma: no cover
         raise NotImplementedError
 
 
@@ -112,6 +117,12 @@ class FeishuAdapter(Adapter):
 
     def rotate_session(self, external_thread_id: str) -> str:
         return self._resolver.rotate(self.adapter_id, external_thread_id)
+
+    async def send_media(self, *, chat_id: str, media: OutboundMedia) -> str:
+        """发原生图片/视频消息。与卡片链路独立,不改 per-session 卡片状态。"""
+        if self._api_sender is None:
+            raise MediaSendError("飞书渠道尚未启动", failure_kind="unsupported")
+        return await self._api_sender.send_media(receive_id=chat_id, media=media)
 
     def _allocate_sid(self, external_thread_id: str) -> str:
         return self._resolver.resolve(self.adapter_id, external_thread_id)

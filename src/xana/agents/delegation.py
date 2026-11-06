@@ -18,6 +18,7 @@ AGENT_DEFINE_TOOL = "agent_define"
 # 子 agent 永远拿不到的工具 / 组:委派与创建 agent(因此委派深度固定为 1),以及会话控制类工具。
 SUBAGENT_EXCLUDED: tuple[str, ...] = (
     AGENT_RUN_TOOL, AGENT_DEFINE_TOOL, "EnterPlanMode", "EnterWorktree", "report_goal", "schedule",
+    "media",   # 出站图片/视频只给用户聊天 agent;被聊天驱动的子 agent 不需要
 )
 
 SAME_AS_CALLER = "与你相同,不含委派与会话控制类"

@@ -38,9 +38,17 @@ from xana.state.interfaces import StateRepository
 from xana.tools.interfaces import ToolRegistry
 
 
-def build_chat_agent_spec(defaults: AgentDefaults | None = None) -> AgentSpec:
-    """内置 chat;工具 / 技能按项目默认(docs/design/project-design.md §8)。"""
+def build_chat_agent_spec(
+    defaults: AgentDefaults | None = None,
+    *,
+    extra_tools: tuple[str, ...] = (),
+) -> AgentSpec:
+    """内置 chat;工具 / 技能按项目默认(docs/design/project-design.md §8)。
+
+    extra_tools 用于项目能力开关(如接了飞书机器人时加 media 组),不影响自建 agent。
+    """
     defaults = defaults or AgentDefaults()
+    tools = tuple(dict.fromkeys((*defaults.tools, *extra_tools)))
     return AgentSpec(
         component=ComponentSpec(
             kind="agent",
@@ -50,7 +58,7 @@ def build_chat_agent_spec(defaults: AgentDefaults | None = None) -> AgentSpec:
             source=ComponentSource(source_type="builtin", scope="system"),
         ),
         prompt_id="chat-default",
-        tools=tuple(defaults.tools),
+        tools=tools,
         disallowed_tools=tuple(defaults.disallowed_tools),
         skills=tuple(defaults.skills) if defaults.skills is not None else None,
     )
