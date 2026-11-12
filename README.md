@@ -1,103 +1,134 @@
-# xana
+# Xana
 
-一个**多通道 AI 助手运行时** —— 通过飞书 / Telegram / CLI 三个渠道服务同一个用户,共享同一份会话上下文、同一套 agent 能力。核心目标是把"CC 风格的 turn loop + 工具生态 + async 卡片"做成生产可用的 chat runtime。
+**面向 7×24 小时运行和递归式自我改进（RSI）的 Agent Harness。**
 
-## 特性
+Xana 的目标是让 Agent 持续完成长期任务，并在真实任务反馈和预算约束下迭代能力。它提供模型与工具执行、任务规划、上下文与记忆、评测和版本治理机制，让任务执行、反馈分析和能力改进形成可追溯的闭环。
 
-- **统一卡片模型 (MVVM)** —— 飞书 / TG / CLI 三个 View 共用同一个 `UnifiedCardState`,一份状态机三份渲染
-- **Compact-as-PH 上下文压缩** —— 手动 `/compact` 与自动压缩走同一 PH 协议 + 会话级串行锁,消除 race
-- **异步多 Run 并发** —— 用户任何时候可发新消息,前一 Run 转后台继续跑,前端卡片按 PH 冻结/终态回写
-- **ContextSDK 单入口** —— 所有上下文操作走一个 facade,代码层防止裂脑(见设计文档 §3)
-- **平台无关序列化** —— Message ABC 各子类提供 `to_anthropic()` / `to_openai()`,内部元数据永不进入模型 prompt
-- **契约锁定的回归网** —— 23 项不变量 + 14 个 ultimate race scenario,`pytest -m merge_gate` 一键跑
+典型用途包括定期开展研究、持续维护业务工作流，以及在人参与反馈的过程中，将反复验证的方法沉淀为 skills、tools 和项目记忆。Web 是主要建设方向，飞书与 Telegram 用于聊天、控制和通知，终端保留管理与交互入口。
 
-## 快速上手
+项目处于持续开发阶段。7×24 小时运行与 RSI 是设计目标；已有执行、持久化、评测和回滚机制，仍需结合具体模型、任务和部署环境验证可靠性与改进效果。
 
-```bash
-xana setup     # 初始化 ~/.xana(配置 + 代码副本 + 内存挂载 + PATH + 默认项目 default)
-xana serve     # 启动默认项目的后端 daemon(单实例锁 + TCP 端口 + Unix socket)
-xanac "你好"   # CLI 一发一答,自动走 daemon SSE
-xanac -i       # Textual 交互式 REPL
-```
+## 核心能力
 
-**项目**:一个项目 = 一套记忆 + 自己的 agent / 工具默认配置 + 一个 serve 进程(通常接一个飞书机器人)。安装即有默认项目 `default`。其他项目用 `xana project create <id> [--root <目录>]` / `xana project list` 管理,或在 default 项目的聊天里让 xana 用 `project_manage` 创建并接机器人;`xana serve --project <id>`、`xanac --project <id>` 选择项目。项目根目录的 `AGENTS.md` 是项目说明,该项目的每个会话都会读到(改完下一条消息生效)。设计见 [docs/design/project-design.md](docs/design/project-design.md)。
+### 运行与规划
 
-`~/.xana` 布局:用户级 `config/system.json`(模型、搜索、策略)、`credentials/`、`agents/`、`skills/`、`code/`、`bin/`、`mem/`;每个项目的私有数据在 `projects/<id>/`(`project.json`、`config.json` 含机器人凭据 / daemon 端口 / 会话映射、`sessions/`、`runs/`、`logs/`、`run/`、`channels/`、`scheduled_tasks.json`、`evolution/`、`worktrees/`);default 项目的项目目录是 `projects/default/workspace`。
+- **计划与进度**：提供计划模式、持久目标和会话级独立待办清单；清单在上下文压缩后重新注入，不依赖模型摘要记住当前进度。
+- **任务委派**：子 Agent 拥有独立子会话，支持任务委派、历史查看及续接，避免把所有中间过程放入主对话。
+- **后台任务**：支持等待、完成唤醒、持久结果恢复与交付去重；停止等待、停止当前回答和停止后台任务分别处理。
+- **排队与插话**：普通消息等待当前回答完成；用户可将指定消息提升为插话，在安全执行边界进入当前循环。插话保留已完成工作，普通命令继续执行；取消通过独立控制请求送达。
+- **多渠道接入**：已接入飞书、Telegram 和终端；源码中的 Web 工作台支持主/子会话与任务查看、待办、目标、权限审批和命令日志。
 
-飞书 / Telegram 通道在项目配置 `~/.xana/projects/<id>/config.json` 的 `channels` 配置 bot 凭据(`xana setup` 向导写默认项目)后由该项目的 `xana serve` 自动接入。
+### 能力治理
 
-## 目录结构
+- **工具与技能**：支持动态工具定义、技能安装与按 Agent 启用。安装、注册可用与按需加载分开，安装一个技能不会自动向所有 Agent 开放。
+- **内置能力**：文件读写、命令执行、网页检索、项目记忆、研究、定时任务、子 Agent 与评测；可创建项目、技能和工具。
+- **权限与额度**：通过权限审批、工具范围、用量计量、预算检查和模型额度管理约束执行。Web 新会话默认“必要时询问”，聊天渠道按其会话策略运行。
+- **评测环境控制**：工具环境支持录制回放、指定研究时点和副作用限制，为受控比较与反事实验证提供基础。可复现性取决于套件、录制覆盖和工具策略；真实外部服务的变化不会自动被冻结。
 
-```
-xana/
-├── src/xana/               # 运行时源码
-│   ├── context/            # ★ ContextSDK — 唯一上下文入口 + Message 类 + 平台序列化
-│   ├── memory/             # 主上下文存储、写队列、bridge、history mirror
-│   ├── harness_sdk/        # Turn loop 编排 + 系统 prompt + auto-compact
-│   ├── agent_adapter/      # Adapter ABC + 三个 channel + 命令路由 + gateway
-│   │   └── channels/       #   feishu / telegram / cli daemon bridge + unified_card 模型
-│   ├── agents/             # Agent 契约 + 默认 ChatAgent
-│   ├── llm_driver/         # ModelClient ABC + Anthropic/DeepSeek/OpenAI 适配 + FakeModelClient
-│   ├── tools/              # 内置工具(bash/read/edit/write/glob/grep/webfetch/...)+ 权限/沙箱
-│   ├── skills/             # Skill 元数据 + 激活 + 注入
-│   ├── extension_api/      # Contributor ABC + Registry + PromptAssembler
-│   ├── runtime/            # boot()、SessionResolver、daemon HTTP+SSE、定时任务调度、项目管理
-│   ├── cli/                # xana CLI 命令 + xanac(CLI 客户端)+ Textual REPL
-│   ├── config/             # 路径解析(paths.py)+ system.json / 项目 config.json 分层加载 + schema
-│   ├── session_config/     # 会话级配置(model/effort/streaming/thinking...)
-│   ├── state/              # SessionStore + RunStore + FileHistoryMirror
-│   └── policy/             # 权限模式 (default/plan/write)
-│
-├── docs/design/            # ★ 终极版设计文档 —— 单一来源,先经用户确认才可改
-│   ├── session-and-card-state.md   # session / run / card 状态机 + 23 项不变量
-│   └── channels/           # 各 channel 渲染差异(feishu/telegram/cli)
-├── docs/superpowers/       # 早期 spec 存档(design/ 是权威)
-│
-├── tests/                  # 独立 git 子仓,merge_gate 契约测试为主
-│   ├── e2e_real/           # 契约测试 + card frame recorder
-│   ├── context/            # ContextSDK / Message 单元测试
-│   ├── test_compact_race_ultimate.py  # 14 场景终极回归网
-│   └── ...
-│
-├── README.md               # 本文件
-├── README_ai.md            # AI 记忆入口(挂载到 ~/.xana/mem)
-├── CLAUDE.md               # 项目规则(CI 强制)
-└── pyproject.toml
-```
+### 上下文与记忆
 
-## 核心概念
+- **统一生命周期**：由上下文管理入口负责读取、写入、压缩和恢复，结合持久历史镜像保存对话；压缩前保存原始转录，压缩失败时保留原上下文。
+- **模型配置驱动**：根据模型的上下文窗口和输出上限计算压缩预留；输入模态也由模型配置决定，支持能力匹配的图片与视频输入。
+- **分层读取**：先提供记忆索引或简短提示，再按需读取相关原文，减少无关长期记忆对当前任务的干扰。
+- **项目记忆检索**：正在接入以 MD 原件、SQLite FTS5/BM25、证据评分与词项扩展为基础的 SAG2 检索。算法、项目隔离索引和 JEV 协议适配已通过离线验证，评分后端可替换；尚未切换现有运行时召回，也未完成真实评分服务验收。
 
-**Session** — 一个持久对话的身份,由 `(adapter_id, thread_id)` 映射到 `session_id`。/clear = 换 sid,旧 session 内存留底。
+### 评测与自进化
 
-**Run** — 一次 LLM turn 的执行单元,从主上下文 fork 快照后台异步跑。前端卡片是 Run 的实时镜像。
+改进围绕真实任务中的失败、用户反馈和可验证收益展开：
 
-**PH (Placeholder)** — 主上下文中的占位符;Run 完成后 replace 成真实内容。两类:
-- `RegularPlaceholder` — 用户 turn 的占位,模型可见 1 条 assistant
-- `CompactPlaceholder` — compact 运行期间的占位,模型完全看不见(隐身)
+1. **预注册**：先记录改进假设、应改善的样本、不得退化的样本和最低收益，再开始修改。
+2. **候选版本**：将工作流与经验条目的变更作为候选保存，与当前采用版本区分。
+3. **成对比较**：在共同样本上比较基线与候选，结合重复运行的波动判断改进，避免只挑成功案例。
+4. **评测隔离**：隔离留出集、打分代码与真值，限制迭代者读取受保护的评测内容；留出集明细不作为日常改写反馈。
+5. **准入与回滚**：通过评测判决决定采用、放弃或回滚，迭代账本保留假设、证据与结论；预算与执行阶段限制继续开支线。
 
-**Card** — 一张飞书/TG/CLI 卡片,与 Run 一对一绑定(1 Run ↔ 1 PH ↔ 1 Card 终生绑定)。
+这些机制构成初步的迭代智能体。RSI 在这里指对工作流、技能、工具和经验的持续改进；实际收益需要由项目自己的评测与真实任务反馈验证。
 
-## 开发者规则(CI 强制)
+## 项目、Agent 与 skill
 
-见 [CLAUDE.md](CLAUDE.md):
+| 概念 | 职责 |
+| --- | --- |
+| Project | 独立工作区，也是记忆、配置、任务和迭代的边界。 |
+| Agent | 有持续身份与状态、可以长期运行的执行主体；项目通常有一个主入口，必要时委派子 Agent。 |
+| Skill | Agent 按需加载的方法和能力，不拥有独立运行生命周期。 |
+| Tool | 具有明确参数、权限和结果契约的执行能力。 |
+| Session / Run | Session 是持久会话；Run 是一次执行，不等同于 Agent 的完整生命周期。 |
 
-1. 永远使用现有接口,不够则先与用户确认再加
-2. contracts / interfaces / implementation 三层
-3. `boot()` 是唯一组合点
-4. 构造注入,禁全局单例
-5. 每个文件独立可 import
+反复使用并验证过的方法应沉淀为可复用组件。项目发布的方向是把业务 Agent、skills、tools、选定记忆和必要运行依赖一起交付；完整的独立安装与跨宿主行为一致性仍在完善中。
 
-**回归契约**:任何改动前后必须 `pytest -m merge_gate` 通过 39+1(见 [docs/design/session-and-card-state.md](docs/design/session-and-card-state.md) §9)。
+## 快速开始
 
-## Debug 开关
+以下命令从仓库根目录执行。需要 Python 3.10+ 和 uv；源码构建 Web 需要 Node.js 20.19+（20.x）或 22.12+ 与 npm，技能远程安装需要 `npx`。
 
 ```bash
-export XANA_DEBUG_ACTCTX=1     # 主上下文每次读写完整快照写日志
-export XANA_DEBUG_COMPACT=1    # compact lock/event/collapse trace
+# 安装 Python 依赖；feishu-ws 提供飞书长连接依赖
+uv sync --extra feishu-ws
+
+# 构建 Web 工作台
+npm --prefix web ci --ignore-scripts
+npm --prefix web run build
+
+# 初始化 ~/.xana，并按向导配置真实模型和可选聊天渠道
+uv run xana setup
+
+# 启动默认项目服务，保持此进程运行
+uv run xana serve --project default
 ```
 
-日志:`~/.xana/projects/<id>/logs/xana_debug_actctx.log` / `xana_debug_compact.log`
+浏览器访问服务输出的 TCP 地址，在页面输入该项目的 `daemon.token`。端口和 token 位于 `~/.xana/projects/default/config.json`；每个项目使用自己的服务与凭据。
+
+另开终端可使用命令行客户端：
+
+```bash
+uv run xanac --project default "你好"
+uv run xanac --project default -i
+```
+
+初始化会创建默认项目 `default`。已有工作目录可注册为其他项目：
+
+```bash
+uv run xana project create research --root /absolute/path/to/workspace
+uv run xana project list
+uv run xana serve --project research
+```
+
+定时任务由项目服务调度；无人值守部署需要持续运行该服务，并配置进程托管。服务重启后的状态恢复不等于自动重放所有被中断命令。
+
+## 配置与数据
+
+- **用户级配置**：`~/.xana/config/system.json` 保存模型、默认模型、搜索服务等配置。模型条目支持 `context_window`、`max_tokens`、`cache_ttl_seconds` 和 `input_modalities`；缓存时间字段是本地策略依据，不会修改服务端缓存有效期。
+- **项目级配置与状态**：`~/.xana/projects/<id>/` 保存项目注册信息、渠道与服务配置、会话、运行记录、日志和定时任务。
+- **工作区内容**：项目根目录保存 `AGENTS.md`、业务文件和 `memory/` 等内容。MD 是项目记忆原件，检索索引是可重建视图。
+- **运行时代码**：`xana setup` 将代码安装到 `~/.xana/code/`，生成的启动器从该副本加载。更新源码后，`xana sync --source /path/to/xana-v1` 更新安装副本；该命令默认会停止并重启运行中的项目服务，应安排更新窗口。
+
+可用 `XANA_HOME` 指定其他安装目录。真实模型配置缺失或无效时明确报错；只有显式选择 `fake` 才使用脚本模型。
+
+当前预算能力包含执行、目标和评测层面的约束；账户总预算、项目额度分配和前台聊天预留尚未形成完整的持久账务体系。
+
+## 文档与开发
+
+| 入口 | 内容 |
+| --- | --- |
+| [模块导航](doc_ai/README_ai.md) | 按能力定位契约、实现与测试。 |
+| [开发规则](AGENTS.md) | 状态所有权、依赖、迁移和验证要求。 |
+| [项目与可复用能力](docs/design/project-capability-design.md) | 工作区、Agent、skill 与发布方向。 |
+| [Web 工作台](doc_ai/workbench.md) | 会话、任务、审批、日志与实现边界。 |
+| [后台任务](doc_ai/harness_background_tasks.md) | 等待、唤醒、结果恢复与去重。 |
+| [迭代与评测设计](docs/design/iteration-agent-design.md) | 评测套件、候选版本与采用流程。 |
+| [进化模块](doc_ai/evolution_module.md) | 迭代生命周期、预算门禁与回滚。 |
+| [SAG2 记忆检索](docs/design/memory-sag2-design.md) | 来源、接入方案、离线验证与剩余工作。 |
+
+后端主要位于 `src/xana/`，Web 源码位于 `web/`。模型与工具执行由同一 harness 承担，各界面读取内核状态。设计文档中的 proposed 内容表示方案，不能据此判断功能已完成或已部署。
+
+本地具备 `tests/` 时，可运行后端与架构检查；该目录由独立 Git 仓管理，主仓检出不包含完整测试集：
+
+```bash
+uv run pytest -q
+uv run pytest -q tests/test_arch_layers.py
+```
+
+Web 构建与浏览器测试分别使用 `npm --prefix web run build` 和 `npm --prefix web test`；首次运行浏览器测试需在 `web/` 安装 Playwright Chromium。
 
 ## License
 
-Private / internal.
+Private / internal。复用的第三方代码保留其各自的许可证与来源记录，例如 [SAG2 来源说明](src/xana/memory/sag2/NOTICE.md)。
