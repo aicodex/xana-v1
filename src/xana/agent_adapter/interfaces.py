@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator
+from typing import AsyncIterator, Any
 
 from xana.agent_adapter.contracts import (
     AdapterHealth, CommandResult, CommandSpec, InboundMessage, MediaSendError, OutboundMedia,
-    RenderedMessage, SessionBinding,
+    RenderedMessage, SessionBinding, TaskPanelRow,
 )
 from xana.agents.contracts import AgentEvent, AgentRequest
 
@@ -25,6 +25,9 @@ class AgentRequestRouter(ABC):
 
 
 class Adapter(ABC):
+    @abstractmethod
+    def note_progress(self, payload: dict[str, Any]) -> None: ...
+
     @abstractmethod
     async def start(self) -> None: ...
 
@@ -60,17 +63,25 @@ class AgentGateway(ABC):
     def submit(self, inbound: InboundMessage) -> AsyncIterator[RenderedMessage]: ...
 
     @abstractmethod
-    async def register_binding(self, binding: SessionBinding) -> None: ...
-
-    @abstractmethod
-    async def detach_foreground(self, session_id: str) -> None: ...
-
-    @abstractmethod
-    async def attach(self, session_id: str, run_id: str) -> None:
-        """Auto-detach current fg, mark target attached, emit attached event."""
-
-    @abstractmethod
-    def subscribe(self, adapter_id: str, session_id: str) -> AsyncIterator[RenderedMessage]: ...
+    async def accept(self, inbound: InboundMessage) -> bool:
+        """Return durable admission; service retains event rendering until execution ends."""
+        ...
 
     @abstractmethod
     async def cancel(self, session_id: str, run_id: str | None = None) -> None: ...
+
+    @abstractmethod
+    async def list_inflight(self, session_id: str | None = None) -> tuple[TaskPanelRow, ...]: ...
+
+    @abstractmethod
+    async def resume(self, session_id: str, run_id: str) -> None: ...
+
+    @abstractmethod
+    async def cancel_all(self) -> None:
+        """Close admission and stop all active executions for process shutdown."""
+        ...
+
+    @abstractmethod
+    def has_active_runs(self) -> bool:
+        """Whether this service still owns active execution (including maintenance)."""
+        ...

@@ -61,3 +61,64 @@ Harness turn loop, adapter protocol rendering, low-level LLM calls, or memory pe
 - `AgentEvent` stream
 - control results
 - session updates through the configured store
+
+## 独立 Agent 发布
+
+发布分成两个独立部分：
+
+- **能力包**：标准 `SKILL.md` 入口 + `xana-agent.json`（格式版本 1）+ `workspace/`。
+  支持被官方 `npx skills` 发现和下载，附加清单声明入口 agent、依赖 agent、记忆/工作流/工具
+  文件、按 agent 的技能绑定、Python 依赖、外部程序和业务配置项。文件用 SHA-256 校验。
+- **运行核**：当前同一套 xana 实现的独立 wheel，带内容版本标识与依赖元数据；不重写执行链。
+  发布 zip 同时带上运行核和纯标准库 `install.py`。仓库分发也可指定独立 wheel 的
+  `runtime_url`（HTTPS）及摘要，接收方自动下载校验；未附带下载地址时要求包索引提供对应版本。
+
+`agent_publish` 是专用发布工具，**仅内置默认 chat agent 可用**。`inspect` 查看选定文件和
+发布阻塞项；`build` 生成发布 zip。`include` 必须明确选择项目内路径；`agents` / `tools`
+可额外选择项目或用户目录中的依赖定义；已启用的全局技能连同 references 一起复制到包内，
+仅恢复到原来绑定的 agent。原始项目不会被修改。
+
+权限由 `ToolSpec.allowed_agents` 约束：harness schema/执行范围、委派清单、tool_search
+与工具自身权限检查同时覆盖，子 agent 的上限排除 publishing 组。即使自建 agent 选择 `*`，
+也不能获得发布工具。
+
+发布检查拒绝已知凭据文件、硬编码凭据、本机外部绝对路径、符号链接和越界路径；报告只给
+文件位置与原因，不输出凭据值。外部依赖必须明确纳入或改成接收方配置，检查器不会凭文本
+猜测完整业务依赖，也不会静默替换另一种实现。`python_dependencies` 声明业务 Python 包，
+`executables` 声明 ffmpeg 等程序，`settings` 声明需要询问接收方的业务环境变量。
+
+接收方入口：
+
+```bash
+# 无需预装 xana：解压完整发布 zip 后（Python >=3.12，依赖包可从配置的包源下载）
+python install.py
+
+# 已有 xana 安装器时，安装体验类似 npx skills
+xana agents add ./video-assistant.zip
+xana agents add ./capability-repo --list
+xana agents add https://github.com/owner/repo --list
+xana agents add https://github.com/owner/repo --agent video-assistant
+xana agents list
+xana agents setup video-assistant
+xana agents run video-assistant
+```
+
+安装位置是 `{XANA_HOME}/apps/<name>/`，入口位于 `{XANA_HOME}/bin/<name>`。
+应用的 `state/` 自己保存模型、渠道、OAuth、会话、长期记忆与技能绑定；模型与飞书/TG
+复用现有初始化、登录、配对流程。不会带走作者的机器人凭据、OAuth、聊天绑定或执行中的 run。
+`setup` 可选 Kimi OAuth 或 API Key；业务秘密用隐藏输入，并以 0600 保存到应用私有配置。
+`run` 在业务配置和外部程序齐备后，用现有 serve/boot 启动指定入口 agent。
+
+应用首次初始化复制能力包的业务数据；之后重启保留接收方的记忆和工作状态。再次安装同名应用
+或覆盖现有命令会明确拒绝，首版未做自动更新/迁移。发布只生成可分发文件，不自动推送 Git/PyPI
+或向聊天对象发送文件。
+
+实现：`publishing/contracts.py`（唯一清单契约）、`package.py`（检查/组包）、`artifacts.py`
+（运行核 wheel）、`install.py`（接收安装）、`launcher.py` / `bootstrap.py`（初始化与启动）、
+`cli/commands/agents.py`（安装 CLI）。测试：`tests/test_agent_publishing.py`。
+
+发布应用使用当前内核的渠道实现；Telegram 原生图片/GIF/视频发送现已接入同一 `send_media`
+链路，视频缩略图需 JPEG。TG 媒体适配器用 Bot API mock 验证，未向真实聊天发送测试消息。
+初始化 Kimi 模型时，将服务端声明的 image/video 能力写入模型配置，保留用户明确关闭的设置；
+运行时仍以配置为准。作者 agent 中不存在于接收方的固定模型名会在 setup 中提示映射，
+只修改接收方工作副本。

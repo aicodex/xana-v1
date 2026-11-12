@@ -49,8 +49,7 @@ View 层走 telegramify-markdown 容错;必要时截到安全 boundary 或补回
 | `compact.streaming` | 一行进度 + expandable "压缩中..." |
 | `compact.completed` | "▰…▰ 完成压缩" + expandable "已压缩 N 条消息" |
 | `answer.streaming` | thinking 折叠 / tools 折叠 / 分割线后回答正文可见 |
-| `answer.detached` | thinking/tools 折叠,回答正文保持可见(不折叠)+ footer "🟡 正在后台回答" |
-| `answer.terminal` | 回答正文可见(含 `terminal_from_bg=True`,不折叠) |
+| `answer.terminal` | 回答正文可见 |
 | `answer.cancelled` | 分割线后 "_回答已取消_" |
 | `tools_pending>0` | 文字提示 "其他 ✎×N,点下方展开工具查看"(非按钮);全量查看走底部 "展开工具" |
 
@@ -58,3 +57,5 @@ View 层走 telegramify-markdown 容错;必要时截到安全 boundary 或补回
 
 - TG message 4096 字符上限
 - 超长 answer 分页(`AnswerSection.page`),top buttons 出 "下一页"
+
+停止按钮使用 `__cancel__:<sha256(run_id) 前 24 位>`，在原聊天的卡片索引中找到原 sid/run_id；不截断真实 ID。

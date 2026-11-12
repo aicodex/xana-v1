@@ -40,7 +40,7 @@ import contextlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, AsyncIterator
 
 import httpx
@@ -54,12 +54,16 @@ from xana.llm_driver.contracts import (
     ProviderErrorKind,
 )
 from xana.llm_driver.interfaces import ModelClient
+from xana.llm_driver.providers.kimi_media import KimiMedia
+from xana.multimodal.contracts import InputModality
 from xana.llm_driver.providers.kimi_oauth import KimiAuthError, KimiTokenStore
 
 _logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://api.kimi.com/coding/v1"
-_DEFAULT_MAX_TOKENS = 32768  # 含 reasoning;官方建议工具调用 ≥16k
+# 普通调用未配置模型输出长度时的默认值（含 reasoning）。模型配置优先，
+# 压缩复用原请求的输出与 thinking 配置，不在这里另设摘要上限。
+_DEFAULT_MAX_TOKENS = 32768
 _MAX_ATTEMPTS = 3
 _BACKOFF_BASE_S = 1.0
 _TOOL_CALL_ID_MAX = 64
@@ -74,8 +78,10 @@ _EFFORT_MAP = {"low": "low", "medium": "high", "high": "high",
 class KimiConfig:
     base_url: str = _DEFAULT_BASE_URL
     max_tokens: int = _DEFAULT_MAX_TOKENS
+    model_max_tokens: dict[str, int] = field(default_factory=dict)
     timeout_s: float = 60.0
     backoff_base_s: float = _BACKOFF_BASE_S
+    model_input_modalities: dict[str, tuple[InputModality, ...]] = field(default_factory=dict)
 
 
 class KimiClient(ModelClient):
@@ -96,8 +102,9 @@ class KimiClient(ModelClient):
         self._store = token_store
         self._http = http_client
         self._owns_http = http_client is None
+        self._media = KimiMedia(config.base_url, config.model_input_modalities, http_client)
 
-    def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
+    def stream(self, request: ModelRequest) -> AsyncGenerator[ModelEvent, None]:
         return self._stream(request)
 
     async def _stream(self, request: ModelRequest) -> AsyncGenerator[ModelEvent, None]:
@@ -147,7 +154,18 @@ class KimiClient(ModelClient):
     async def _stream_once(
         self, request: ModelRequest, token: str
     ) -> AsyncGenerator[ModelEvent, None]:
-        body = _build_request_body(request, self._config)
+        try:
+            media_parts = {}
+            for i, message in enumerate(request.messages):
+                if message.media:
+                    media_parts[i] = await self._media.parts(message.media, request.model, token)
+            body = _build_request_body(request, self._config, media_parts=media_parts)
+        except (ValueError, OSError, httpx.HTTPError) as exc:
+            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            yield ModelEvent(kind="error", error=ProviderError(
+                kind=_http_error_kind(status) if status else "bad_request",
+                message=f"媒体输入失败: {exc}", retryable=status == 401, raw_status=status))
+            return
         url = self._config.base_url.rstrip("/") + "/chat/completions"
         headers = {
             "Authorization": f"Bearer {token}",
@@ -191,13 +209,14 @@ class KimiClient(ModelClient):
     async def cancel(self, request_id: str) -> None:
         return None
 
-    async def capabilities(self) -> ProviderCapabilities:
+    async def capabilities(self, model: str | None = None) -> ProviderCapabilities:
         return ProviderCapabilities(
             provider="kimi",
             supports_streaming=True,
             supports_tools=True,
             supports_cache_control=False,
-            max_output_tokens=self._config.max_tokens,
+            max_output_tokens=self._config.model_max_tokens.get(model, self._config.max_tokens),
+            input_modalities=self._media.modalities(model) if model else (),
         )
 
     async def aclose(self) -> None:
@@ -272,7 +291,7 @@ def _convert_tools(tools_schema: tuple[dict[str, Any], ...]) -> list[dict[str, A
     return out
 
 
-def _build_request_body(request: ModelRequest, config: KimiConfig) -> dict[str, Any]:
+def _build_request_body(request: ModelRequest, config: KimiConfig, *, media_parts: dict[int, list[dict]] | None = None) -> dict[str, Any]:
     """ModelMessages → OpenAI chat-completions wire shape。
 
     assistant 的 metadata['tool_calls'] 渲染为 OpenAI tool_calls 数组
@@ -284,9 +303,16 @@ def _build_request_body(request: ModelRequest, config: KimiConfig) -> dict[str, 
     effort = _EFFORT_MAP.get(str(request.effort).lower()) if request.effort else None
     thinking_on = thinking == "enabled" or bool(effort)
     history: list[dict[str, Any]] = []
-    for msg in request.messages:
+    for index, msg in enumerate(request.messages):
+        content = msg.content
+        if msg.media:
+            if msg.role not in ("user", "tool"):
+                raise ValueError("媒体输入只能来自 user 或 tool 消息")
+            if media_parts is None or index not in media_parts:
+                raise ValueError("media inputs must be prepared before serialization")
+            content = ([{"type": "text", "text": msg.content}] if msg.content else []) + media_parts[index]
         if msg.role in ("system", "user"):
-            history.append({"role": msg.role, "content": msg.content})
+            history.append({"role": msg.role, "content": content})
             continue
         if msg.role == "assistant":
             out: dict[str, Any] = {"role": "assistant"}
@@ -317,7 +343,7 @@ def _build_request_body(request: ModelRequest, config: KimiConfig) -> dict[str, 
             history.append({
                 "role": "tool",
                 "tool_call_id": _normalize_tool_call_id((msg.metadata or {}).get("tool_use_id", "")),
-                "content": msg.content,
+                "content": content,
             })
             continue
 
@@ -327,7 +353,7 @@ def _build_request_body(request: ModelRequest, config: KimiConfig) -> dict[str, 
         "stream": True,
         "stream_options": {"include_usage": True},
         # kimi.ts: 只发 max_completion_tokens — max_tokens 与 reasoning 共享预算
-        "max_completion_tokens": config.max_tokens,
+        "max_completion_tokens": request.max_tokens if request.max_tokens is not None else config.model_max_tokens.get(request.model, config.max_tokens),
     }
     if request.tools_schema:
         body["tools"] = _convert_tools(request.tools_schema)

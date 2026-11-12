@@ -2,9 +2,15 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import asyncio
+from contextlib import aclosing
+from xana.multimodal.files import FileMediaStore, MAX_ATTACHMENTS
+from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterator
 
-from xana.config.system_model import AgentDefaults
+from xana.config.system_model import AgentDefaults, ModelEntry
+from xana.config.loader import resolve_model_config
+from xana.config.contracts import ModelConfig
 from xana.agents.contracts import (
     AgentControlRequest,
     AgentEvent,
@@ -77,25 +83,16 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         cwd: str,
         model: str,
         provider: str,
+        media_store: FileMediaStore | None,
         session_config_store: SessionConfigStore | None = None,
         progress_sink: ProgressSink | None = None,
-        context_window: int | None = None,
-        force_compact: int | None = None,
-        model_thresholds: dict[str, tuple[int, int]] | None = None,
-        main_writer: Any = None,
+        model_configs: dict[str, ModelConfig] | None = None,
         run_jsonl_writer: Any = None,
-        write_queue: Any = None,
-        todo_store: Any = None,
         budget_tracker: Any = None,
         episode_runner: Any = None,
     ) -> None:
-        self.context_window = context_window
-        self.force_compact = force_compact
-        self.model_thresholds = model_thresholds
-        self.main_writer = main_writer
+        self.model_configs = dict(model_configs) if model_configs is not None else None
         self.run_jsonl_writer = run_jsonl_writer
-        self.write_queue = write_queue
-        self.todo_store = todo_store
         self.budget_tracker = budget_tracker
         self.episode_runner = episode_runner
         self.active_context_store = active_context_store
@@ -107,54 +104,69 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         self.cwd = cwd
         self.model = model
         self.provider = provider
+        self.media_store = media_store
         self.session_config_store = session_config_store
         self.progress_sink = progress_sink
-        self._run_counter = 0
 
     async def to_harness_request(self, spec: AgentSpec, request: AgentRequest) -> HarnessRequest:
+        media = []
+        if request.attachments:
+            if self.media_store is None:
+                raise ValueError("媒体输入存储未配置")
+            if len(request.attachments) > MAX_ATTACHMENTS:
+                raise ValueError(f"单条请求最多支持 {MAX_ATTACHMENTS} 个媒体附件")
+            for attachment in request.attachments:
+                path = Path(attachment["file_path"])
+                if not path.is_absolute():
+                    path = Path(self.cwd) / path
+                media.append(await asyncio.to_thread(self.media_store.import_file, path))
         return HarnessRequest(
             session_id=request.session_id,
             agent_name=spec.component.name,
             user_input=request.text,
-            metadata=dict(request.metadata),
+            media=tuple(media),
+            metadata={**request.metadata, "origin": request.source},
         )
 
     async def to_harness_context(self, spec: AgentSpec, request: AgentRequest) -> HarnessContext:
         import uuid
-        self._run_counter += 1
         # gateway 把它生成的 run_id 通过 inbound.metadata → request.metadata 传进来,
         # 这样 adapter 端卡片状态的 key 和 harness 事件的 run_id 对上。
         # 没有就 fallback uuid(单测、命令行直接调用 ChatAgent 的场景)。
         run_id = str(request.metadata.get("gateway_run_id") or
-                     f"{request.session_id}-{uuid.uuid4().hex[:8]}")
+                     f"run-{uuid.uuid4().hex[:24]}")
         # 模型 / 思考强度:会话设置(/model、/effort)> agent 自己的设置(AGENT.md)> 缺省
         model = spec.model or self.model
         effort: str | int | None = spec.effort
-        async_mode = True  # P3 完成,默认 async
         cfg = None
         profile = spec.prompt_profile or PromptProfile()
         if self.session_config_store is not None:
             cfg = await self.session_config_store.get(request.session_id)
+            if cfg.permission_mode is None and request.source == "feishu":
+                cfg = replace(cfg, permission_mode="auto")
+                await self.session_config_store.save(cfg)
             if cfg.model:
                 model = cfg.model
             if cfg.effort is not None:
                 effort = cfg.effort
-            async_mode = cfg.async_mode
             # PromptProfile 在会话首次使用时固化,之后改 AGENT.md 不影响已有会话(system 会话内不变)
             if cfg.prompt_profile is None:
                 cfg = replace(cfg, prompt_profile=profile.to_dict())
                 await self.session_config_store.save(cfg)
             else:
                 profile = PromptProfile.from_dict(cfg.prompt_profile)
-        ctx_win, force_at = self.context_window, self.force_compact
-        if self.model_thresholds and model in self.model_thresholds:
-            ctx_win, force_at = self.model_thresholds[model]
+        model_config = self.model_configs.get(model) if self.model_configs is not None else None
+        if model_config is None:
+            model_config = resolve_model_config(ModelEntry(name=model, type=self.provider))
         config_snapshot: dict[str, Any] = {
             "provider": self.provider,
-            "context_window": ctx_win,
-            "force_compact": force_at,
+            "context_window": model_config.context_window,
+            "force_compact": model_config.force_compact,
+            "blocking_limit": model_config.blocking_limit,
+            "summary_max_tokens": model_config.summary_max_tokens,
+            "max_tokens": model_config.max_tokens,
+            "cache_ttl_seconds": model_config.cache_ttl_seconds,
             "agent_system_prompt": spec.system_prompt,
-            "async_mode": async_mode,
             "max_turns": spec.max_turns,
             "prompt_profile": profile.to_dict(),
             "verify": [c.to_dict() for c in spec.verify],
@@ -171,49 +183,29 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
                 "view_mode": cfg.view_mode,
             })
         metadata: dict[str, Any] = {}
-        if self.main_writer is not None:
-            metadata["main_writer"] = self.main_writer
-        if self.run_jsonl_writer is not None:
-            metadata["run_jsonl_writer"] = self.run_jsonl_writer
-        if self.write_queue is not None:
-            metadata["write_queue"] = self.write_queue
-            # Resolve sessions_root from run_jsonl_writer so the harness can
-            # load runs/{run_id}.jsonl to build ReplaceItem on finalize.
-            jw = self.run_jsonl_writer
-            if jw is not None:
-                runs_dir = getattr(jw, "_dir", None)
-                if runs_dir is not None:
-                    metadata["runs_dir"] = runs_dir
-        if self.todo_store is not None:
-            # todo_store:harness 据此在长时间未更新 todo 时追加 todo_reminder note。
-            metadata["todo_store"] = self.todo_store
         if self.budget_tracker is not None:
             # §4.3: 预算护栏 concrete helper,在 update_usage 写点累计/检查。
             metadata["budget_tracker"] = self.budget_tracker
         if self.episode_runner is not None:
             # §6.2: episode 状态机,软/硬阈值在 usage 写点消费。
             metadata["episode_runner"] = self.episode_runner
-        # P5 fix — gateway owns AbortSignal lifecycle. If it pre-registered
-        # one for this run, reuse the same instance so gateway.cancel() flips
-        # the bool the harness's tool-abort poll is watching. Fall back to a
-        # fresh instance for tests / direct ChatAgent invocations.
-        abort_signal = request.metadata.get("abort_signal")
-        if not isinstance(abort_signal, AbortSignal):
-            abort_signal = AbortSignal()
-        # EnterPlanMode 持久化的 mode="plan" 标记在这里真正进入权限上下文,
-        # 由 harness 的工具权限检查点消费(非只读工具在 plan 模式被拒)。
-        permission_mode = "default"
-        if cfg is not None and cfg.metadata.get("mode") == "plan":
-            permission_mode = "plan"
+        permission_mode = (cfg.permission_mode if cfg else None) or "yolo"
+        cwd = self.cwd
+        if cfg is not None and cfg.metadata.get("worktree_path"):
+            worktree = Path(cfg.metadata["worktree_path"])
+            if not worktree.is_dir():
+                raise FileNotFoundError(f"会话工作树目录不存在: {worktree}")
+            cwd = str(worktree.resolve())
         return HarnessContext(
             session_id=request.session_id,
             agent_name=spec.component.name,
-            cwd=self.cwd,
+            cwd=cwd,
             model=model,
             effort=effort,
             run_id=run_id,
-            permission=PermissionContext(mode=permission_mode, session_id=request.session_id),
-            abort=abort_signal,
+            permission=PermissionContext(mode=permission_mode, session_id=request.session_id,
+                                         plan_mode=bool(cfg and cfg.metadata.get("mode") == "plan")),
+            abort=AbortSignal(),
             state_repository=self.state_repository,
             active_context_store=self.active_context_store,
             history_mirror=self.history_mirror,
@@ -222,8 +214,8 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
             model_registry=self.model_registry,
             config_snapshot=config_snapshot,
             progress_sink=self.progress_sink,
-            async_mode=async_mode,
             metadata=metadata,
+            run_writer=self.run_jsonl_writer,
         )
 
 
@@ -261,15 +253,11 @@ class ChatAgent(Agent):
         cwd: str,
         model: str,
         provider: str,
+        media_store: FileMediaStore | None,
         session_config_store: SessionConfigStore | None = None,
         progress_sink: ProgressSink | None = None,
-        context_window: int | None = None,
-        force_compact: int | None = None,
-        model_thresholds: dict[str, tuple[int, int]] | None = None,
-        main_writer: Any = None,
+        model_configs: dict[str, ModelConfig] | None = None,
         run_jsonl_writer: Any = None,
-        write_queue: Any = None,
-        todo_store: Any = None,
         budget_tracker: Any = None,
         episode_runner: Any = None,
     ) -> None:
@@ -286,41 +274,30 @@ class ChatAgent(Agent):
             cwd=cwd,
             model=model,
             provider=provider,
+            media_store=media_store,
             session_config_store=session_config_store,
             progress_sink=progress_sink,
-            context_window=context_window,
-            force_compact=force_compact,
-            model_thresholds=model_thresholds,
-            main_writer=main_writer,
+            model_configs=model_configs,
             run_jsonl_writer=run_jsonl_writer,
-            write_queue=write_queue,
-            todo_store=todo_store,
             budget_tracker=budget_tracker,
             episode_runner=episode_runner,
         )
         self.event_mapper = DefaultAgentEventMapper()
-        self._pending_cancel_sessions: set[str] = set()
 
     def spec(self) -> AgentSpec:
         return self._spec
 
-    def send(self, request: AgentRequest) -> AsyncIterator[AgentEvent]:
+    def send(self, request: AgentRequest) -> AsyncGenerator[AgentEvent, None]:
         return self._send(request)
 
     async def _send(self, request: AgentRequest) -> AsyncGenerator[AgentEvent, None]:
         harness_request = await self.request_mapper.to_harness_request(self._spec, request)
         harness_context = await self.request_mapper.to_harness_context(self._spec, request)
-        if request.session_id in self._pending_cancel_sessions:
-            # Next-turn semantics: a cancel arrived between turns. Trigger
-            # the live abort signal so the new turn aborts at the first
-            # poll-point. AbortSignal is now mutable (P5 fix), so we flip
-            # in-place rather than swapping in a new frozen instance.
-            harness_context.abort.trigger("user_cancel")
-            self._pending_cancel_sessions.discard(request.session_id)
-        async for harness_event in self.harness.invoke(harness_request, harness_context):
-            yield await self.event_mapper.map(request.session_id, harness_event)
+        async with aclosing(self.harness.invoke(harness_request, harness_context)) as events:
+            async for harness_event in events:
+                yield await self.event_mapper.map(request.session_id, harness_event)
 
-    def control(self, request: AgentControlRequest) -> AsyncIterator[AgentEvent]:
+    def control(self, request: AgentControlRequest) -> AsyncGenerator[AgentEvent, None]:
         return self._control(request)
 
     async def _control(self, request: AgentControlRequest) -> AsyncGenerator[AgentEvent, None]:
@@ -331,10 +308,4 @@ class ChatAgent(Agent):
         )
 
     async def cancel(self, session_id: str, run_id: str | None = None) -> None:
-        # Only mark a between-turn pending cancel when no specific run_id was
-        # given. When the gateway knows the run, it has already flipped the
-        # live AbortSignal for the in-flight turn — adding to the pending set
-        # would cause the NEXT user submit to immediately abort at the
-        # harness's first poll (yielding nothing visible to the user).
-        if run_id is None:
-            self._pending_cancel_sessions.add(session_id)
+        await self.harness.cancel(session_id, run_id)

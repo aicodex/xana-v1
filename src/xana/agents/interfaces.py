@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncGenerator, AsyncIterator
 
 from xana.agents.contracts import AgentControlRequest, AgentEvent, AgentRequest, AgentSpec
 from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest
@@ -27,13 +27,15 @@ class Agent(ABC):
     def spec(self) -> AgentSpec: ...
 
     @abstractmethod
-    def send(self, request: AgentRequest) -> AsyncIterator[AgentEvent]: ...
+    def send(self, request: AgentRequest) -> AsyncGenerator[AgentEvent, None]: ...
 
     @abstractmethod
-    def control(self, request: AgentControlRequest) -> AsyncIterator[AgentEvent]: ...
+    def control(self, request: AgentControlRequest) -> AsyncGenerator[AgentEvent, None]: ...
 
     @abstractmethod
-    async def cancel(self, session_id: str, run_id: str | None = None) -> None: ...
+    async def cancel(self, session_id: str, run_id: str | None = None) -> None:
+        """Stop and join the matching execution; gateway controls may request stop without joining."""
+        ...
 
 
 class AgentRegistry(ABC):

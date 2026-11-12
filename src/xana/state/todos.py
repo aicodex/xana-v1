@@ -9,24 +9,16 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
-
-
-TodoStatus = Literal["pending", "in_progress", "completed"]
-
-
-@dataclass(frozen=True)
-class TodoItem:
-    content: str
-    active_form: str
-    status: TodoStatus
+from xana.state.contracts import TodoItem
 
 
 class TodoStore:
-    def __init__(self, *, root: Path) -> None:
+    def __init__(self, *, root: Path,
+                 on_change: Callable[[str, tuple[TodoItem, ...]], None] | None = None) -> None:
         self.root = Path(root)
+        self._on_change = on_change
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _path(self, session_id: str) -> Path:
@@ -45,5 +37,15 @@ class TodoStore:
         path = self._path(session_id)
         tmp = path.parent / (path.name + ".tmp")
         payload = [dataclasses.asdict(i) for i in items]
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        with tmp.open("w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(tmp, path)
+        descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if self._on_change is not None:
+            self._on_change(session_id, items)

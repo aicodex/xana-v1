@@ -1,39 +1,18 @@
 ---
-title: cli_xanac
+title: cli xanac
 type: doc
 status: active
 ---
 
-# cli_xanac
+# Xanac 客户端
 
-`xanac`：交互聊天客户端。它不是独立 runtime——是 `xana serve` daemon 的 HTTP+SSE 瘦客户端（替换了过去每次调用 in-process `boot()` 的架构）。实现在 `src/xana/cli/xanac.py`（one-shot + 编排）、`xanac_textual.py`（TUI）、`_daemon_client.py`（HTTP 客户端）。
+当前完整契约见 [会话、插话与取消](../docs/design/session-and-card-state.md)。
 
-## endpoint 解析与 serve 自动拉起
+DaemonClient 使用 HTTP 提交与取消、SSE 订阅和 Last-Event-ID 断线续传。
+Textual 按真实 run_id 保存卡片状态，Esc 停止当前回答；取消按钮发送原 sid/rid。
+客户端不提供后台切换或 attach tab。
 
-`xanac --project <id>` 选择连接哪个项目的 serve（写入 `XANA_PROJECT`，缺省 default）。`_resolve_endpoint()` 经 `project_config.load_system_config()` 读合并配置的 `daemon` 段：`daemon_socket(daemon)`（未配置时 `~/.xana/projects/<id>/run/serve.sock`）文件存在 → `http://unix`（无 token）；否则 TCP `http://<bind>:<port>`（带 token）；bind 为空回退 `127.0.0.1`。
+oneshot 每次生成 input_id，先订阅再提交；按 turn_started/input_accepted/命令回执绑定 run，
+只接受匹配 run 的终态。其他 run 的完成事件不能提前结束当前命令。
 
-`_ensure_serve_running()`：unix / TCP 都不在监听时，若该项目 `run/serve.pid` 指向存活进程（serve 拿到单实例锁后即写 pidfile，说明正在启动）就只等待，否则 `subprocess.Popen` 拉起 `~/.xana/bin/xana serve --project <id>`（不存在则用 PATH 里的 `xana`），日志追加到 `~/.xana/projects/<id>/logs/serve.log`；轮询端口最多 120s，超时报错并附日志尾部。
-
-## session 解析
-
-显式 `--session` / `--random-session`（生成 `cli-<hex>`）优先；默认 session 先问 daemon 的 `GET /resolve?adapter=cli&thread=`——跟随 `/clear` 轮换后的当前 sid，daemon 未接 resolver 时退回 `default`。
-
-## one-shot 路径
-
-`xanac "问题…"` 或管道输入：POST `/sessions/{sid}/submit` 后消费 SSE，把事件喂进 `UnifiedCardState`（[agent_adapter](agent_adapter.md) 的统一卡片状态机，`apply_event` 归并 agent_event 与 progress），在终结事件上 `render_card()` 打印一次。
-
-- **终结判定**：`agent_event` 的 `final` / `error` / `cancelled`（rc 分别 0/1/0），以及 progress 的 `compact_finalized` / `compact_cancelled`（/compact 无 agent final）。
-- **replay-vs-live 门**：先 drain 0.5s 让 replay 阶段过去并快照 `baseline_seq`，之后只认 seq > baseline 的终结事件，避免上一轮 turn 的 final 抢先结束本轮。
-- 超时 120s → rc 2；SSE 事件重建为 `AgentEvent` / `ProgressEvent`（wire payload 与 `daemon_bridge._agent_event_to_dict` 镜像）。
-
-## TUI 路径
-
-`-i` / 无参数且 stdin 是 TTY：`run_textual_with_daemon()` 起 `XanacApp`（Textual）。左侧 fg-pane 渲染当前卡片（`render_widgets`），右侧 tab-pane 列 run 列表，底部 Input。
-
-- **渲染防抖**：每个 SSE 事件算 `_state_hash`（段落拓扑 + 内容长度 + 按钮/footer 指纹），没变直接跳过；变了也不立刻重建，50ms throttle 合并流式 delta 后一次性 `remove_children + mount`。
-- **输入**：回车 → `DaemonClient.submit`；卡片按钮 `send` → submit，`load_tools` / `expand` → POST `/button`，其余按 detach 处理；tab 选中 → POST `/attach`。
-- 按键：Tab 切焦点到 run 列表，Esc 回输入框，Ctrl-C 退出。
-
-## DaemonClient
-
-`_daemon_client.py` 的 `DaemonClient`（httpx）：`stream()` 订阅 `/sessions/{sid}/stream`，带 `Last-Event-ID` 断线续传 + 自动重连（连接类错误 sleep 0.5 后重连）；`submit` / `resolve` / `cancel` / `attach` / `detach` / `button` 对应各 POST/GET。wire 帧解析只认 `id:` / `event:` / `data:` 行，注释行忽略。
+测试：`test_xanac_oneshot_daemon.py`、`test_xanac_textual_daemon.py`、`test_xanac_textual_flicker.py`。

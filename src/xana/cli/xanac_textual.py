@@ -3,7 +3,7 @@
 XanacApp consumes the daemon's HTTP+SSE stream via DaemonClient and renders
 each `UnifiedCardState` snapshot into a Textual widget tree
 (`render_widgets`). Input goes back through DaemonClient.submit, and card
-buttons map to DaemonClient.button / detach as appropriate.
+buttons map to DaemonClient.button / cancel as appropriate.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Any
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Footer, Header, Input, Label, ListItem, ListView
+from textual.widgets import Button, Footer, Header, Input
 
 from xana.agent_adapter.channels.daemon_bridge import agent_event_from_wire
 from xana.agent_adapter.channels.unified_card import UnifiedCardState
@@ -25,24 +25,16 @@ from xana.agent_adapter.channels.unified_card_cli import render_widgets
 log = logging.getLogger(__name__)
 
 
-class _TabItem(ListItem):
-    def __init__(self, run_id: str, label: str) -> None:
-        super().__init__(Label(label))
-        self.run_id = run_id
-
-
 class XanacApp(App):
     CSS = """
     Horizontal { height: 1fr; }
     #fg-pane { width: 3fr; border: solid green; padding: 1 2; }
-    #tab-pane { width: 1fr; border: solid grey; }
     Input { dock: bottom; }
     .card-btn-row { height: auto; }
     """
 
     BINDINGS = [
-        Binding("tab", "focus_tabs", "Tabs"),
-        Binding("escape", "focus_input", "Input"),
+        Binding("escape", "cancel_turn", "Stop"),
         Binding("ctrl+c", "quit", "Quit"),
     ]
 
@@ -58,9 +50,9 @@ class XanacApp(App):
         self.session_id = session_id
         self.adapter_id = adapter_id
         self._fg_run_id: str | None = None
-        self._tabs_widget: ListView | None = None
-        self._frozen_runs: set[str] = set()
-        self._state = UnifiedCardState(card_id=session_id, ph_run_id=session_id)
+        self._active_run_id: str | None = None
+        self._states: dict[str, UnifiedCardState] = {}
+        self._state = UnifiedCardState(card_id=session_id, run_id=session_id)
         self._sse_task: asyncio.Task | None = None
         # Per-run content hash → skip mount when state's visible topology
         # + content lengths haven't changed. Prevents SSE-event flicker.
@@ -74,12 +66,11 @@ class XanacApp(App):
         yield Header(show_clock=False)
         with Horizontal():
             yield VerticalScroll(id="fg-pane")
-            yield ListView(id="tab-pane")
-        yield Input(placeholder="message…  (Tab: switch run, Esc: input)", id="input")
+        yield Button("停止回答", id="stop-turn", disabled=True)
+        yield Input(placeholder="message…  (Esc: stop)", id="input")
         yield Footer()
 
     def on_mount(self) -> None:
-        self._tabs_widget = self.query_one("#tab-pane", ListView)
         self.set_focus(self.query_one("#input", Input))
         if self.daemon_client is not None:
             self._sse_task = asyncio.create_task(self._consume_sse())
@@ -102,33 +93,37 @@ class XanacApp(App):
                 if ev.event == "initialize" or ev.event == "session.status":
                     continue
                 if ev.event == "replay_gap":
-                    self._state = UnifiedCardState(
-                        card_id=sid, ph_run_id=sid)
+                    self._states.clear()
+                    self._state = UnifiedCardState(card_id=sid)
                     self.update_card(sid, self._state)
                     continue
                 if ev.event == "progress":
-                    # detach / ph_replaced / compact_* / command_progress
-                    # arrive as ProgressEvent via gateway.note_progress.
-                    # Without this branch, /compact cards don't freeze and
-                    # bg cards never get the terminal patch.
                     from xana.cli.xanac import _progress_from_wire
-                    apply_event(self._state, _progress_from_wire(ev.data))
-                    self._fg_run_id = sid
-                    self.update_card(sid, self._state)
+                    event = _progress_from_wire(ev.data)
+                    rid = event.run_id
+                elif ev.event == "agent_event":
+                    event = agent_event_from_wire(ev.data)
+                    rid = event.harness_event.run_id if event.harness_event else str(event.payload.get("run_id") or "")
+                else:
                     continue
-                if ev.event != "agent_event":
+                if not rid:
                     continue
-                aev = agent_event_from_wire(ev.data)
-                he = aev.harness_event
-                if (he is not None and he.kind in ("final", "error")
-                        and self._state.answer is None):
-                    from xana.agent_adapter.channels.unified_card import (
-                        AnswerSection,
-                    )
-                    self._state.answer = AnswerSection()
-                apply_event(self._state, aev)
-                self._fg_run_id = sid
-                self.update_card(sid, self._state)
+                fresh = rid not in self._states
+                state = self._states.setdefault(rid, UnifiedCardState(card_id=rid, run_id=rid))
+                apply_event(state, event)
+                he = event.harness_event if ev.event == "agent_event" else None
+                if he is not None and he.kind in {"turn_started", "input_accepted"}:
+                    self._active_run_id = rid
+                if rid == self._active_run_id:
+                    self._fg_run_id = rid
+                    if state.terminal:
+                        self._active_run_id = None
+                elif fresh:
+                    self._fg_run_id = rid
+                self.query_one("#stop-turn", Button).disabled = self._active_run_id is None
+                if rid == self._fg_run_id:
+                    self._state = state
+                    self.update_card(rid, state)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -220,6 +215,9 @@ class XanacApp(App):
 
     async def on_button_pressed(self, event) -> None:  # type: ignore[no-untyped-def]
         btn = event.button
+        if btn.id == "stop-turn":
+            await self.action_cancel_turn()
+            return
         spec = getattr(btn, "spec", None)
         if spec is None:
             return
@@ -230,30 +228,34 @@ class XanacApp(App):
             )
             return
         action = spec.action or ""
-        if action in ("load_tools", "expand"):
+        if action == "load_tools":
+            from xana.agent_adapter.channels.unified_card import load_pending_tools
+            state = self._states.get(btn.card_id)
+            if state is not None and state.answer is not None:
+                load_pending_tools(state.answer)
+                self._state = state
+                self.update_card(state.card_id, state)
+            return
+        if action == "expand":
             asyncio.create_task(self.daemon_client.button(sid, {
                 "action": action,
                 "action_arg": spec.action_arg or "",
-                "ph_run_id": getattr(btn, "ph_run_id", "") or "",
+                "run_id": getattr(btn, "run_id", "") or "",
                 "card_id": getattr(btn, "card_id", "") or "",
             }))
             return
-        # Default: treat as detach (cancel attention to a bg run)
-        ph_run_id = getattr(btn, "ph_run_id", "") or ""
-        asyncio.create_task(self.daemon_client.detach(sid, ph_run_id))
+        if action == "compact_cancel":
+            asyncio.create_task(self.daemon_client.submit(sid, f"/compact_cancel {spec.action_arg}"))
+            return
+        if action == "cancel":
+            run_id = spec.action_arg or ""
+            if run_id:
+                asyncio.create_task(self.daemon_client.cancel(sid, run_id))
 
-    def action_focus_tabs(self) -> None:
-        if self._tabs_widget is not None:
-            self.set_focus(self._tabs_widget)
-
-    def action_focus_input(self) -> None:
+    async def action_cancel_turn(self) -> None:
+        if self._active_run_id:
+            await self.daemon_client.cancel(self.session_id, self._active_run_id)
         self.set_focus(self.query_one("#input", Input))
-
-    async def on_list_view_selected(self, event: ListView.Selected) -> None:
-        item = event.item
-        if isinstance(item, _TabItem):
-            await self.daemon_client.attach(self.session_id, item.run_id)
-            self.set_focus(self.query_one("#input", Input))
 
 
 async def run_textual_with_daemon(*, session_id: str) -> int:

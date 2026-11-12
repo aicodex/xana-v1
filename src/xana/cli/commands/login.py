@@ -5,7 +5,7 @@
   2. 轮询 /api/oauth/token 直到用户在网页确认
   3. token 原子写入 ~/.xana/credentials/kimi.json(0600)
   4. GET /models 拉取服务端模型目录,把 k3 / kimi-for-coding 登记进
-     system.json models[](type="kimi",context_window 取服务端声明,默认 1M);
+     system.json models[](type="kimi",context_window 保存服务端原始窗口);
      若 default_model 为空则默认 k3
 
 token 到期由 KimiTokenStore 自动刷新;refresh 失败会提示重新 `xana login`。
@@ -17,10 +17,10 @@ import asyncio
 from typing import Any, TextIO
 
 from xana.cli.commands.setup_wizard import _load_raw, _save_raw
+from xana.config.loader import DEFAULT_CONTEXT_WINDOW
 from xana.llm_driver.providers import kimi_oauth
 
 _WANTED_MODELS = ("k3", "kimi-for-coding")
-_DEFAULT_CONTEXT_WINDOW = 1_048_576  # 服务端未声明时按 1M 处理
 
 
 class LoginFlow:
@@ -106,7 +106,7 @@ async def _login(region: str, store: kimi_oauth.KimiTokenStore,
 
 
 def _register_models(models: list[dict[str, Any]], out: TextIO) -> list[str]:
-    """把服务端目录里想要的模型写进 system.json;同名 entry 更新 context_window。"""
+    """登记服务端原始窗口，保留用户显式配置；预算由配置层计算。"""
     wanted = {m.get("id"): m for m in models if m.get("id") in _WANTED_MODELS}
     if not wanted:
         return []
@@ -117,14 +117,20 @@ def _register_models(models: list[dict[str, Any]], out: TextIO) -> list[str]:
         info = wanted.get(model_id)
         if info is None:
             continue
-        ctx = int(info.get("context_length") or _DEFAULT_CONTEXT_WINDOW)
+        # 不在登记时扣预留或截成触发线，避免启动时重复扣除。
+        ctx = int(info.get("context_length") or DEFAULT_CONTEXT_WINDOW)
+        inputs=(info.get('modalities') or {}).get('input') or ()
+        modalities=[kind for kind in ('image','video') if kind in inputs or info.get(f'supports_{kind}_in') is True]
         entry = next((e for e in entries if e.get("name") == model_id), None)
         if entry is None:
-            entries.append({"name": model_id, "type": "kimi",
-                            "api_key": "", "context_window": ctx})
+            entry={"name": model_id, "type": "kimi", "api_key": "", "context_window": ctx}
+            entries.append(entry)
         else:
             entry["type"] = "kimi"
-            entry["context_window"] = ctx
+            if entry.get("context_window") is None:
+                entry["context_window"] = ctx
+        if modalities:
+            entry.setdefault("input_modalities",modalities)
         registered.append(model_id)
     data["models"] = entries
     dm = dict(data.get("default_model") or {})

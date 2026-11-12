@@ -11,6 +11,7 @@ import os
 import time
 import uuid
 from dataclasses import asdict, replace
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -167,38 +168,74 @@ def save_prompt(runs_dir: Path, text: str) -> str:
 class RunJsonlWriter:
     """每个 run 写一个 {sessions_root}/runs/{run_id}.jsonl；finalize 写终止 marker。"""
 
-    def __init__(self, sessions_root: Path) -> None:
-        self._dir = Path(sessions_root) / "runs"
+    def __init__(self, sessions_root: Path, *, on_append: Callable[[str, HistoryRow], None] | None = None) -> None:
+        self.sessions_root = Path(sessions_root)
+        self._dir = self.sessions_root / "runs"
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._on_append = on_append
+        self._row_ids: dict[str, set[str]] = {}
 
     def _path(self, run_id: str) -> Path:
+        if not run_id or "/" in run_id or "\\" in run_id or run_id in {".", ".."}:
+            raise ValueError("invalid run ID")
         return self._dir / f"{run_id}.jsonl"
 
-    async def append(self, run_id: str, row: HistoryRow) -> None:
-        with self._path(run_id).open("a", encoding="utf-8") as f:
-            f.write(_row_to_json(row) + "\n")
-
-    def rename_to_aborted(self, run_id: str) -> None:
-        """把 runs/{run_id}.jsonl 改名为 runs/{run_id}.aborted.jsonl(P5.3)。
-
-        文件不存在时静默 noop —— resume 路径在已 aborted 的 run 上不应失败。
-        """
-        src = self._path(run_id)
-        if not src.exists():
+    async def append(self, run_id: str, row: HistoryRow, *, notify: bool = True) -> None:
+        path = self._path(run_id)
+        if run_id not in self._row_ids:
+            transcript = self.read(run_id)
+            self._row_ids[run_id] = {str(item["row_id"]) for item in transcript[0]} if transcript else set()
+        if row.row_id in self._row_ids[run_id]:
             return
-        dst = self._dir / f"{run_id}.aborted.jsonl"
-        src.rename(dst)
+        try:
+            self._write_line(path, _row_to_json(row))
+        except BaseException:
+            self._row_ids.pop(run_id, None)  # A failed fsync may follow a successful write.
+            raise
+        self._row_ids[run_id].add(row.row_id)
+        if notify and self._on_append is not None:
+            self._on_append(run_id, row)
+
+    def read(self, run_id: str, *, errors: list[str] | None = None) -> tuple[list[dict], str | None] | None:
+        self._path(run_id)  # Validate before the shared reader constructs a path.
+        return read_run_transcript(self._dir, run_id, errors=errors)
+
+    async def reconcile(self, rows: tuple[HistoryRow, ...]) -> None:
+        """Repair main-history commits whose audit append was interrupted."""
+        for row in rows:
+            run_id = row.metadata.get("run_id")
+            if isinstance(run_id, str) and run_id:
+                await self.append(run_id, row, notify=False)
+        self._row_ids.clear()
+
+    @staticmethod
+    def _write_line(path: Path, text: str) -> None:
+        # Preserve a partial crash tail as its own invalid line, without swallowing the next row.
+        with path.open("ab+") as stream:
+            stream.seek(0, os.SEEK_END)
+            if stream.tell():
+                stream.seek(-1, os.SEEK_END)
+                if stream.read(1) != b"\n":
+                    stream.write(b"\n")
+            stream.write(text.encode("utf-8") + b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     async def finalize(self, run_id: str, status: RunTerminalStatus) -> None:
         marker = json.dumps(
             {"marker": "run_completed", "status": status, "ts": time.time()},
             ensure_ascii=False,
         )
-        with self._path(run_id).open("a", encoding="utf-8") as f:
-            f.write(marker + "\n")
+        self._write_line(self._path(run_id), marker)
+        self._row_ids.pop(run_id, None)
 
 
-def read_run_transcript(runs_dir: Path, run_id: str) -> tuple[list[dict], str | None] | None:
+def read_run_transcript(runs_dir: Path, run_id: str, *, errors: list[str] | None = None) -> tuple[list[dict], str | None] | None:
     """读 runs/<run_id>.jsonl(续跑过的读 .aborted.jsonl)→ (行列表, 终止状态)。没有该 run 返回 None;损坏行跳过。"""
     runs_dir = Path(runs_dir)
     path = runs_dir / f"{run_id}.jsonl"
@@ -208,13 +245,20 @@ def read_run_transcript(runs_dir: Path, run_id: str) -> tuple[list[dict], str | 
             return None
     rows: list[dict] = []
     end_status: str | None = None
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         try:
             row = json.loads(raw)
         except json.JSONDecodeError:
+            if errors is not None:
+                errors.append(f"invalid transcript JSON at line {number}")
             continue
-        if row.get("marker") == "run_completed":
+        if not isinstance(row, dict):
+            if errors is not None:
+                errors.append(f"invalid transcript record at line {number}")
+        elif row.get("marker") == "run_completed":
             end_status = row.get("status")
-        elif isinstance(row.get("payload"), dict):
+        elif isinstance(row.get("payload"), dict) and isinstance(row.get("row_id"), str):
             rows.append(row)
+        elif errors is not None:
+            errors.append(f"unrecognized transcript record at line {number}")
     return rows, end_status

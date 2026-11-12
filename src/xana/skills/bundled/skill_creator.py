@@ -16,7 +16,20 @@ from xana.skills.interfaces import Skill
 
 _BODY = """# skill_creator — 把本次会话的可复用流程沉淀为 skill
 
-用法:用户说「把刚才的流程存成 skill」「以后还要这么做」时使用。
+用法:用户要安装外部技能，或说「把刚才的流程存成 skill」「以后还要这么做」时使用。
+
+安装外部技能（用户要求安装现成技能时使用，无需走下方创作访谈）：
+使用 skill_manage 工具，不用 Bash 直接安装后宣称所有 agent 都可用。
+1. action=list：先查看本地库存和已启用的 agent；指定 source 可查看来源中的技能。
+2. action=install, skills=[技能名]：先查本地，已有直接复用，缺少时才通过官方 npx 安装。
+   source 填仓库或官方 CLI 支持的来源；skills=["*"] 表示明确安装全部。
+3. 安装默认不启用。agents=[目标 agent 名] 明确指定时，安装就绪后仅为这些 agent 注册。
+   如果用户只要求安装而没指定用途或 agent，先保持未启用，不擅自全局开放。
+4. action=enable/disable, skills=[技能名], agents=[目标 agent 名]：按 agent 调整可用范围。
+5. 从目标 agent 调用 skill_load 验证；加载返回技能目录，按该目录读取 references/。
+安装不执行包内脚本，也不会自动提供第三方工具、API 或凭据。
+
+以下用于创作新技能：
 
 第一步:分析会话
 回顾本次会话:用户的目标是什么?执行了哪些步骤?哪些步骤每次都一样,
@@ -59,10 +72,10 @@ class SkillCreatorSkill(Skill):
                 kind="skill",
                 name="skill_creator",
                 qualified_name="bundled.skill_creator",
-                description="把本次会话的可复用流程沉淀为 SKILL.md(分析会话 → 访谈 → 成稿确认)。",
+                description="安装并按 agent 启用外部技能（skill_manage），或把可复用流程沉淀为 SKILL.md。",
                 source=ComponentSource(source_type="builtin", scope="system"),
             ),
-            when_to_use="用户要把刚才的流程存成 skill、以后还要这么做时。",
+            when_to_use="用户要安装、列出外部技能，或把刚才的流程存成 skill 时。",
             package=SkillPackage(
                 root=None,
                 manifest=SkillManifest(name="skill_creator", description="沉淀可复用流程为 skill"),

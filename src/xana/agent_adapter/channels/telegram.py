@@ -1,20 +1,4 @@
-"""TelegramAdapter: Telegram channel adapter via Bot API long-polling.
-
-Unified PH card edition (T11). Mirrors the feishu adapter structure:
-each PH (or menu card) owns one ``UnifiedCardState`` keyed by card_id.
-Events flow through ``unified_card_events.apply_event(state, event)`` and the
-result is rendered via ``unified_card_telegram.render(state)``; the adapter
-sends (first time) or edits (subsequent) a single Telegram message per card.
-Throttle = DraftCoalescer 0.25s.
-
-Replaces the prior per-turn streaming + dual-card model (build_fg / bg
-placeholder / frozen PH renderers). Callback data:
-
-- Top "停止" button -> ``/cancel <run_id>`` (synthesized inbound message).
-- Top "后台" button -> synthetic ``__detach__:<run_id>`` -> gateway.detach_foreground.
-- Bottom attach menu -> ``/attach <run_id>``.
-- Bottom help-menu commands -> the command string (e.g. ``/clear``).
-"""
+"""Telegram 渠道：消息接收、卡片交付、配对校验及原 run 取消。"""
 from __future__ import annotations
 
 import asyncio
@@ -27,13 +11,14 @@ from xana.agent_adapter.channels.card import Card
 from xana.agent_adapter.channels.process_view import DEFAULT_IM_VIEW_MODE as DEFAULT_VIEW_MODE
 from xana.agent_adapter.channels.unified_card import (
     UnifiedCardState,
-    build_attach_menu,
     build_help_menu,
 )
 from xana.agent_adapter.channels.unified_card_telegram import render as render_unified
 from xana.agent_adapter.contracts import (
     AdapterHealth,
     InboundMessage,
+    OutboundMedia,
+    MediaSendError,
     RenderedMessage,
     SessionBinding,
 )
@@ -67,6 +52,9 @@ class TelegramConfig:
 
 class TelegramApiClient:
     """Structural protocol — any object with these async methods qualifies."""
+
+    async def send_media(self, *, chat_id: str, media: OutboundMedia) -> int:
+        raise NotImplementedError
 
     async def send_message(
         self,
@@ -119,7 +107,7 @@ class TelegramApiClient:
 class _SessionBuffer:
     chat_id: str | None = None
     session_id: str = ""
-    # card_id -> Card. card_id == run_id for PH cards; dedicated id for menus.
+    # card_id -> Card. card_id == run_id for answer cards; dedicated id for menus.
     cards: dict[str, Card] = field(default_factory=dict)
     # 待用于下一次新卡片首次 send 的 reply_to(用户原话引用框)。
     pending_reply_to: int | None = None
@@ -154,6 +142,11 @@ class TelegramAdapter(Adapter):
         self._pending_tasks: list[asyncio.Task] = []
         self._gateway: Any | None = None
         self._menu_seq: dict[str, int] = {}
+
+    async def send_media(self, *, chat_id: str, media: OutboundMedia) -> str:
+        if self._api_client is None:
+            raise MediaSendError('Telegram 渠道尚未启动',failure_kind='unsupported')
+        return str(await self._api_client.send_media(chat_id=chat_id,media=media))
 
     def set_gateway(self, gateway: Any) -> None:
         self._gateway = gateway
@@ -320,12 +313,7 @@ class TelegramAdapter(Adapter):
         return False
 
     async def _handle_callback_query(self, cq: dict[str, Any]) -> None:
-        """Unified card buttons emit:
-
-        - ``/cancel <run_id>`` -> synthesize inbound + ack.
-        - ``/attach <run_id>``, ``/help`` etc. -> synthesize inbound + ack.
-        - ``__detach__:<run_id>`` -> gateway.detach_foreground (adapter-local).
-        """
+        """Handle explicit card commands, view actions and exact-run cancellation."""
         data = str(cq.get("data") or "")
         chat = (cq.get("message") or {}).get("chat") or {}
         chat_id = str(chat.get("id", ""))
@@ -348,17 +336,49 @@ class TelegramAdapter(Adapter):
             await _ack()
             return
 
-        if data.startswith("__detach__:"):
+        if data.startswith("__steer__:"):
+            from hashlib import sha256
+            if not await self._gate(user_id_int, chat_id, ""):
+                await _ack()
+                return
+            token = data.split(":", 1)[1]
             if self._gateway is not None:
-                session_id = self._allocate_sid(chat_id)
-                try:
-                    await self._gateway.detach_foreground(session_id)
-                except Exception as exc:
-                    _logger.debug(
-                        "telegram: detach_foreground failed (%s): %s",
-                        type(exc).__name__, self._redact(str(exc)),
-                    )
-            await _ack()
+                for sid, buf in self._buffers.items():
+                    if buf.chat_id != chat_id:
+                        continue
+                    for card in buf.cards.values():
+                        ident = card.state.pending_input_id
+                        if ident and sha256(ident.encode()).hexdigest()[:24] == token:
+                            try:
+                                await self._gateway.control.promote(sid, ident)
+                            except (LookupError, ValueError):
+                                await _ack(_STALE_MSG)
+                            else:
+                                await _ack()
+                            return
+            await _ack(_STALE_MSG)
+            return
+        if data.startswith(("__cancel__:", "__compact_cancel__:")):
+            action = "cancel" if data.startswith("__cancel__:") else "compact_cancel"
+            from hashlib import sha256
+            if not await self._gate(user_id_int, chat_id, ""):
+                await _ack()
+                return
+            token = data.split(":", 1)[1]
+            if self._gateway is not None:
+                for sid, buf in self._buffers.items():
+                    if buf.chat_id != chat_id:
+                        continue
+                    for rid in buf.cards:
+                        if sha256(rid.encode()).hexdigest()[:24] == token:
+                            if action == "cancel":
+                                await self._gateway.cancel(sid, rid)
+                            else:
+                                await self._inbound.put(InboundMessage(self.adapter_id, sid, f"/compact_cancel {rid}",
+                                    user_id=str(user_id_int), metadata={"chat_id": chat_id}))
+                            await _ack()
+                            return
+            await _ack(_STALE_MSG)
             return
 
         if data.startswith("__load_tools__:"):
@@ -441,7 +461,7 @@ class TelegramAdapter(Adapter):
             return
 
         # All other callback_data values are command strings (e.g. /cancel r1,
-        # /attach r1, /help). Run through the same gate as direct messages.
+        # /help, /model). Run through the same gate as direct messages.
         if data:
             if await self._gate(user_id_int, chat_id, data):
                 session_id = self._allocate_sid(chat_id)
@@ -481,27 +501,6 @@ class TelegramAdapter(Adapter):
 
     async def render(self, event: AgentEvent) -> RenderedMessage:
         buf = self._get_or_create_buffer(event.session_id)
-        # /attach menu detour: payload may carry attach_choices.
-        choices = event.payload.get("attach_choices") if event.payload else None
-        if isinstance(choices, list) and choices:
-            cands = tuple(
-                (str(c.get("run_id") or ""), str(c.get("label") or c.get("run_id") or ""))
-                for c in choices
-                if c.get("run_id")
-            )
-            card_id = self._next_menu_card_id(event.session_id, prefix="attach")
-            state = build_attach_menu(card_id=card_id, candidates=cands)
-            card = self._make_card(buf, state)
-            card.terminal = True
-            buf.cards[card_id] = card
-            await self._deliver(buf, card)
-            return RenderedMessage(
-                adapter_id=self.adapter_id,
-                session_id=event.session_id,
-                text=str(event.payload.get("text", "") or ""),
-                metadata={"event_kind": event.kind, "attach_menu": True},
-            )
-
         card_id = self._card_id_for(event)
         if not card_id:
             return RenderedMessage(
@@ -510,7 +509,7 @@ class TelegramAdapter(Adapter):
                 text="",
                 metadata={"event_kind": event.kind},
             )
-        card = self._ensure_card(buf, card_id, ph_run_id=card_id)
+        card = self._ensure_card(buf, card_id, run_id=card_id)
         task = card.dispatch(event)
         if task is not None:
             try:
@@ -542,12 +541,12 @@ class TelegramAdapter(Adapter):
         return card
 
     def _ensure_card(
-        self, buf: _SessionBuffer, card_id: str, *, ph_run_id: str | None = None
+        self, buf: _SessionBuffer, card_id: str, *, run_id: str | None = None
     ) -> Card:
         card = buf.cards.get(card_id)
         if card is None:
             # 工具过程默认按组折叠(IM 卡片放不下逐条调用);会话 /view 可覆盖
-            state = UnifiedCardState(card_id=card_id, ph_run_id=ph_run_id, view_mode=DEFAULT_VIEW_MODE)
+            state = UnifiedCardState(card_id=card_id, run_id=run_id, view_mode=DEFAULT_VIEW_MODE)
             card = self._make_card(buf, state)
             buf.cards[card_id] = card
         return card
@@ -618,19 +617,10 @@ class TelegramAdapter(Adapter):
             return
         buf = self._get_or_create_buffer(sid)
         kind = payload.get("kind")
-        if kind in ("menu_response", "attach_options"):
-            if kind == "menu_response":
-                specs = tuple(
-                    (str(n), str(d)) for n, d in (payload.get("specs") or ())
-                )
-                cid = self._next_menu_card_id(sid, prefix="help")
-                state = build_help_menu(card_id=cid, specs=specs)
-            else:
-                cands = tuple(
-                    (str(r), str(l)) for r, l in (payload.get("candidates") or ())
-                )
-                cid = self._next_menu_card_id(sid, prefix="attach")
-                state = build_attach_menu(card_id=cid, candidates=cands)
+        if kind == "menu_response":
+            specs = tuple((str(n), str(d)) for n, d in (payload.get("specs") or ()))
+            cid = self._next_menu_card_id(sid, prefix="help")
+            state = build_help_menu(card_id=cid, specs=specs)
             card = self._make_card(buf, state)
             card.terminal = True
             buf.cards[cid] = card
@@ -639,7 +629,7 @@ class TelegramAdapter(Adapter):
         rid = str(payload.get("run_id") or "")
         if not rid:
             return
-        card = self._ensure_card(buf, rid, ph_run_id=rid)
+        card = self._ensure_card(buf, rid, run_id=rid)
         pe = ProgressEvent(
             session_id=sid, run_id=rid,
             message=str(kind or ""), payload=dict(payload),

@@ -47,8 +47,7 @@ class EnterPlanModeTool(Tool):
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         if self.session_config_store is not None:
             current = await self.session_config_store.get(context.session_id)
-            new_metadata = {**current.metadata, "mode": "plan"}
-            updated = dataclasses.replace(current, metadata=new_metadata)
+            updated = dataclasses.replace(current, metadata={**current.metadata, "mode": "plan"})
             await self.session_config_store.save(updated)
         return ToolResult(
             ok=True,

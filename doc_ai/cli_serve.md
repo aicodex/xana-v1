@@ -15,7 +15,7 @@ status: active
 3. **boot**：`boot(project_root=..., config_provider=DefaultConfigProvider(), history_root=<home>/sessions)`，拿到 gateway / scheduler / session_resolver；配置为用户级 system.json + 本项目 config.json 合并结果（见 [config](config.md)）。
 4. **adapter 组装**（`build_adapters()`）：从合并配置的 `channels`（项目 config.json）读配置，环境变量覆盖（`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFICATION_TOKEN` / `FEISHU_ENCRYPT_KEY` / `FEISHU_CONNECTION_MODE` / `FEISHU_WEBHOOK_PORT`、`TELEGRAM_BOT_TOKEN` / `TELEGRAM_ALLOWED_USER_IDS`）。飞书 api_base 按 `domain` 选 `open.feishu.cn` / `open.larksuite.com`，连接模式默认 `ws`（lark-oapi 长连接，无需公网 URL），未知值回退 ws，webhook 模式才起 aiohttp server（默认 :8765）。飞书与 Telegram 共享一个 `PairingStore`（`<home>/channels/pairings.json`，按项目），所以 `xana pair approve` 改动经 fingerprint 热加载进运行中的 serve，无需重启。缺必需配置的 adapter 静默跳过。
 5. **daemon 端口**：`daemon.bind` 必须配置，pre-bind 该项目的 TCP 端口（端口被占即干净退出；每个项目端口不同，default 沿用 17777，新项目创建时分配空闲端口）。然后 `DaemonBridgeAdapter` 注册为 `adapter_id="cli"`，与 feishu/tg 并列。unix socket 始终起一个**不带 token** 的 app（本机可信），路径 `daemon_socket(daemon)`：`daemon.unix_socket` 为空（默认）时取 `<home>/run/serve.sock`；TCP app 带 `daemon.token`；bind 为 `0.0.0.0` 打 LAN 暴露警告。
-6. **pump**：daemon bridge 和每个 adapter 各起一个 `_run_inbound_pump`——`async for inbound in adapter.receive()`，每条 inbound 独立 task 去 drain `gateway.submit(inbound)`（串行 pump 会让第二条消息堵到第一条收尾，gateway 的 detach 逻辑永远没机会触发）。
+6. **pump**：daemon bridge 和每个 adapter 各起一个 `_run_inbound_pump`——`async for inbound in adapter.receive()`，每条 inbound 独立 task 去 drain `gateway.submit(inbound)`（串行 pump 会让补充输入无法及时接收）。
 7. **细节接线**：Telegram adapter 把 gateway 可见命令经 `setMyCommands` 推成 `/` 菜单（飞书无此能力，靠 `/h`）；`SchedulerRunner` 的 dispatch 是 boot 组装的 `ScheduledTaskDispatcher`（`boot_result.scheduler_dispatch`）：到点任务在无人值守的独立子会话执行，结果按通知方式插回该聊天的当前会话；元 agent cron 的 marker 任务（`[xana-evolution-meta]`）由它转交 `meta_service.fire()`。详见 [runtime_scheduler](runtime_scheduler.md)。
 8. **SIGTERM 优雅退出**：`graceful_shutdown(gateway, grace_seconds=2.0)` 先 `gateway.cancel_all()`，等 background run drain，超时记日志强制退出（未完 run 下次启动按 shutdown_force 走 /resume）；之后停 scheduler、cancel pumps、停 daemon server 与 bridge、停 adapter、关 main_writer。
 
@@ -23,4 +23,4 @@ status: active
 
 ## daemon HTTP 动作桥
 
-`_make_daemon_on_action()` 把 daemon HTTP 的 action 回调接到 gateway：`cancel` → `gateway.cancel`；`attach` / `detach` 带 `run_id` 时转对应 gateway 方法；button 类动作由统一 Card 客户端自管，服务端 no-op。
+`_make_daemon_on_action()` 把 daemon HTTP 的 action 回调接到 gateway：`cancel` → `gateway.cancel`；button 类动作由统一 Card 客户端自管，服务端 no-op。

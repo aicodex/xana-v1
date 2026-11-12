@@ -7,6 +7,12 @@ numbers separated by a tab — the same format the model is trained on.
 """
 from __future__ import annotations
 
+import asyncio
+import os
+import stat
+from pathlib import Path
+
+from xana.multimodal.files import detect_format
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
 from xana.tools.builtin._path import resolve_path
@@ -24,7 +30,7 @@ _SPEC = ToolSpec(
         kind="tool",
         name="Read",
         qualified_name="builtin.Read",
-        description=("读取文件内容(带行号)。需要读多个文件时优先并行:在同一条回复里发出多个 read 调用,"
+        description=("读取 UTF-8 文本文件(带行号，最大 8 MiB)。图片、视频请用 ReadImage / ReadVideo。需要读多个文件时优先并行:在同一条回复里发出多个 read 调用,"
                      "而不是每轮读一个。"),
         source=ComponentSource(source_type="builtin", scope="system"),
     ),
@@ -68,10 +74,34 @@ class ReadTool(Tool):
                 error=f"is a directory: {path}", failure_kind="validation",
                 rendered=f"[Read failed: {path} is a directory]",
             )
-        text = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            text = await asyncio.to_thread(_read_text, path)
+        except (OSError, ValueError) as exc:
+            return ToolResult(ok=False, content=None, error=str(exc), failure_kind="validation",
+                              rendered=f"[Read failed: {exc}]")
         lines = text.splitlines()
         offset = int(invocation.input.get("offset") or 0)
         limit = int(invocation.input.get("limit") or _DEFAULT_LIMIT)
         chunk = lines[offset : offset + limit]
         rendered = "\n".join(f"{offset + i + 1:>5}\t{line}" for i, line in enumerate(chunk))
         return ToolResult(ok=True, content=text, rendered=rendered)
+
+
+def _read_text(path: Path) -> str:
+    limit = 8 * 1024 * 1024
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as file:
+        info = os.fstat(file.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("Read 只支持普通文本文件")
+        head = file.read(8192)
+        if detect_format(head):
+            raise ValueError("这是图片或视频，请使用 ReadImage / ReadVideo 查看实际内容")
+        if info.st_size > limit:
+            raise ValueError("文本超过 8 MiB，请用 Bash 按范围提取后读取")
+        data = head + file.read(limit + 1 - len(head))
+    if len(data) > limit:
+        raise ValueError("文本在读取时超过 8 MiB")
+    if b"\0" in data:
+        raise ValueError("Read 不支持二进制文件；图片或视频请使用 ReadImage / ReadVideo")
+    return data.decode("utf-8", errors="replace")

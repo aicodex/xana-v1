@@ -1,19 +1,3 @@
-from xana.context.message import (
-    AssistantMessage,
-    CompactPlaceholder,
-    CompactSummary,
-    Message,
-    RegularPlaceholder,
-    ToolResultMessage,
-    UserMessage,
-)
+from xana.context.message import AssistantMessage, CompactSummary, Message, ToolResultMessage, UserMessage
 
-__all__ = [
-    "Message",
-    "UserMessage",
-    "AssistantMessage",
-    "ToolResultMessage",
-    "RegularPlaceholder",
-    "CompactPlaceholder",
-    "CompactSummary",
-]
+__all__ = ["Message", "UserMessage", "AssistantMessage", "ToolResultMessage", "CompactSummary"]

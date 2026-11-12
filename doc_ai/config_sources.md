@@ -40,10 +40,24 @@ pydantic schema，顶层 `extra="forbid"`（roundtrip 可移植），主要段�
 ## 不变量
 
 - serve 进程内配置的读入口只有 `DefaultConfigProvider.load()`（system.json 经 `JsonSystemConfigReader`，再叠加项目 config.json）；SessionResolver 只在 boot 时经 provider 拿一次快照，自己不重读文件。不经 boot 的入口（xanac、setup、项目管理）用 `project_config.load_system_config(pid)` 同步读取同一合并结果。
-- 种子播种保证 load 永远有文件可读；空 models[] 是合法状态（回落 fake provider）。
+- 种子播种保证 load 永远有文件可读；空 models[] 可作为安装阶段配置保存，但不能用于启动 serve。
 
 ## 验收要求
 
 - 输入/输出与 [config](./config.md) 的模块边界一致。
 - 不引入隐藏状态权威。
 - 不绕过 [replacement_rule](replacement_rule.md)。
+
+模型图片/视频能力只读 `models[].input_modalities`（与 `context_window` 并列，缺省 `[]`）；
+可填 `image`、`video`，配置示例与完整传输契约见 [多模态输入](llm_provider_contract.md#多模态输入)。
+
+模型可在 `system.json` 的每个 `models[]` 条目中配置原始 `context_window` 和输出上限 `max_tokens`（均为正整数，输出包含思考）：
+
+```json
+{"name": "kimi-for-coding", "type": "kimi", "context_window": 1048576,
+ "max_tokens": 32768, "cache_ttl_seconds": 3600, "input_modalities": ["image", "video"]}
+```
+
+`resolve_model_config(entry)` 统一推导摘要上限 `min(max_tokens,20000)`、有效窗口、自动线和硬线。两项任一未配置时自动线兜底为窗口减 65,536，原始窗口未配置时缺省 1,000,000。非法的 0/负数不视为未配置，输出上限不得占满整个窗口。登录登记保存服务端原始窗口，保留已有显式配置；预算不得回写为模型容量。完整公式见 [压缩阈值](harness_compact.md#阈值与失败)。
+
+`cache_ttl_seconds` 配置该模型/端点实际保留 prompt cache 的秒数，缺省 3600（1 小时）；例如 5 分钟填 300。它随模型选择进入 `ModelConfig` 和运行快照，不能使用会话/全局硬编码覆盖。该值是本地策略对服务端保留期的声明，不会向后端强制申请该 TTL，也不会单独开启工具结果清理。模型条目的 `base_url` 及缓存时长应按实际使用的端点配置。

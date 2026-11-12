@@ -54,7 +54,7 @@ status: active
 | exec | Bash | ✓ |
 | web | web_search / web_open_url / web_fetch | ✓ |
 | memory | memory_search / memory_write | ✓ |
-| session | TodoWrite / EnterPlanMode / EnterWorktree / report_goal | ✓ |
+| session | TodoWrite / EnterPlanMode / EnterWorktree / create_goal / get_goal / update_goal | ✓ |
 | meta | tool_search / skill_load | ✓ |
 | research | deep_research / background_research | ✓ |
 | schedule | CronCreate / CronList / CronDelete | ✓ |

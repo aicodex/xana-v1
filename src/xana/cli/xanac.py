@@ -131,9 +131,12 @@ async def _oneshot_run(
     client = DaemonClient(base_url=base_url, token=token,
                           unix_socket=unix_socket)
     try:
-        state = UnifiedCardState(card_id=session_id, ph_run_id=session_id)
+        state = UnifiedCardState(card_id=session_id, run_id=session_id)
         done = asyncio.Event()
         rc = 0
+        from uuid import uuid4
+        input_id = uuid4().hex
+        target_run = None
         # Replay-vs-live gate: only honour final/error/cancelled for events
         # received AFTER our submit's baseline seq. Replay can deliver an
         # earlier turn's final ahead of our /compact (or new prompt)
@@ -141,7 +144,7 @@ async def _oneshot_run(
         baseline_seq = -1
 
         async def reader():
-            nonlocal rc, state
+            nonlocal rc, state, target_run
             async for ev in client.stream(session_id):
                 if ev.event == "initialize":
                     continue
@@ -149,10 +152,18 @@ async def _oneshot_run(
                     continue
                 if ev.event == "replay_gap":
                     state = UnifiedCardState(
-                        card_id=session_id, ph_run_id=session_id)
+                        card_id=session_id, run_id=session_id)
                     continue
                 if ev.event == "agent_event":
                     aev = agent_event_from_wire(ev.data)
+                    he = aev.harness_event
+                    rid = he.run_id if he else str(aev.payload.get("run_id") or "")
+                    payload = he.payload if he else aev.payload
+                    receipt = payload.get("input_id") or aev.payload.get("input_id")
+                    if receipt == input_id and (he is None or he.kind in {"turn_started", "input_accepted", "error"}):
+                        target_run = rid
+                    if target_run is None or rid != target_run:
+                        continue
                     # Ensure terminal events surface even when no prior
                     # turn_started/model_delta was observed (e.g. cached
                     # replay starting partway through, or short server
@@ -178,10 +189,12 @@ async def _oneshot_run(
                         return
                     continue
                 if ev.event == "progress":
-                    # detach / ph_replaced / compact_* / command_progress
-                    # arrive as ProgressEvent via gateway.note_progress; if
-                    # dropped, /compact cards don't freeze and bg cards
-                    # don't get terminal patches.
+                    # Command and compaction lifecycle progress.
+                    rid = str(ev.data.get("run_id") or "")
+                    if ev.data.get("input_id") == input_id:
+                        target_run = rid
+                    if target_run is None or rid != target_run:
+                        continue
                     apply_event(state, _progress_from_wire(ev.data))
                     # /compact run finishes via compact_finalized progress
                     # (no agent_event=final for compact). Honour it as a
@@ -201,7 +214,7 @@ async def _oneshot_run(
         # for events with seq > baseline.
         await asyncio.sleep(0.5)
         baseline_seq = client._last_seq.get(session_id, 0)
-        await client.submit(session_id, text)
+        await client.submit(session_id, text, metadata={"input_id": input_id})
         try:
             await asyncio.wait_for(done.wait(), timeout=timeout_s)
         except asyncio.TimeoutError:

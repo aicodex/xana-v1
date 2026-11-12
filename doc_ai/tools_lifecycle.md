@@ -43,7 +43,10 @@ status: active
   - **read_only=False**：`asyncio.shield(task)` 等 2.0 秒宽限；完成则正常采用结果（写生效），超时 `task.cancel()` 强杀并返回 `failure_kind="cancelled"`、content 为 P5.2 synthetic 中文 warning。
 - 实现协作式取消的代表：`BashTool` 内部维护 `call_id → subprocess` 表，`cancel()` 发 SIGTERM → 等 2 秒 → SIGKILL；execute 里的 `CancelledError` 分支兜底强杀。
 
-resume 语义（P5.1）：read_only 工具取消后 resume = 重跑该工具；write 工具取消后 resume = fork 新 run。
+resume 使用当前历史启动新 run，未配对的工具结果标为未知，不自动重放副作用。
+
+后台等待结果用 `ToolResult.background_task_id` 携带任务身份，harness 在工具结果写入主历史后确认。
+`task_wait` 不因读到结果提前确认；`task_stop` 等待真实执行收尾。见[后台任务](harness_background_tasks.md)。
 
 ## Tool ABC：必须实现与默认实现
 
@@ -56,3 +59,21 @@ resume 语义（P5.1）：read_only 工具取消后 resume = 重跑该工具；w
 - `cancel` → no-op。
 
 tools 模块不再拆分各阶段的独立策略 ABC，编排直接走 `Tool` 方法。
+
+## 子进程超时边界
+
+`ProcessRunner` 用同一个单调时钟截止时间约束输出管道读取与进程退出，
+不能因 stdout/stderr 提前关闭而绕过 timeout。到期仍按进程组强杀、回收并保留已有输出。
+验证：`tests/test_tool_bash.py::test_timeout_covers_process_after_both_output_pipes_close`。
+
+## 本地读取与媒体
+
+- `ReadImage` / `ReadVideo`：同一个 `ReadMediaTool` 按媒体类型实例化，属于 `fs` 组。
+  只有当前模型配置开启对应能力才暴露 schema 并允许执行；工具结果包含实际媒体引用，
+  经正常工具链进入模型，不新增独立执行路径。
+- `Read`：普通文本最大 8 MiB，文件读取在线程中执行；遇到媒体提示使用对应读取工具。
+- `Grep`：Python 正则在独立工作进程执行，保留原正则语义；30 秒超时及取消会终止进程。
+  只搜索 ≤8 MiB 普通文本，跳过二进制/特殊文件并报告；最多 250 命中/48000 字符，
+  工作进程内存上限 256 MiB，避免模型权重文件或病态正则阻塞服务事件循环。
+
+验证：`tests/test_tool_grep.py`、`tests/test_multimodal.py`。

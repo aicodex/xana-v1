@@ -4,6 +4,8 @@ The driver calls providers and parses responses. It does not run tools or write 
 """
 from __future__ import annotations
 
+from xana.multimodal.contracts import MediaInput, InputModality
+
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -21,6 +23,7 @@ class ProviderCapabilities:
     supports_json_schema: bool = False
     max_context_tokens: int | None = None
     max_output_tokens: int | None = None
+    input_modalities: tuple[InputModality, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,7 @@ class ModelMessage:
     role: Literal["system", "user", "assistant", "tool"]
     content: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    media: tuple[MediaInput, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ class ModelRequest:
     request_id: str | None = None
     retry_policy: RetryPolicy | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True)

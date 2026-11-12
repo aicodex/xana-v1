@@ -2,20 +2,20 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator
+from typing import AsyncGenerator, AsyncIterator
 
 from xana.llm_driver.contracts import ModelEvent, ModelRequest, ProviderCapabilities
 
 
 class ModelClient(ABC):
     @abstractmethod
-    def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]: ...
+    def stream(self, request: ModelRequest) -> AsyncGenerator[ModelEvent, None]: ...
 
     @abstractmethod
     async def cancel(self, request_id: str) -> None: ...
 
     @abstractmethod
-    async def capabilities(self) -> ProviderCapabilities: ...
+    async def capabilities(self, model: str | None = None) -> ProviderCapabilities: ...
 
 
 class ModelRegistry(ABC):

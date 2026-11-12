@@ -1,18 +1,15 @@
-"""启动扫 runs/ 目录,产 ScanReport — 给 boot 后续处理 PH 替换 + /resume 候选填充。
-
-仲裁规则(P5.5):有 run_completed marker 则 A 赢,不管 JSONL 看起来是否完整。
-.aborted.jsonl 后缀文件跳过(已是 resume fork 的源)。
-"""
+"""扫描 run trace 终止标记，标记未完成运行供用户恢复；不自动重放执行。"""
 from __future__ import annotations
 
 import json
 import pathlib
 from dataclasses import dataclass
+from xana.memory.interfaces import ActiveContextStore, HistoryMirror
 
 
 @dataclass(frozen=True)
 class ScanReport:
-    completed_run_ids: tuple[str, ...] = ()    # 应触发 PH 替换
+    completed_run_ids: tuple[str, ...] = ()    # 有终止标记的审计记录
     unfinished_run_ids: tuple[str, ...] = ()   # 应入 /resume(exit_reason=shutdown_force)
     aborted_run_ids: tuple[str, ...] = ()      # 已是 .aborted.jsonl,跳过
 
@@ -58,21 +55,6 @@ def scan_runs_dir(runs_root: pathlib.Path) -> ScanReport:
     )
 
 
-async def replace_completed_placeholders(
-    *,
-    report: ScanReport,
-    runs_root: pathlib.Path,
-    store,  # ActiveContextStore
-) -> None:
-    """对每个 completed run,从 jsonl 读出 messages 替换 PH(按 run_id,与会话无关,全部 run 只过一遍)。"""
-    from xana.memory.runs_loader import runs_jsonl_to_memory_messages
-    for rid in report.completed_run_ids:
-        jsonl_path = runs_root / f"{rid}.jsonl"
-        try:
-            messages = runs_jsonl_to_memory_messages(jsonl_path)
-        except Exception:
-            continue
-        await store.replace_placeholder(rid, tuple(messages))
 
 
 async def mark_unfinished_as_resumable(

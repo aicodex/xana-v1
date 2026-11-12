@@ -26,7 +26,7 @@
 
 ## 进度行
 
-回答进行中(streaming / detached),工具面板之后、回答块之前显示一行灰色 markdown `<font color='grey'>› {最近一条进度说明}</font>`;完成 / 取消后不渲染。规则见主规格 §5.5a。
+回答进行中(streaming),工具面板之后、回答块之前显示一行灰色 markdown `<font color='grey'>› {最近一条进度说明}</font>`;完成 / 取消后不渲染。规则见主规格 §5.5a。
 
 ## button(behaviors,不裸 value)
 
@@ -39,7 +39,7 @@
 callback `value` 形式:
 - `{"send_text": "<cmd>"}` → 走 send(用户输入回路)
 - `{"load_tools": "<card_id>"}` → adapter 本地动作
-- `{"detach": "<run_id>"}` → 后台
+- `{"cancel": "<run_id>"}` → 按原卡所属 sid/run_id 停止回答
 
 ## 容量限制
 
@@ -56,11 +56,9 @@ callback `value` 形式:
 | `compact.state=completed` | 一行 "▰▰▰▰▰▰▰▰▰▰ 完成压缩" + 折叠面板"已压缩 N 条消息" |
 | `compact.state=cancelled` | "压缩已取消" + 折叠面板 |
 | `answer.state=streaming` | thinking 折叠 / tools 折叠 / "✦ 回答中" 展开 |
-| `answer.state=detached` | 所有面板折叠 / "✦ 回答" 折叠 |
-| `answer.state=terminal` | 默认展开;`terminal_from_bg=True` → 折叠 |
+| `answer.state=terminal` | 回答正文展开 |
 | `answer.state=cancelled` | "✦ 回答已取消" 折叠 |
 | `tools_pending>0 & streaming/terminal` | "展开 ✎×N" 按钮 |
-| `tools_pending>0 & detached` | "_后台 ✎ 中_" 静态 md(不可点) |
 
 ## 出站媒体(图片/视频)
 

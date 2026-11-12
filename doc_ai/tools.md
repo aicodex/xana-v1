@@ -29,7 +29,7 @@ status: active
 - 输入校验（`Tool.validate`）与工具级权限闸门（`Tool.check_permission`）。
 - 执行与取消语义（`Tool.execute` / `Tool.cancel`，read_only 立即取消 vs write 2 秒宽限）。
 - 结构化结果与失败归因（`ToolResult` / `ToolFailureKind`）。
-- 内置工具实现（`src/xana/tools/builtin/`，cron 三工具同文件；`send_media` 只在接了飞书机器人的项目注册）。
+- 内置工具实现（`src/xana/tools/builtin/`，cron 三工具同文件；`send_media` 只在接了飞书或 Telegram 机器人的项目注册）。
 
 ## Does Not Own
 
@@ -38,7 +38,7 @@ status: active
 
 ## 内置工具清单
 
-全部在 [boot()](../src/xana/runtime/boot.py) 注册进同一个 `InMemoryToolRegistry`（cron 三工具同文件；`send_media` 只在接了飞书机器人的项目注册）。`defer=True` 的工具默认只对模型暴露名字，经 `tool_search` 揭示后下轮获得完整 schema（见 [tools_spec](tools_spec.md)）。
+全部在 [boot()](../src/xana/runtime/boot.py) 注册进同一个 `InMemoryToolRegistry`（cron 三工具同文件；`send_media` 只在接了飞书或 Telegram 机器人的项目注册）。`defer=True` 的工具默认只对模型暴露名字，经 `tool_search` 揭示后下轮获得完整 schema（见 [tools_spec](tools_spec.md)）。
 
 | 工具名 | 文件 | 说明 | 关键标记 |
 |---|---|---|---|
@@ -52,14 +52,14 @@ status: active
 | `memory_write` | `memory_write.py` | 项目记忆（`memory/`）唯一写入口：create（name / description / type / content 必填，相近记忆拒绝）/ update / delete | destructive |
 | `TodoWrite` | `todo_write.py` | 全量覆盖式会话 todo 列表，磁盘持久化 | destructive |
 | `tool_search` | `tool_search.py` | 揭示 deferred 工具完整 schema | read_only |
-| `report_goal` | `report_goal.py` | 目标模式下声明目标终态（done / blocked / failed + 原因）；只在 `goal_mode` 会话的 schema 中出现 | read_only |
+| `create_goal` / `get_goal` / `update_goal` | `goal_tools.py` | 当前会话持久目标、用量和状态；完成声明经过现有 verify 后提交 | read_only |
 | `skill_load` | `skill_load.py` | 按名取 bundled skill 全文（两阶段加载的第二阶段）；不在 `ToolContext.visible_skills` 内的技能按不存在处理（`not_found`，只列可见技能） | read_only |
 | `EnterPlanMode` | `enter_plan_mode.py` | 写 `SessionConfig.metadata["mode"]="plan"`（enforcement 见下） | read_only |
 | `EnterWorktree` | `enter_worktree.py` | `git worktree add` 并把路径写进 session metadata | destructive |
 | `cron_create` | `cron.py` | 调度定时任务：`agent` 指定运行的 agent，`notify` = report / silent；到点在无人值守的独立子会话执行，结果按通知方式插回当前聊天（见 [runtime_scheduler](runtime_scheduler.md)） | defer |
 | `cron_list` | `cron.py` | 列出等待执行的定时任务（agent、通知方式，循环任务附最近一次执行）；`history=true` 查执行历史（时间 / 任务 / 状态 / 记录路径） | read_only, defer |
 | `notify_user` | `notify_user.py` | 只在无人值守会话可见：`info` 立即告知用户（每次任务 ≤3 条），`decision` 请用户决策并结束本次执行，答复后经 `agent_run` resume 继续 | open_world |
-| `send_media` | `send_media.py` | 把 workspace 内的图片（PNG/JPEG/WEBP/GIF，≤10MB）或 MP4 视频（≤30MB）发到当前聊天（目前仅飞书）；视频自动读时长、抽首帧作封面；只给用户聊天 agent，子 agent 排除；只在接了飞书机器人的项目注册 | destructive, open_world |
+| `send_media` | `send_media.py` | 把 workspace 内的图片（PNG/JPEG/WEBP/GIF，≤10MB）或 MP4 视频（≤30MB）发到当前聊天（支持飞书 / Telegram）；视频自动读时长、抽首帧作封面；只给用户聊天 agent，子 agent 排除；只在接了飞书或 Telegram 机器人的项目注册 | destructive, open_world |
 | `cron_delete` | `cron.py` | 按 ID 删除定时任务 | defer |
 | `web_search` | `xana_search.py` | 配置了 xana-search 服务（`system.json` `web_search.xana_search_url/token`）时注册：1–4 条查询并行，只返回标题/链接/日期/搜索引擎摘要 | read_only, open_world, parallel |
 | `web_open_url` | `xana_search.py` | 同上：打开 1–10 个网页读全文，给 objective 时由小模型提炼要点（原文引用逐字核对）；执行中经 `report_progress` 上报阅读进度 | read_only, open_world, parallel |
@@ -71,13 +71,15 @@ status: active
 | `web_search`（旧） | `web_search.py` | 未配置 xana-search 时的回退：联网搜索（native/brave/duckduckgo） | read_only, open_world, defer |
 | `web_fetch`（旧） | `web_fetch.py` | 未配置 xana-search 时的回退：抓 URL 抽正文（bs4 优先，正则回退） | read_only, open_world, defer |
 
-辅助文件（非工具）：`_path.py`（相对 cwd 路径解析）、`_reindex.py`（写后 markdown 增量 reindex）、`_todo_store.py`（`TodoStore` 磁盘持久化）、`_media.py`（出站图片/视频的路径、magic bytes、大小校验与 ffprobe/ffmpeg 探测）。
+`ReadImage` / `ReadVideo` 由 `read_media.py` 的同一个实现提供，按模型配置分别开放，详见 [模型多模态输入](llm_provider_contract.md#多模态输入)。
+
+辅助文件（非工具）：`_path.py`（相对 cwd 路径解析）、`_reindex.py`（写后 markdown 增量 reindex）、`state/todos.py`（`TodoStore` 磁盘持久化）、`_media.py`（出站图片/视频的路径、magic bytes、大小校验与 ffprobe/ffmpeg 探测）。
 
 **memory_write（项目记忆写入）** 详见 [memory_rules_gate](memory_rules_gate.md)：`memory/*.md` 的唯一写入口（Write / Edit 写 `memory/` 被拒），create 时与已有记忆的名称 + 描述相似度 ≥0.6 即拒绝并提示 update；写后增量更新 memory_search 索引。
 
 ## 关键工具行为
 
-**TodoWrite 全量覆盖 + TodoStore 磁盘持久化**（`todo_write.py` / `_todo_store.py`）
+**TodoWrite 全量覆盖 + TodoStore 磁盘持久化**（`todo_write.py` / `state/todos.py`）
 
 - 语义同 CC 的 TodoWrite：每次调用**整体覆盖**会话的 todo 列表，模型每次都必须发全量快照（无增量/patch）。
 - item 三字段：`content`（祈使句）、`active_form`（现在进行时）、`status ∈ {pending, in_progress, completed}`，validate 逐项校验。
@@ -106,3 +108,5 @@ status: active
 
 - `ToolResult`（ok, content, structured_content?, error?, failure_kind?, rendered, artifacts, diffs, stdout/stderr, exit_code, truncated, retryable, metadata）
 - 取消时的 synthetic warning（经 `ToolResult.content` 注入历史）
+
+`skill_manage`（`skills/management.py` + `tools/builtin/skill_manage.py`）管理本地技能库存、缺失包安装与指定 agent 的启用/禁用；安装后默认不可用，只有显式注册的 agent 能在列表和 `skill_load` 中使用。子 agent 不获得此管理工具。见 [技能运行时](skills_runtime.md#安装与按-agent-启用)。

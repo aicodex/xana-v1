@@ -4,49 +4,30 @@ type: doc
 status: active
 ---
 
-# context
+# ContextSDK
 
-## 定位
+当前完整契约见 [会话、插话与取消](../docs/design/session-and-card-state.md)。
 
-`context` 是 active context 的运行时载体：`ContextSDK` facade 以 per-(sid, agent) 的有序 `Message` 缓冲承载一个 session 当前可见的上下文，并提供 compact-as-placeholder 的并发协议。它是 [memory](memory.md) 模块 `ActiveContextStore` 合约背后的实际读写通道，不是独立的持久化权威。
+`context/sdk.py::ContextSDK` 是上下文生命周期的唯一所有者：`snapshot`、`append`、`replace`、
+`append_history`、`restore`、`compact`，以及 per-sid `maintenance` 锁。缓冲和锁直接由此类持有，
+原独立 `_ContextStore` 与外部 `MainCompaction` 已删除。run 状态和待处理输入仍归 TurnCoordinator。
 
-## 代码锚点
+消息类型：UserMessage、AssistantMessage、ToolResultMessage、CompactSummary、ContextNote。
+用户输入 ID、媒体引用、assistant 的 reasoning 和工具关联 ID 必须往返保留。
+ContextNote 的 `to_metadata/from_metadata` 只转换当前消息元数据，不提供旧执行协议。
+CompactSummary 的 run_id、transcript_path、revealed_tools 都是明确字段。
 
-- [sdk.py](../src/xana/context/sdk.py) — `ContextSDK` facade，context 状态的唯一合法入口
-- [_store.py](../src/xana/context/_store.py) — 私有 `_ContextStore`：per-(sid, agent) buffer + per-sid 同步原语（import guard，只允许 sdk.py 导入）
-- [message.py](../src/xana/context/message.py) — `Message` ABC 及子类（`UserMessage` / `AssistantMessage` / `ToolResultMessage` / `RegularPlaceholder` / `CompactPlaceholder` / `CompactSummary` / `ContextNote`）
-  - `AssistantMessage.reasoning`：本轮思考文本，DeepSeek / Kimi 要求原样回传，必须随历史穿过 SDK（2026-09-24 热修复：此前经 SDK 往返丢失，导致工具轮之后的请求 400）。
-  - `ToolResultMessage.tool_name` / `revealed_tools`：harness 簿记（compact 转录工具名、tool_search 揭示状态跨 run 保持），不进 prompt。
-  - `ContextNote(kind, text, key, paths, size)`：harness 追加的上下文消息，序列化为 user 角色 `<system-reminder>`；`key/paths/size` 只供去重与计量。legacy 映射单一来源 `legacy_metadata()` / `from_legacy_metadata()`。规则见 [harness_prompt_assembly](harness_prompt_assembly.md)。
-- 组装点：[boot.py](../src/xana/runtime/boot.py) — `ContextSDK()` 在 boot 中构造，并回填给 `InMemoryActiveContextStore` 做写穿透（legacy 写同时进两个 store，读以 SDK 为准）
+SDK 是主日志的可重建视图；HistoryMirror 只提供持久后端契约，在写入、恢复与压缩操作中显式使用。
+正常写入经 `append_history`，先落主日志，再更新视图；重复行从主日志恢复视图。后端提交后报错时也重读
+主日志校准视图并继续抛错。恢复统一走 `restore`，请求组装只读取隔离的 `snapshot`。
 
-## 关键机制
+写入和读取均隔离嵌套可变数据，包括工具参数中的字典/列表，组装过程不能反向修改历史。
+`compact` 内部冻结前缀与行 ID，向摘要函数提供独立值；通过长度校验后保存完整原始转录、持久替换前缀，
+最后更新缓冲并保留尾部。提交前再次在写锁下校验前缀；生成失败或取消不修改历史，提交期间取消等待收尾。
+压缩期间的模型重试只生成临时请求，不持有另一份可写的上下文，也不自行提交。
 
-- **per-sid 锁**：`_SidState.write_lock` 串行化所有 append/replace；`compact_lock` 保证同一 sid 同时最多一个 compact 在飞；`compact_event` + `compact_holder` 供 fork 等待方阻塞/唤醒。
-- **append**：`append_user` / `append_regular_placeholder` 在 write_lock 下追加；`append_compact_placeholder` 额外取 compact_lock，把 PH 插到最早 `RegularPlaceholder` 之前，并 clear compact_event 使后续 fork 阻塞。
-- **replace / cancel**：`replace_placeholder(sid, agent, run_id, replacements)` 按 run_id 定位 PH 原位替换；当 compact PH 被单个 `CompactSummary` 替换时，把 `[0:idx+1]` 整段折叠成摘要（模型永远看不到摘要前的旧内容），随后释放 compact_lock 并 set event。`cancel_compact_placeholder` 等价于空替换。
-- **snapshot_for_fork**：若存在未替换且位于最早 RegularPlaceholder 之前的 CompactPlaceholder，则阻塞在 compact_event 上直到替换完成（循环重查，防 event 复用竞态）。
-- **序列化**：`to_anthropic` / `to_openai` 接收 `system_content`，返回 system 消息 + buffer 的逐条序列化；空列表返回表示该 Message 对模型不可见（CompactPlaceholder 即如此）。
-- **CompactSummary**：`render()` 是 model 侧与 UI 卡片侧共用的单一渲染源（`POST_COMPACT_TEMPLATE`），保证两边文案一致。
+测试：`tests/context/`、`test_sdk_bridge_roundtrip.py`、`test_p3d_sdk_canonical.py`、
+`test_compact_persistence.py`；覆盖嵌套数据隔离、前缀竞争、持久化失败/提交后报错、取消与重建。
 
-## Owns
-
-- per-(sid, agent) 运行时 Message 缓冲及其并发协议。
-- placeholder 的插入、替换、折叠规则。
-- 面向 Anthropic / OpenAI 的序列化输出。
-
-## Does Not Own
-
-- 持久化（history mirror / markdown / SQLite 归 memory）。
-- token 估算、compact 策略决策（策略在 harness/commands 侧，SDK 只执行占位协议）。
-- 检索与注入。
-
-## Inputs
-
-- append / replace / cancel / snapshot 请求：`sid`、`agent`、`run_id`、`Message` 序列。
-
-## Outputs
-
-- `snapshot_for_fork` 返回的 Message 快照。
-- `to_anthropic` / `to_openai` 的消息数组。
-- 经 `InMemoryActiveContextStore` 写穿透后的 legacy `ActiveContext` 视图。
+2026-11-09 迁移验收：全量离线回归 1295 项通过；原 `MainCompaction`、`begin_main_compaction`、
+`replace_prefix`、`_ContextStore` 与默认分批转录路径均无生产/测试引用。未部署，未做真实模型缓存命中率验收。

@@ -1,8 +1,4 @@
-"""统一 PH 卡片模型(spec: 2026-06-15-unified-ph-card-design.md)。
-
-Task 1 scope: 平台无关数据模型 dataclasses + 默认值。
-状态机 / renderer / 完整 footer 三态见后续 Task。
-"""
+"""平台无关的会话回答卡、命令卡与压缩进度。"""
 from __future__ import annotations
 
 from xana.harness_sdk.compact import SUMMARY_SECTIONS as COMPACT_SUMMARY_SECTIONS
@@ -10,9 +6,9 @@ from dataclasses import dataclass, field, replace
 from typing import Literal
 
 
-CompactState = Literal["input", "streaming", "completed", "cancelled"]
-AnswerState = Literal["streaming", "detached", "terminal", "cancelled"]
-FooterState = Literal["fg_running", "bg_frozen", "terminal", "menu"]
+CompactState = Literal["input", "streaming", "completed", "cancelled", "failed"]
+AnswerState = Literal["streaming", "terminal", "cancelled"]
+FooterState = Literal["fg_running", "terminal", "menu"]
 ExpandMode = Literal["default", "thinking", "tools", "answer"]
 
 
@@ -127,9 +123,9 @@ class Button:
 
     三种点击形态(互斥):
     - ``send``:点击 = 用户发了一条命令文本(走 router,会回话)
-    - ``action`` + ``action_arg``:adapter 本地动作(detach / load_tools 等),
+    - ``action`` + ``action_arg``:adapter 本地动作(cancel / load_tools 等),
       不走 router、不回话,只刷卡片
-    - 两者都空:占位按钮(静默,不响应)
+    不支持隐式默认动作；每个可点按钮必须有明确 send 或 action。
     """
     text: str
     send: str | None = None
@@ -162,16 +158,7 @@ def _format_elapsed(secs: int) -> str:
 
 @dataclass
 class FooterText:
-    """分段脚标,四种形态(规格 session-and-card-state.md §5.6):
-
-        fg_running:  🟡 model · 上下文 Nk/Mk · 回答用时 T
-        terminal:    🟢/🔴 model · 上下文 Nk/Mk · 回答用时 T
-        bg_frozen:   🟡 正在后台回答 [· {label} 用时 t]
-        menu:        {label} 用时 t
-
-    - model + 上下文 + 回答用时 三件套绑定,缺一不渲染(I9)。
-    - fg_running / terminal 绝不带菜单段;菜单段只出现在 menu 与 bg_frozen(排尾)。
-    """
+    """运行/终态显示模型、上下文与用时；命令卡只显示命令计时。"""
     model: str = ""
     ctx_used: int = 0
     ctx_max: int = 0
@@ -182,7 +169,7 @@ class FooterText:
     cancelled: bool = False           # 用户已取消 → 终态显示 🔴 而非 🟢
 
     def render(self) -> str:
-        """按 state 渲染四种形态之一,见类文档。"""
+        """按 state 渲染运行、终态或命令脚标,见类文档。"""
         parts: list[str] = []
         # 1) menu 卡: {label} 用时 T (无 dot, 无 ctx, 无回答用时)
         if self.state == "menu":
@@ -192,16 +179,7 @@ class FooterText:
                     f"{_fmt_short_time(self.menu_elapsed_s)}"
                 )
             return " · ".join(parts)
-        # 2) bg_frozen: 🟡 正在后台回答 [· compact 用时 T]
-        if self.state == "bg_frozen":
-            parts.append("🟡 正在后台回答")
-            if self.menu_label:
-                parts.append(
-                    f"{self.menu_label} 用时 "
-                    f"{_fmt_short_time(self.menu_elapsed_s)}"
-                )
-            return " · ".join(parts)
-        # 3) fg_running / 4) terminal: 🟡/🟢 model · 上下文 · 回答用时
+        # Running / terminal: 🟡/🟢 model · 上下文 · 回答用时
         # **三者绑定出现**:任何一个还没就绪就不渲染 footer(避免出现裸的
         # "🟡 · 回答用时 0s")。**不带 menu 段**。
         if not self.model or self.ctx_max <= 0:
@@ -320,11 +298,6 @@ def load_pending_tools(sec: AnswerSection) -> None:
     sec.tools_pending = 0
 
 
-def detach_answer(sec: AnswerSection) -> None:
-    """Flip to detached state; content preserved (renderer collapses)."""
-    sec.state = "detached"
-
-
 PROGRESS_LINE_MAX = 80
 
 
@@ -340,8 +313,8 @@ def set_progress(sec: AnswerSection, text: str) -> None:
 
 
 def progress_line(sec: AnswerSection) -> str:
-    """进度行显示文本:进行中 / 后台时取最近一条的最后一行,截到一行;完成后为空。"""
-    if sec.state not in ("streaming", "detached") or not sec.progress_text:
+    """进度行显示文本:进行中取最近一条的最后一行,截到一行;完成后为空。"""
+    if sec.state != "streaming" or not sec.progress_text:
         return ""
     line = " ".join(sec.progress_text.splitlines()[-1].split())
     if len(line) > PROGRESS_LINE_MAX:
@@ -353,7 +326,7 @@ def finalize_answer(sec: AnswerSection, *, final_text: str) -> None:
     """Terminal transition; replace answer_text with final.
 
     If ``final_text`` is empty, preserve whatever has been accumulated
-    (后台 run 在 detach 期间通过 model_delta 累积的答案不应被空 ph_replaced 抹掉)。
+    保留已经流式收到的内容。
     若已被 cancel,保留 cancelled 状态 — finalize 不能把"已取消"覆盖成"完成"。
     """
     if sec.state != "cancelled":
@@ -369,80 +342,24 @@ def cancel_answer(sec: AnswerSection) -> None:
     sec.progress_text = ""
 
 
-# --- top buttons + detach / ph_replaced transitions ------------------------
-
-
 def compute_top_buttons(state: "UnifiedCardState") -> tuple[ButtonRow, ...]:
-    """Top button rules。
-
-    - terminal: 无按钮
-    - 前台 + answer.streaming: "取消回答" + "后台回答"
-    - 后台(detached) + answer 未终止: "取消回答"(用户可取消后台 run)
-    - compact 单独运行: "取消"
-    - otherwise: 无
-    """
-    if state.terminal:
+    if state.terminal or state.stopping:
         return ()
-    a_alive = (state.answer is not None
-               and state.answer.state in ("streaming", "detached"))
-    c_running = (
-        state.compact is not None
-        and state.compact.state in ("input", "streaming")
-    )
-    run_id = state.ph_run_id or ""
-    if a_alive:
-        cancel_btn = Button(
-            text="取消回答", send=f"/cancel {run_id}".strip())
-        if state.detached:
-            return (ButtonRow(buttons=(cancel_btn,)),)
-        return (ButtonRow(buttons=(
-            cancel_btn,
-            Button(text="后台回答", send=None),
-        )),)
-    if c_running:
-        return (ButtonRow(buttons=(
-            Button(text="取消", send=f"/compact_cancel {run_id}".strip()),
-        )),)
+    if state.pending_input_id:
+        return (ButtonRow(buttons=(Button(text="立即插话", action="steer", action_arg=state.pending_input_id),)),)
+    if state.answer is not None and state.answer.state == "streaming" and state.run_id:
+        return (ButtonRow(buttons=(Button(text="停止回答", action="cancel", action_arg=state.run_id),)),)
+    if state.compact is not None and state.compact.state in ("input", "streaming"):
+        return (ButtonRow(buttons=(Button(text="取消压缩", action="compact_cancel", action_arg=state.run_id),)),)
     return ()
 
 
-def apply_detach(state: "UnifiedCardState") -> None:
-    """Detach transition: mark answer detached, freeze footer, refresh buttons。
-    保留"取消回答"按钮在 bg 卡顶部(用户可取消后台 run)。
-    """
-    state.detached = True
-    if state.answer is not None:
-        detach_answer(state.answer)
-    state.footer.state = "bg_frozen"
-    state.top_buttons = compute_top_buttons(state)
-
-
-def apply_ph_replaced(
-    state: "UnifiedCardState",
-    *,
-    final_answer: str,
-    ctx_used: int,
-    elapsed_s: int,
-    cancelled: bool = False,
-) -> None:
-    """Terminal transition triggered by ph_replaced.
-
-    Replaces answer with final text, restores ctx in footer, clears buttons.
-    Compact section is left as-is (if completed it stays completed).
-    cancelled=True 时 footer 红点 + answer 状态保留 cancelled。
-    """
-    if state.detached:
-        state.terminal_from_bg = True
+def finish_card(state: "UnifiedCardState") -> None:
     state.terminal = True
-    state.detached = False
-    if cancelled:
-        state.footer.cancelled = True
-    if state.answer is not None:
-        finalize_answer(state.answer, final_text=final_answer)
-    state.footer.state = "terminal"
-    state.footer.ctx_used = ctx_used
-    state.footer.elapsed_s = elapsed_s
+    state.stopping = False
     state.top_buttons = ()
+    if state.answer is not None:
+        state.footer.state = "terminal"
 
 
 # --- menu section builders (Task 6) ----------------------------------------
@@ -478,43 +395,21 @@ def build_notice_card(*, card_id: str, text: str) -> "UnifiedCardState":
                             footer=FooterText(state="menu"), terminal=True)
 
 
-def build_attach_menu(
-    *, card_id: str, candidates: tuple[tuple[str, str], ...]
-) -> "UnifiedCardState":
-    """Build an /attach candidate-list menu card.
-
-    Body lists each candidate run_id + label; bottom buttons (one per row)
-    send ``/attach <run_id>``.
-    """
-    lines = ["可恢复的后台 run:"]
-    btns: list[Button] = []
-    for run_id, label in candidates:
-        lines.append(f"  {run_id}  · {label[:30]}")
-        btns.append(Button(text=f"切回 {label[:20]}", send=f"/attach {run_id}"))
-    rows = tuple(ButtonRow(buttons=(b,)) for b in btns)
-    return UnifiedCardState(
-        card_id=card_id,
-        menu=MenuSection(body_md="\n".join(lines)),
-        bottom_buttons=rows,
-        footer=FooterText(state="menu"),
-    )
-
-
 @dataclass
 class UnifiedCardState:
     card_id: str
     message_id: str | None = None
-    ph_run_id: str | None = None
+    run_id: str | None = None
     top_buttons: tuple[ButtonRow, ...] = ()
     compact: CompactSection | None = None
     answer: AnswerSection | None = None
     menu: MenuSection | None = None
     bottom_buttons: tuple[ButtonRow, ...] = ()
     footer: FooterText = field(default_factory=FooterText)
-    detached: bool = False
+    stopping: bool = False
     terminal: bool = False
-    terminal_from_bg: bool = False   # 后台回写终态(用于 renderer 默认折叠回答)
     linkify_commands: bool = False   # True = 正文 /cmd 原生可点(TG),renderer 可隐 bottom_buttons
     expand_mode: ExpandMode = "default"   # 全屏 thinking/tools/answer
     view_mode: str = "detailed"           # 工具过程显示模式:detailed / grouped / summary(process_view.py)
     expand_page: int = 0                  # expand 模式翻页
+    pending_input_id: str | None = None

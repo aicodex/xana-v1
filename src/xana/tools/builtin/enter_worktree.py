@@ -30,7 +30,7 @@ _SPEC = ToolSpec(
         kind="tool",
         name="EnterWorktree",
         qualified_name="builtin.EnterWorktree",
-        description="Create a git worktree off HEAD and switch the session into it.",
+        description="Create a git worktree off HEAD; subsequent turns use it as the working directory.",
         source=ComponentSource(source_type="builtin", scope="system"),
     ),
     input_schema={
@@ -106,6 +106,6 @@ class EnterWorktreeTool(Tool):
         return ToolResult(
             ok=True,
             content={"worktree_path": str(target)},
-            rendered=f"[EnterWorktree ok] {target}",
+            rendered=f"[EnterWorktree ok] {target}（从下一轮起生效）",
             metadata={"worktree_path": str(target)},
         )

@@ -32,7 +32,7 @@ status: active
 
 ## DefaultAgentRequestRouter
 
-v1 唯一的 `AgentRequestRouter` 实现：把 `InboundMessage` 直译为 `AgentRequest`（session_id/text/attachments/metadata 原样，`source=adapter_id`），`target_agent` 恒为构造时传入的 `default_agent`（boot 里是 `"chat"`）。未来版本才可能解析 `/agent_name` 前缀或按 channel 查表。
+v1 唯一的 `AgentRequestRouter` 实现：把 `InboundMessage` 直译为 `AgentRequest`（session_id/text/attachments/metadata 原样，`source=adapter_id`），`target_agent` 由会话绑定的 agent 决定，未设置时使用构造默认值。
 
 ## 不变量
 

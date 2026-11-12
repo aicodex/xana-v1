@@ -308,7 +308,7 @@ class CommandTool(Tool):
         env = {as_of_env: context.as_of} if context.as_of and temporal == "as_of" and as_of_env else None
         cwd = str(self._project_root if d.cwd == "project" else Path(d.cwd))
         try:
-            out = await self._runner.run(invocation.call_id, argv=argv, cwd=cwd, timeout_s=d.timeout_s, env=env)
+            out = await self._runner.run(invocation.execution_id, argv=argv, cwd=cwd, timeout_s=d.timeout_s, env=env)
         except OSError as exc:      # 命令不存在 / 不可执行
             return ToolResult(ok=False, content=None, error=str(exc), failure_kind="execution",
                               rendered=f"[{d.name}] 无法执行 {argv[0]}:{exc}")

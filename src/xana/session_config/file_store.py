@@ -30,6 +30,7 @@ class FileSessionConfigStore(SessionConfigStore):
         if not path.exists():
             return SessionConfig(session_id=session_id)
         data = json.loads(path.read_text(encoding="utf-8"))
+        data["permission_grants"] = tuple(data.get("permission_grants", ()))
         data["session_id"] = session_id
         return SessionConfig(**data)
 

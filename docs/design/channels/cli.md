@@ -25,14 +25,14 @@
 ## 按钮路由(`XanacApp.on_button_pressed`)
 
 `CardButton.spec` 三种形态:
-- `spec.send` → 作为用户输入 submit(gateway.submit) —— 走 /cancel /attach 等命令
+- `spec.send` → 作为用户输入 submit(gateway.submit) —— 走会话命令
 - `spec.action == "load_tools"` → 本地动作(adapter 实现 reveal)
-- 其他(action=detach 或默认)→ `gateway.detach(session_id, run_id)`
+- action=cancel → `DaemonClient.cancel(session_id, run_id)`，不使用默认隐式动作。
 
 ## tab 面板
 
 侧边 ListView 显示 bg run 列表;`🟡 ` 前缀表示 frozen。
-Tab 切焦点,Enter 选中 → `gateway.attach(session_id, run_id)`(对应 master §7.4)。
+不提供后台 tab。独立停止按钮和 Esc 都绑定活动回答的真实 run_id；查看命令卡不会改变取消目标。
 
 ## 限制
 

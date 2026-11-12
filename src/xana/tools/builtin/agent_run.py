@@ -9,6 +9,7 @@ import asyncio
 import re
 import time
 import uuid
+from dataclasses import replace
 from collections.abc import Mapping
 
 from xana.agents.delegation import AGENT_RUN_TOOL, subagent_ceiling
@@ -24,19 +25,14 @@ from xana.tools.interfaces import Tool, ToolRegistry
 MAX_CONCURRENT = 6
 
 _DESCRIPTION = (
-    "把一个子任务委派给另一个 agent 独立完成,等它结束后返回它的最终回答。可委派的 agent 及其工具见对话中的"
+    "把一个子任务委派给另一个 agent 独立完成。可委派的 agent 及其工具见对话中的"
     "「可委派的 agent」列表。\n\n"
-    "适合:可以独立完成、会产生大量中间过程的子任务(如大范围检索、逐个排查多个文件),或需要另一个 agent 的专长。"
-    "目标文件已经明确、几步就能完成的事自己做,不要委派。\n\n"
-    "写任务说明(prompt)要像给刚走进房间的同事交代工作:子 agent 看不到当前对话,说明目标、已知信息、"
-    "需要交付什么、范围边界。不要把「理解问题」也委派出去——先自己弄清楚要什么,再写具体的任务。\n\n"
-    "- 子 agent 的回答用户看不到,需要的内容要由你转述给用户。\n"
+    "子 agent 看不到当前对话。\n\n"
     "- 互不依赖的多个子任务,在同一条消息里发出多个 agent_run 调用,它们会并行执行;同时最多运行 {max_concurrent} 个"
-    "子 agent,超出的排队等前面的完成后再开始,所以子任务多时按重要性排好先后,一次发出不超过 {max_concurrent} 个最省时间。\n"
+    "子 agent,超出的排队等前面的完成后再开始。\n"
     "- 需要让同一个子 agent 接着做时,用 resume 传入它上次返回的 agent_id,它会保留之前的上下文。\n"
-    "- 子 agent 的回答是它对自己工作的描述,关键结论需要时自行核实;不要编造尚未返回的结果。\n"
     "- 先等待 wait_s 秒(默认 {wait_default},0 = 不等直接转后台):期间完成就直接返回回答;没完成就返回后台任务 id,"
-    "子 agent 继续运行——用 task_wait 等它,或先做别的事,它结束时结果会自动送到这里。"
+    "子 agent 继续运行,它结束时结果会自动送到这里。"
 )
 
 WAIT_DEFAULT_S = 600
@@ -169,7 +165,8 @@ class AgentRunTool(Tool):
                     f"调用工具 {tools} 次")
             tail = f"\n\n(需要让这个子 agent 继续时,用 resume=\"{child}\")"
             if outcome.status != "completed":
-                return TaskOutcome(ok=False, rendered=f"{head}\n失败:{outcome.error or outcome.status}{tail}",
+                partial = f"\n\n已产生的部分输出:\n{outcome.text}" if outcome.text else ""
+                return TaskOutcome(ok=False, rendered=f"{head}\n失败:{outcome.error or outcome.status}{partial}{tail}",
                                    content={"agent_id": child, "status": outcome.status,
                                             "error": outcome.error or outcome.status})
             return TaskOutcome(ok=True, rendered=f"{head}\n\n{outcome.text}{tail}",
@@ -181,19 +178,20 @@ class AgentRunTool(Tool):
         wait_s = min(int(invocation.input.get("wait_s", WAIT_DEFAULT_S)), WAIT_MAX_S)
         rec = self._background.start(kind="agent", label=f"{name}:{lane_title.split(':', 1)[1]}",
                                      parent_session=context.session_id, parent_run=context.run_id or "",
-                                     run=run_child)
+                                     run=run_child, content={"agent_id": child, "agent": name})
         try:
-            rec = await self._background.wait(rec.id, wait_s)
+            rec = await self._background.wait(rec.id, wait_s, wakeup=context.input_wakeup)
         except asyncio.CancelledError:
-            self._background.stop(rec.id)      # 父 run 在等待期间被取消:子 agent 一起停
+            await self._background.stop(rec.id)  # 尚未交出的子任务随父回答停止并完成收尾
             raise
         if rec.status == "running":
             return ToolResult(ok=True, content={"task_id": rec.id, "agent_id": child, "status": "running"},
-                              rendered=(f"[agent_run] {name} 已运行 {wait_s} 秒仍未结束,转为后台任务 {rec.id}"
+                              rendered=(f"[agent_run] {name} 仍在运行,交为后台任务 {rec.id}"
                                         f"(agent_id={child})。最近进度:{'; '.join(rec.progress[-3:]) or '无'}。\n"
-                                        f"用 task_wait(task_id=\"{rec.id}\") 等它,或先做别的事;它结束时结果会自动送到这里。"),
+                                        "它结束时结果会自动送到这里。"),
                               metadata={"display_text": f"{name} · 转后台 {rec.id}"})
-        return _to_result(TaskOutcome(ok=rec.status == "completed", rendered=rec.rendered, content=rec.content))
+        return replace(_to_result(TaskOutcome(ok=rec.status == "completed", rendered=rec.rendered, content=rec.content)),
+                       background_task_id=rec.id)
 
 
 def _to_result(out: TaskOutcome) -> ToolResult:

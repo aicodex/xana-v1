@@ -1,21 +1,18 @@
-"""Graceful shutdown helper(P5.6)。
-
-`graceful_shutdown(gateway, grace_seconds)`:
-  1. 调 `gateway.cancel_all()` 翻所有 background runs 的 abort
-  2. 等 ≤ grace_seconds drain
-  3. 超时返回 True(下次启动按 shutdown_force 进 /resume)
-     正常 drain 返回 False
-"""
+"""Stop scheduler claims, finish claimed jobs, then drain conversation execution."""
 from __future__ import annotations
-
 import asyncio
+from xana.agent_adapter.interfaces import AgentGateway
+from xana.runtime.scheduler import SchedulerRunner
 
-
-async def graceful_shutdown(gateway, *, grace_seconds: float = 2.0) -> bool:
+async def graceful_shutdown(gateway: AgentGateway, *, grace_seconds: float = 2.0,
+                            scheduler_runner: SchedulerRunner | None = None) -> bool:
+    if scheduler_runner is not None:
+        scheduler_runner.stop()
+        await scheduler_runner.drain()
     await gateway.cancel_all()
-    deadline = asyncio.get_event_loop().time() + grace_seconds
-    while asyncio.get_event_loop().time() < deadline:
-        if not gateway.has_background():
+    deadline = asyncio.get_running_loop().time() + grace_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        if not gateway.has_active_runs():
             return False
         await asyncio.sleep(0.02)
-    return True
+    return gateway.has_active_runs()

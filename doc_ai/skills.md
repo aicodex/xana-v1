@@ -33,13 +33,13 @@ status: active
 ## Does Not Own
 
 - 工具执行、LLM 调用、adapter 协议、持久记忆权威。
-- AGENT.md 角色定义文档：与 SKILL.md 共用同一个解析器（`MarkdownDocParser` 按 frontmatter `kind` 区分），但目录分开（`~/.xana/skills/` vs 用户级 `~/.xana/agents/` + 项目级 `<project_root>/.xana/agents/`；项目级 skills 目录尚未加载）、消费方不同——skill 是做法库（经 `skill_load` 两阶段按需取全文），agent 是角色定义（可被 spawn 的 AgentSpec 来源），见 [agents](agents.md) 与 [agents_registry](agents_registry.md)。
+- AGENT.md 角色定义文档：与 SKILL.md 共用同一个解析器（`MarkdownDocParser` 按 frontmatter `kind` 区分），但目录分开（`~/.xana/skills/` vs 用户级 `~/.xana/agents/` + 项目级 `<project_root>/.xana/agents/`；项目级 skills 使用 `<project_root>/.agents/skills/`）、消费方不同——skill 是做法库（经 `skill_load` 两阶段按需取全文），agent 是角色定义（可被 spawn 的 AgentSpec 来源），见 [agents](agents.md) 与 [agents_registry](agents_registry.md)。
 - 资源解析、prompt 提供、上下文加载不设独立 ABC；文件加载只覆盖 SKILL.md/AGENT.md 这一种文档形态（见 [skills_package](skills_package.md) 实现现状）。
 
 ## Inputs
 
 - `SkillActivation`（kind: manual/path/model/system + session/agent/run 上下文）
-- bundled + 文件 skills registry（boot 组装的独立 `InMemorySkillRegistry`，文件 SKILL.md 与 bundled 注册进同一个）
+- bundled + 文件 skills registry（boot 组装的共享 `ManagedSkillRegistry`，文件 SKILL.md 与 bundled 注册进同一个）
 
 ## Outputs
 

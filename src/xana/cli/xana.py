@@ -17,6 +17,7 @@ import argparse
 import sys
 from typing import TextIO
 
+from xana.cli.commands import agents as agents_cmd
 from xana.cli.commands import login as login_cmd
 from xana.cli.commands import pair as pair_cmd
 from xana.cli.commands import project as project_cmd
@@ -27,6 +28,10 @@ from xana.cli.commands import sync as sync_cmd
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="xana", description="xana runtime CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    agents_parser = subparsers.add_parser("agents", help="install and run portable agent capability packages")
+    agents_cmd.add_arguments(agents_parser)
+    agents_parser.set_defaults(func=agents_cmd.run)
 
     setup_parser = subparsers.add_parser(
         "setup", help="initialize ~/.xana/ (config + code + mem + bin + PATH)"
@@ -41,9 +46,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_parser.set_defaults(func=sync_cmd.run)
 
     serve_parser = subparsers.add_parser(
-        "serve", help="boot channel adapters from env and attach to gateway"
+        "serve", help="boot channel adapters and serve messages through the gateway"
     )
     serve_parser.add_argument("--project", default=None, help="项目 id(缺省 default)")
+    serve_parser.add_argument("--agent", default="chat", help="默认入口 agent")
     serve_parser.set_defaults(func=_run_serve)
 
     pair_parser = subparsers.add_parser(
@@ -74,7 +80,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _run_serve(args: argparse.Namespace, *, out=None) -> int:  # noqa: ARG001
     from xana.cli.serve import main as serve_main
-    return serve_main(["--project", args.project] if args.project else [])
+    argv = ["--project", args.project] if args.project else []
+    if args.agent != "chat":
+        argv += ["--agent", args.agent]
+    return serve_main(argv)
 
 
 def main(argv: list[str] | None = None, *, out: TextIO | None = None) -> int:

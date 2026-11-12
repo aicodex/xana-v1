@@ -27,7 +27,11 @@ status: active
 
 ## 当前状态
 
-policy 模块内没有 approval 实现。harness 在工具权限判定为 non-allow 时，调用 extension registry 中的 `ApprovalReviewContributor.review()`（`DefaultHarness` 工具分发内），第一个非 None 覆盖生效。
+harness 在工具判定非 allow 时先执行 extension 复核，再统一交给 PermissionService.authorize。必须询问的操作在执行副作用之前挂起；HTTP 回复和取消直接操作服务，不排队等待模型结束。
+
+审批关联 session、根会话、run、call、参数及 cwd。单次批准或“本会话批准相同操作”只覆盖对应指纹；拒绝、取消、重复/过期回复不执行工具。子 agent 的审批同步到根会话。页面刷新通过快照恢复，服务重启不重放挂起操作。切换权限会唤醒并重新判定待执行操作。
+
+测试：test_workbench_permissions.py；浏览器覆盖会话隔离、刷新与单次执行。
 
 ## 验收要求
 

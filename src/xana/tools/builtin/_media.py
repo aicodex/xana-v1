@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 from xana.agent_adapter.contracts import MediaKind
+from xana.multimodal.files import detect_format
 
 MAX_IMAGE_MB = 10
 MAX_VIDEO_MB = 30
@@ -125,7 +126,7 @@ def read_workspace_media(raw_path: str, cwd: str) -> ReadMediaFile:
     if len(data) > limit:
         raise MediaFileError(f"未发送:{label}超过大小上限({limit_mb}MB)")
 
-    fmt = _detect_format(data)
+    fmt = detect_format(data)
     if kind == "image":
         expected = {_FORMAT_BY_SUFFIX[suffix]}
         if fmt not in expected:
@@ -152,19 +153,6 @@ _FORMAT_BY_SUFFIX = {
     ".mp4": "mp4",
 }
 
-
-def _detect_format(data: bytes) -> str | None:
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return "jpeg"
-    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
-        return "gif"
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "webp"
-    if len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] != b"qt  ":
-        return "mp4"
-    return None
 
 
 def _clean_filename(name: str) -> str:

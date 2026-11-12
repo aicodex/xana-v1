@@ -12,8 +12,8 @@ Three pieces:
     the user system file, overlays the project config (channels / daemon /
     sessions / tools; docs/design/project-design.md §4) and assembles a
     ``RuntimeConfig`` for the harness.
-    When no default model is configured (fresh setup, empty models[]),
-    it falls back to ``provider="fake"`` so boot can still run.
+    Missing or unresolved default models fail explicitly. Fake models must
+    be selected through a model entry with type="fake".
 
 Pydantic ``SystemConfig`` is also exposed via ``DefaultConfigProvider.
 load_system_config()`` for downstream consumers (DSv4 client, etc.) that
@@ -27,16 +27,16 @@ from pathlib import Path
 
 from xana.config.paths import xana_home
 from xana.config.project_config import merge_system_config, project_config_path, read_project_config
-from xana.config.contracts import ConfigSource, ModelConfig, RawConfig, RuntimeConfig
+from xana.config.contracts import (
+    AUTOCOMPACT_BUFFER_TOKENS, FALLBACK_COMPACT_RESERVE, MANUAL_COMPACT_BUFFER_TOKENS,
+    SUMMARY_MAX_TOKENS, ConfigSource, ModelConfig, RawConfig, RuntimeConfig,
+)
 from xana.config.interfaces import ConfigProvider, ConfigReader
 from xana.config.system_model import ModelEntry, SystemConfig
 
 
-_FALLBACK_PROVIDER = "fake"
-_DEFAULT_CONTEXT_WINDOW = 967_000  # 967k 预算 — 用户指定;entry.context_window 可覆盖
-_DEFAULT_MAX_OUTPUT = 16_384  # 与 anthropic_deepseek._DEFAULT_MAX_TOKENS 对齐,否则输出可能在 compact 触发前撑爆窗口
-_COMPACT_HEADROOM = 13_000  # CC 风格: force_compact = ctx - max_output - 13K
-_FALLBACK_MODEL = "fake-model"
+# 缺省原始窗口为 1M；已配置/已登记的模型窗口优先，不能用 967k 触发线代替容量。
+DEFAULT_CONTEXT_WINDOW = 1_000_000
 _SYSTEM_JSON_NAME = "system.json"
 _SEED_RESOURCE_PACKAGE = "xana.config.defaults"
 
@@ -122,22 +122,39 @@ class DefaultConfigProvider(ConfigProvider):
         return self._system
 
 
-def derive_compact_thresholds(entry: "ModelEntry") -> tuple[int, int]:
-    """(context_window, force_compact) — compact_override 优先,0 也有效。"""
-    ctx_win = entry.context_window if entry.context_window is not None else _DEFAULT_CONTEXT_WINDOW
-    force_at = (entry.compact_override if entry.compact_override is not None
-                else ctx_win - _DEFAULT_MAX_OUTPUT - _COMPACT_HEADROOM)
-    return ctx_win, force_at
+def resolve_model_config(entry: ModelEntry) -> ModelConfig:
+    """模型预算唯一推导点，输出限制与摘要请求共用同一结果。
+
+    完整配置 C/O：R=min(O,20k)，E=C-R，自动线 E-13k，阻断线 E-3k。
+    C/O 任一未配置：自动线直接 C-64Ki，不再多扣13k；有效窗口为自动线+13k，
+    阻断线仍为有效窗口-3k。fallback 总预留包含13k，而不是额外叠加。
+    显式 compact_override 只覆盖自动线，不改模型容量、输出或阻断线。
+    """
+    window = entry.context_window if entry.context_window is not None else DEFAULT_CONTEXT_WINDOW
+    if entry.max_tokens is not None and entry.max_tokens >= window:
+        raise ValueError(f"模型 {entry.name!r} 的 max_tokens 必须小于 context_window")
+    summary_max = min(entry.max_tokens, SUMMARY_MAX_TOKENS) if entry.max_tokens is not None else SUMMARY_MAX_TOKENS
+    if entry.context_window is None or entry.max_tokens is None:
+        trigger = window - FALLBACK_COMPACT_RESERVE
+        effective = trigger + AUTOCOMPACT_BUFFER_TOKENS
+    else:
+        effective = window - summary_max
+        trigger = effective - AUTOCOMPACT_BUFFER_TOKENS
+    return ModelConfig(
+        provider=entry.type, model=entry.name, max_tokens=entry.max_tokens,
+        context_window=window,
+        force_compact=entry.compact_override if entry.compact_override is not None else max(0, trigger),
+        blocking_limit=max(0, effective - MANUAL_COMPACT_BUFFER_TOKENS),
+        summary_max_tokens=summary_max, cache_ttl_seconds=entry.cache_ttl_seconds,
+        input_modalities=tuple(entry.input_modalities),
+    )
 
 
 def _resolve_default_model(system: SystemConfig) -> ModelConfig:
     chat_name = system.default_model.chat
-    if chat_name is not None:
-        entry = system.model(chat_name)
-        if entry is not None:
-            ctx_win, force_at = derive_compact_thresholds(entry)
-            return ModelConfig(
-                provider=entry.type, model=entry.name,
-                context_window=ctx_win, force_compact=force_at,
-            )
-    return ModelConfig(provider=_FALLBACK_PROVIDER, model=_FALLBACK_MODEL)
+    if not chat_name or not chat_name.strip():
+        raise ValueError("未配置 default_model.chat；请运行 xana setup 或在 system.json 中配置默认模型")
+    entry = system.model(chat_name)
+    if entry is None:
+        raise ValueError(f"默认模型 {chat_name!r} 不在 system.json models[] 中")
+    return resolve_model_config(entry)

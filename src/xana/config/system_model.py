@@ -16,7 +16,10 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from xana.multimodal.contracts import InputModality
+from xana.config.contracts import DEFAULT_CACHE_TTL_SECONDS
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ModelEntry(BaseModel):
@@ -30,8 +33,12 @@ class ModelEntry(BaseModel):
     api: Optional[str] = None
     budget_rmb: Optional[float] = None
     budget_kind: Optional[str] = None
-    compact_override: Optional[int] = None
-    context_window: Optional[int] = None
+    compact_override: Optional[int] = None  # 最终自动压缩触发值，直接覆盖推导结果。
+    context_window: Optional[int] = Field(default=None, gt=0)  # 原始模型窗口，不能填派生触发值。
+    max_tokens: Optional[int] = Field(default=None, gt=0)  # 请求输出上限，包含思考；未配置走预算兜底。
+    # 该模型/端点的实际 prompt cache 保留期（秒）；本地策略依据，不是远程 TTL 开关。
+    cache_ttl_seconds: int = Field(default=DEFAULT_CACHE_TTL_SECONDS, gt=0)
+    input_modalities: list[InputModality] = []  # 显式开启 image / video；缺省仅文本
     fallback_to: Optional[str] = None
 
 

@@ -16,8 +16,8 @@ status: active
 | skills | `SkillActivation` | `SkillContribution` | context/prompt contribution | tool execution |
 | agent_adapter | external message | `InboundMessage` / rendered reply | protocol translation | agent logic |
 | llm_driver | `ModelRequest` | `ModelEvent` stream | provider IO | tool dispatch |
-| memory | context/history rows | `ActiveContext` / replay result | runtime context authority + mirror | agent decisions |
-| context | append/replace/snapshot 请求（sid, agent, run_id） | Message buffer / 序列化消息 | active context 运行时载体（ContextSDK） | 持久化、检索索引 |
+| memory | context/history rows | `ActiveContext` / replay result | durable conversation log + replayable runtime view | agent decisions |
+| context | append/replace/snapshot 请求（sid, agent） | Message buffer / 序列化消息 | active context 运行时载体（ContextSDK） | 持久化、检索索引 |
 | extension_api | extension 对象 | contributor 调用点（prompt/turn input/tools/lifecycle/config/approval review）+ runtime service（SchedulerService / AgentSpawner / AgentRunner，均已有实现） | extension 合约与 frozen registry | 具体 agent/tool 行为 |
 | session_config | slash-command 变更 | `SessionConfig` 持久化（get/save/delete） | per-session 运行时旋钮持久化边界 | mid-turn 配置变更 |
 | cli | CLI args（`--project <id>`）, 合并后的 system.json + 项目 config.json, daemon endpoint | `~/.xana/` 目录树（含 `projects/<id>/`）、每项目一个 serve 进程、stdout/xanac 卡片 | 命令入口、安装引导、旧布局迁移、项目命令、配对管理、daemon 客户端 | agent/harness/adapter 业务逻辑 |

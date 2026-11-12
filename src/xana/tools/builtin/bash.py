@@ -19,6 +19,7 @@ from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolR
 from xana.tools.builtin._process import MAX_OUTPUT_CHARS as _MAX_OUTPUT_CHARS
 from xana.tools.builtin._process import ProcessRunner, format_exec_output, last_line
 from xana.tools.interfaces import Tool
+from xana.state.process_logs import ProcessLogs
 
 
 _DEFAULT_TIMEOUT_S = 120.0
@@ -71,10 +72,11 @@ _SPEC = ToolSpec(
 
 
 class BashTool(Tool):
-    # write 类工具:活跃子进程按 call_id 登记;cancel() 发 SIGTERM,2s 未退则 SIGKILL。
+    # 活跃子进程按 execution_id 登记；provider 的 call_id 可重复。
 
-    def __init__(self) -> None:
+    def __init__(self, *, logs: ProcessLogs | None = None) -> None:
         self._runner = ProcessRunner()
+        self._logs = logs
 
     def spec(self) -> ToolSpec:
         return _SPEC
@@ -89,7 +91,17 @@ class BashTool(Tool):
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         command = invocation.input["command"]
         timeout = min(_resolve_timeout_s(invocation.input), _MAX_TIMEOUT_S)
-        out = await self._runner.run(invocation.call_id, shell=command, cwd=context.cwd, timeout_s=timeout)
+        logs = self._logs
+        if logs is not None:
+            logs.start(invocation.execution_id, session_id=context.session_id, run_id=context.run_id or "",
+                       call_id=invocation.call_id, command=command)
+        out = None
+        try:
+            out = await self._runner.run(invocation.execution_id, shell=command, cwd=context.cwd, timeout_s=timeout,
+                on_output=(lambda channel, text: logs.append(invocation.execution_id, channel, text)) if logs else None)
+        finally:
+            if logs is not None:
+                logs.finish(invocation.execution_id, out.exit_code if out else None)
         output = out.output
         failed, note = (True, "") if out.timed_out else _interpret_exit(command, out.exit_code)
         if out.timed_out:
@@ -106,6 +118,7 @@ class BashTool(Tool):
             stderr=out.stderr,
             exit_code=out.exit_code,
             truncated=truncated,
+            metadata={"log_available": logs is not None},
             error=error,
             failure_kind="timeout" if out.timed_out else ("execution" if failed else None),
             rendered=rendered,

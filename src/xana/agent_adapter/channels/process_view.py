@@ -214,7 +214,7 @@ def _running(members: list[ToolBlock]) -> ToolBlock | None:
 
 
 def build_view(sec: AnswerSection, mode: str, *, alive: bool) -> ProcessView:
-    """alive = 回答仍在进行(streaming / detached)。detailed 返回空视图(renderer 走原工具面板)。"""
+    """alive = 回答仍在进行(streaming)。detailed 返回空视图(renderer 走原工具面板)。"""
     policy = policy_for(mode)
     if policy.unit == "call":
         return ProcessView()

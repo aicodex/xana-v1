@@ -41,11 +41,11 @@ status: active
 
 ## Provider 装配（boot 唯一组合点）
 
-`runtime/boot.py` 的 `_build_model_client` 按 provider 名选择 client，缺配置时回落 fake：
+`runtime/boot.py` 的 `_build_model_client` 按显式选择的 provider 构造 client，配置错误直接阻止启动：
 
-- 名字含 `"deepseek"`（同时命中 "anthropic_deepseek" 和用户手填的 "deepseek-v4-flash"）→ `AnthropicDeepSeekClient`；system.json 中该 model entry 缺失或 api_key 为空 → 警告并回落 fake。
-- 名字以 `"kimi"` 开头 → `KimiClient` + `KimiTokenStore`；未登录 → 警告指引 `xana login` 并回落 fake。base_url 取 system.json entry 的 base_url，缺省用 `api_base(tokens.region)`。
-- 其他 provider → fake。
+- 名字含 `"deepseek"`（同时命中 "anthropic_deepseek" 和用户手填的 "deepseek-v4-flash"）→ `AnthropicDeepSeekClient`；system.json 中该 model entry 缺失或 api_key 为空（包括纯空白）→ 明确报错。
+- 名字以 `"kimi"` 开头 → `KimiClient` + `KimiTokenStore`；未登录 → 明确报错并指引 `xana login`。base_url 取 system.json entry 的 base_url，缺省用 `api_base(tokens.region)`。
+- provider 恰为 `"fake"` → `FakeModelClient`；其他不支持的 provider → 明确报错。
 
 ## AnthropicDeepSeekClient
 
@@ -81,4 +81,42 @@ k3 / kimi-for-coding 走 OpenAI chat-completions 方言，默认 base `https://a
 ## 不变量
 
 - driver 不跑工具、不写 memory；tool_call 事件原样携带 name/input/call_id，执行与结果回填是调用方的职责。
-- 缺 api_key / 未登录时回落 fake client 是显式行为（boot 打警告），不是静默成功。
+- 只有显式选择 fake 才使用模拟客户端；默认模型未配置、条目不存在、缺 api_key、未登录或 provider 不受支持均报错，不切换到 fake。
+
+## 多模态输入
+
+唯一能力配置为 `~/.xana/config/system.json` 的 `models[].input_modalities`，与
+`context_window` 并列。缺省 `[]`（仅文本），`["image"]` 开图，
+`["image", "video"]` 同时开图与视频。boot 将配置注入 Kimi client；
+`capabilities(model=当前模型)` 返回该模型的配置，不访问 `/models`，不按模型名字猜能力。
+修改文件后重启生效；会话 `/model` 切换时重新选择对应配置。
+
+```json
+{"name": "kimi-for-coding", "type": "kimi", "context_window": 1048576, "max_tokens": 32768,
+ "input_modalities": ["image", "video"]}
+```
+
+- `multimodal/contracts.py::MediaInput` 是媒体引用的唯一内部契约，贯穿 user/tool、
+  ContextSDK、主历史、run JSONL、恢复检查点和 compact 摘要请求。
+- `FileMediaStore` 按 SHA-256 保存不可变快照至 `sessions/media/`，原文件改动不改变历史。
+  JSONL 只存路径、类型、大小、摘要；发送时校验摘要，丢失/损坏明确报错。
+  格式通过文件头检测；支持 PNG/JPEG/WEBP/GIF（10 MiB）与 MP4（100 MiB）。
+  视频上限为 104,857,600 字节，等于上限允许，超出在读取/下载/上传前拒绝，
+  不自动压缩或截断。此值对齐官方 Kimi Code `ReadMediaFile` 的 `100 << 20`；
+  [开放平台上传文件文档](https://platform.kimi.com/docs/api/files-upload)同样声明 100 MiB。
+  Kimi Code VS Code 插件文件选择器的 20 MB 是另一入口的限制，不用于本接口。
+- Kimi 图片使用 `image_url` data URL；视频用 `POST /files`、`purpose=video` 上传，
+  再以 `video_url: ms://<id>` 输入。user 与 tool result 均发送实际内容块。
+  参考 [Kimi Code ReadMediaFile](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/tools/file/read_media.py)
+  和 [Kimi provider](https://github.com/MoonshotAI/kimi-cli/blob/main/packages/kosong/src/kosong/chat_provider/kimi.py)。
+- harness 通过 `ToolSpec.input_modality` 过滤 schema、可用工具集合及扩展输入；
+  `ReadImage`/`ReadVideo` 共用一个读取实现，按对应能力分别开放。工具执行及 provider
+  发送前也校验，避免绕过 UI 过滤。DeepSeek 当前未实现媒体传输，会明确拒绝。
+- compact 对尚无 usage 的媒体只作估计预留（每图 4096、每视频 16384 token），
+  不是精确 token 计数；长视频仍可能超过 provider 上下文限制。
+- 当前没有自动媒体清理：历史和可恢复 run 都可能引用文件，不按源文件消失而删除快照。
+
+验证：`tests/test_multimodal.py`（同步/异步、工具结果、重启、压缩、损坏及超限）、
+`tests/test_kimi_media.py`（配置权威、切模型工具可见性、请求格式、拒绝未开启能力）。
+
+`ModelRequest.max_tokens` 是请求级输出限制；摘要使用配置推导的摘要上限。没有请求级覆盖时，Kimi/DeepSeek 按当前模型配置读取 `max_tokens`，未配置才使用 provider 默认值；同一 provider 的不同模型不共享一个固定输出长度。

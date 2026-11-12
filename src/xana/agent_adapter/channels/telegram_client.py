@@ -8,6 +8,7 @@ import httpx
 _logger = logging.getLogger(__name__)
 
 from xana.agent_adapter.channels.telegram import TelegramApiClient, TelegramConfig
+from xana.agent_adapter.contracts import OutboundMedia, MediaSendError
 
 
 class HttpxTelegramClient(TelegramApiClient):
@@ -22,6 +23,30 @@ class HttpxTelegramClient(TelegramApiClient):
                 pool=10.0,
             ),
         )
+
+    async def send_media(self, *, chat_id: str, media: OutboundMedia) -> int:
+        field='video' if media.kind=='video' else 'animation' if media.content_type=='image/gif' else 'photo'
+        method={'video':'sendVideo','animation':'sendAnimation','photo':'sendPhoto'}[field]
+        body={'chat_id':chat_id}
+        files={field:(media.filename,media.data,media.content_type)}
+        if field=='video':
+            body['supports_streaming']='true'
+            if media.duration_ms:
+                body['duration']=str(max(1,round(media.duration_ms/1000)))
+            if media.cover:
+                if media.cover_content_type and media.cover_content_type!='image/jpeg':
+                    raise MediaSendError('Telegram 视频缩略图必须是 JPEG')
+                files['thumbnail']=(media.cover_filename or 'cover.jpg',media.cover,media.cover_content_type or 'image/jpeg')
+        try:
+            response=await self._client.post('/'+method,data=body,files=files,timeout=120)
+        except httpx.TransportError as exc:
+            raise MediaSendError('Telegram 媒体上传网络错误',retryable=True) from exc
+        if response.status_code>=400:
+            raise MediaSendError(f'Telegram 媒体上传失败: HTTP {response.status_code}',retryable=response.status_code==429 or response.status_code>=500)
+        data=response.json()
+        if not data.get('ok'):
+            raise MediaSendError('Telegram 媒体上传失败: '+str(data.get('description','未知错误'))[:300])
+        return int(data['result']['message_id'])
 
     async def send_message(
         self,

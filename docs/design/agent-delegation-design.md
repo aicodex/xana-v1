@@ -6,6 +6,8 @@ date: 2026-09-27
 
 # agent 切换、委派与创建
 
+2026-11-09 更新：本文委派策略指导与第 6 节实验保留作历史依据。按用户要求，源码已删除动态 `DELEGATION_GUIDE` 及工具说明中的额外策略建议，模型自主决定委派与等待；候选列表只保留 agent 及其有效能力。当前执行契约见 [子 agent 与后台任务](../../doc_ai/agents_subagents.md)，提示词规则见[来源约束](../../doc_ai/harness_prompt_assembly.md#提示词来源约束)。
+
 ## 1. 目标
 
 - 用户能让一个会话由指定 agent 负责(`/agent <名字>`);
@@ -46,7 +48,7 @@ date: 2026-09-27
 
 - 同步执行,经 `AgentRunner` 跑子 agent 的完整 run,取回最终文本;执行中以 `report_progress` 上报子 agent 的工具调用次数。`concurrency="parallel"`,同一轮多个调用并发执行;进程内同时运行的委派上限 6,超出的排队等空位(2026-10-19 改:原先超出直接返回错误,模型一次并行派出 7 个时第 7 个被拒)。
 - 结果:`agent_id`(子会话 id)、状态、用时、工具次数,加子 agent 的最终文本;末尾提示"需要继续这个子 agent 时用 resume=<agent_id>"。子 agent 失败时 `ok=False`,附原因。
-- **子 agent 的工具** = 子 agent 自己的 tools 表达式解析结果 ∩ 上限集合。上限集合 = 调用方本 run 可用的工具 − `agent_run` / `agent_define` − 会话控制类工具(EnterPlanMode、EnterWorktree、report_goal、Cron*)。
+- **子 agent 的工具** = 子 agent 自己的 tools 表达式解析结果 ∩ 上限集合。上限集合 = 调用方本 run 可用的工具 − `agent_run` / `agent_define` − 会话控制类工具(EnterPlanMode、EnterWorktree、create_goal/get_goal/update_goal、Cron*)。
   - 上限通过 `AgentRequest.tool_ceiling`(新增类型化字段)传给子 agent,harness 在 `resolve_tools` 结果上再取交集;调用方可用工具经 `ToolContext.available_tools`(新增字段)拿到。
   - 子 agent 永远拿不到 `agent_run`,委派深度固定为 1,不需要深度计数(CC 2.1.88 做法)。
 - 子会话 id:`{父会话}-agent-{短 id}`;`SessionRecord` 记录 `parent_session_id` / `parent_run_id` / `depth=1`。

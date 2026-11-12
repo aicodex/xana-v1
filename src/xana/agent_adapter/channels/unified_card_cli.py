@@ -34,6 +34,8 @@ def _trunc(s: str, cap: int, suffix: str = "\n…(已折叠)") -> str:
 def _render_compact(sec: CompactSection) -> str:
     if sec.state == "completed":
         head = f"[compact] 完成压缩 · 共 {sec.compacted_n} 条"
+    elif sec.state == "failed":
+        head = "[compact] 压缩失败"
     elif sec.state == "cancelled":
         head = "[compact] 压缩已取消"
     else:
@@ -52,7 +54,7 @@ def _render_answer(sec: AnswerSection, view_mode: str = "detailed") -> str:
 
     policy = policy_for(view_mode)
     if policy.unit != "call":
-        alive = sec.state in ("streaming", "detached")
+        alive = sec.state == "streaming"
         view = build_view(sec, view_mode, alive=alive)
         for b in view.blocks:
             parts.append(f"▸ {b.title}")
@@ -126,11 +128,11 @@ def _make_card_button_cls():
     )
 
     class CardButton(Button):
-        def __init__(self, spec: CardButtonSpec, *, ph_run_id: str | None = None,
+        def __init__(self, spec: CardButtonSpec, *, run_id: str | None = None,
                      card_id: str = "") -> None:
             super().__init__(spec.text or "·")
             self.spec = spec
-            self.ph_run_id = ph_run_id
+            self.run_id = run_id
             self.card_id = card_id
 
     globals()["_CardButton"] = CardButton
@@ -160,6 +162,9 @@ def render_widgets(state: UnifiedCardState):  # type: ignore[no-untyped-def]
         if sec.state == "completed":
             status = "完成压缩"
             panel_title = f"已压缩 {sec.compacted_n} 条消息"
+        elif sec.state == "failed":
+            status = "压缩失败"
+            panel_title = "压缩失败"
         elif sec.state == "cancelled":
             status = "压缩已取消"
             panel_title = "压缩已取消"
@@ -186,7 +191,7 @@ def render_widgets(state: UnifiedCardState):  # type: ignore[no-untyped-def]
             ))
         policy = policy_for(state.view_mode)
         if policy.unit != "call":
-            alive = sec.state in ("streaming", "detached")
+            alive = sec.state == "streaming"
             view = build_view(sec, state.view_mode, alive=alive)
             for b in view.blocks:
                 out.append(Collapsible(Static(rich_escape(b.body)), title=b.title, collapsed=True))
@@ -202,7 +207,7 @@ def render_widgets(state: UnifiedCardState):  # type: ignore[no-untyped-def]
         if hidden > 0:
             spec = CardButtonSpec(text=f"展开 ✎×{hidden}", action="load_tools")
             out.append(Horizontal(
-                CardButton(spec, ph_run_id=state.ph_run_id, card_id=state.card_id),
+                CardButton(spec, run_id=state.run_id, card_id=state.card_id),
                 classes="card-btn-row",
             ))
         line = progress_line(sec) if policy.progress_line else ""  # 进度行(§5.5a),暗色一行
@@ -225,7 +230,7 @@ def render_widgets(state: UnifiedCardState):  # type: ignore[no-untyped-def]
             if not row.buttons:
                 continue
             btns = [
-                CardButton(b, ph_run_id=state.ph_run_id, card_id=state.card_id)
+                CardButton(b, run_id=state.run_id, card_id=state.card_id)
                 for b in row.buttons if b.text
             ]
             if btns:

@@ -1,205 +1,60 @@
-"""Bridge between legacy memory contracts and ContextSDK Message types.
+"""The current memory and ContextSDK message representations."""
+from collections.abc import Iterable
+from xana.context._internal import _ToolCallInternal
+from xana.context.message import AssistantMessage, CompactSummary, ContextNote, Message, ToolResultMessage, UserMessage
+from xana.memory.contracts import HistoryRow, MemoryMessage
 
-P3-D wires the ContextSDK in as the canonical store backing
-``InMemoryActiveContextStore``. Legacy callers keep using
-``MemoryMessage`` / ``Placeholder``; this module is the translation
-layer in both directions.
-
-Only this module is allowed to mint ``_PlaceholderInternal`` outside of
-``xana.context`` itself — every other place must go through the SDK.
-"""
-from __future__ import annotations
-
-import json
-from typing import Iterable
-from uuid import uuid4
-
-from xana.context._internal import _PlaceholderInternal, _ToolCallInternal
-from xana.context.message import (
-    AssistantMessage,
-    CompactPlaceholder,
-    CompactSummary,
-    ContextNote,
-    Message,
-    RegularPlaceholder,
-    ToolResultMessage,
-    UserMessage,
-)
-from xana.memory.contracts import MemoryMessage, Placeholder
-
-
-# ---------------------------------------------------------------------------
-# legacy -> SDK
-# ---------------------------------------------------------------------------
-
-
-def memory_message_to_sdk(mm: MemoryMessage) -> Message | None:
-    """Convert a legacy ``MemoryMessage`` to an SDK ``Message``.
-
-    Returns ``None`` for roles that the SDK does not represent (currently
-    ``"system"`` — the SDK treats the system content as a separate string
-    rendered for the model).
-    """
-    role = mm.role
-    if role == "user" and mm.metadata.get("note_kind"):
-        return ContextNote.from_legacy_metadata(mm.metadata)
-    if role == "user":
-        return UserMessage(text=mm.content)
-    if role == "assistant":
-        tool_calls = _parse_assistant_tool_calls(mm.metadata)
-        return AssistantMessage(
-            text=mm.content, tool_calls=tool_calls,
-            reasoning=str(mm.metadata.get("reasoning_content") or ""),
-        )
-    if role == "tool":
-        return ToolResultMessage(
-            tool_use_id=str(mm.metadata.get("tool_use_id", "")),
-            content=mm.content,
-            ok=bool(mm.metadata.get("ok", True)),
-            tool_name=str(mm.metadata.get("tool_name", "")),
-            revealed_tools=tuple(mm.metadata.get("revealed_tools") or ()),
-        )
-    if role == "compact":
-        # Legacy compact-boundary marker — make a synthetic CompactSummary
-        # whose _internal carries an empty transcript path. The summary
-        # text is the legacy content.
-        return CompactSummary(
-            summary=mm.content,
-            _internal=_PlaceholderInternal(run_id="", ph_id="", transcript_path=""),
-            revealed_tools=tuple(mm.metadata.get("pre_compact_revealed_tools") or ()),
-        )
-    # role == "system" or unknown -> filter out at SDK level
+def memory_message_to_sdk(message: MemoryMessage) -> Message | None:
+    meta = message.metadata
+    if message.role == "user":
+        if meta.get("note_kind"):
+            return ContextNote.from_metadata(meta)
+        return UserMessage(message.content, message.media, str(meta.get("input_id", "")))
+    if message.role == "assistant":
+        calls = tuple(_ToolCallInternal(c["call_id"], c["tool_name"], c["input"]) for c in meta.get("tool_calls", ()))
+        return AssistantMessage(message.content, calls, str(meta.get("reasoning_content", "")))
+    if message.role == "tool":
+        return ToolResultMessage(str(meta.get("tool_use_id", "")), message.content, bool(meta.get("ok", True)),
+                                 str(meta.get("tool_name", "")), tuple(meta.get("revealed_tools", ())), message.media)
+    if message.role == "compact":
+        return CompactSummary(meta.get("summary", message.content), str(meta.get("run_id", "")),
+                              str(meta.get("transcript_path", "")), tuple(meta.get("pre_compact_revealed_tools", ())))
     return None
-
 
 def note_to_memory_message(note: ContextNote) -> MemoryMessage:
-    """ContextNote 的 legacy 形态:content 为模型可见的包裹文本,去重/计量字段放 metadata。"""
-    return MemoryMessage(role="user", content=ContextNote.wrap(note.text),
-                         metadata=note.legacy_metadata())
+    return MemoryMessage("user", ContextNote.wrap(note.text), note.to_metadata())
 
+def sdk_to_memory(message: Message) -> MemoryMessage:
+    if isinstance(message, UserMessage):
+        return MemoryMessage("user", message.text, {"input_id": message.input_id} if message.input_id else {}, message.media)
+    if isinstance(message, ContextNote):
+        return note_to_memory_message(message)
+    if isinstance(message, AssistantMessage):
+        meta = {}
+        if message.tool_calls:
+            meta["tool_calls"] = [{"call_id": c.call_id, "tool_name": c.name, "input": c.arguments} for c in message.tool_calls]
+        if message.reasoning:
+            meta["reasoning_content"] = message.reasoning
+        return MemoryMessage("assistant", message.text, meta)
+    if isinstance(message, ToolResultMessage):
+        meta = {"tool_use_id": message.tool_use_id, "tool_name": message.tool_name, "ok": message.ok}
+        if message.revealed_tools:
+            meta["revealed_tools"] = list(message.revealed_tools)
+        return MemoryMessage("tool", message.content, meta, message.media)
+    if isinstance(message, CompactSummary):
+        return MemoryMessage("compact", message._render(), {"compact_summary": True, "summary": message.summary,
+            "transcript_path": message.transcript_path, "run_id": message.run_id,
+            "pre_compact_revealed_tools": list(message.revealed_tools)})
+    raise TypeError(f"unsupported context message: {type(message).__name__}")
 
-def placeholder_to_sdk(ph: Placeholder, *, transcript_path: str = "") -> RegularPlaceholder:
-    return RegularPlaceholder(
-        label=ph.label,
-        _internal=_PlaceholderInternal(
-            run_id=ph.run_id,
-            ph_id=str(uuid4()),
-            transcript_path=transcript_path,
-        ),
-    )
+def messages_to_memory(messages: Iterable[Message]) -> tuple[MemoryMessage, ...]:
+    return tuple(sdk_to_memory(message) for message in messages)
 
-
-def _parse_assistant_tool_calls(metadata: dict) -> tuple[_ToolCallInternal, ...]:
-    """Reconstruct ``_ToolCallInternal`` tuples from legacy assistant
-    metadata.
-
-    Legacy producer (DefaultHarness `_run_query_loop`, around line 903)
-    stores each tool call as a dict::
-
-        {"tool_name": "...", "input": {...}, "call_id": "..."}
-
-    Some older callers (and the SDK round-trip) use
-    ``{"name": ..., "arguments": ..., "call_id"|"id": ...}``.
-    Accept both shapes — fail silently if a record has neither.
-    """
-    raw = metadata.get("tool_calls")
-    if raw is None and "tool_call" in metadata:
-        raw = [metadata["tool_call"]]
-    if not raw:
-        return ()
-    out: list[_ToolCallInternal] = []
-    for entry in raw:
-        if not isinstance(entry, dict):
-            continue
-        call_id = entry.get("call_id") or entry.get("id") or ""
-        # Accept both legacy ("tool_name"/"input") and SDK ("name"/"arguments").
-        name = entry.get("name") or entry.get("tool_name") or ""
-        arguments = entry.get("arguments")
-        if arguments is None:
-            arguments = entry.get("input")
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except Exception:
-                arguments = {}
-        if not isinstance(arguments, dict):
-            arguments = {}
-        if not name or not call_id:
-            continue
-        out.append(_ToolCallInternal(call_id=str(call_id), name=str(name), arguments=arguments))
-    return tuple(out)
-
-
-# ---------------------------------------------------------------------------
-# SDK -> legacy
-# ---------------------------------------------------------------------------
-
-
-def sdk_to_legacy_item(m: Message) -> MemoryMessage | Placeholder | None:
-    """Convert an SDK ``Message`` back to the legacy mixed-snapshot form.
-
-    Returns ``None`` for messages that have no legacy representation
-    (e.g. unrenderable types in the future). Callers should drop them.
-    """
-    if isinstance(m, UserMessage):
-        return MemoryMessage(role="user", content=m.text)
-    if isinstance(m, ContextNote):
-        return note_to_memory_message(m)
-    if isinstance(m, AssistantMessage):
-        meta: dict = {}
-        if m.tool_calls:
-            # 与 harness 产出的 assistant metadata 同形(tool_name / input / call_id),
-            # provider 只需认这一种;否则跨 run 回放时工具名与参数会丢。
-            meta["tool_calls"] = [
-                {"call_id": tc.call_id, "tool_name": tc.name, "input": tc.arguments}
-                for tc in m.tool_calls
-            ]
-        if m.reasoning:
-            meta["reasoning_content"] = m.reasoning
-        return MemoryMessage(role="assistant", content=m.text, metadata=meta)
-    if isinstance(m, ToolResultMessage):
-        meta: dict = {"tool_use_id": m.tool_use_id}
-        if m.tool_name:
-            meta["tool_name"] = m.tool_name
-        meta["ok"] = m.ok
-        if m.revealed_tools:
-            meta["revealed_tools"] = list(m.revealed_tools)
-        return MemoryMessage(role="tool", content=m.content, metadata=meta)
-    if isinstance(m, RegularPlaceholder):
-        return Placeholder(run_id=m._internal.run_id, label=m.label)
-    if isinstance(m, CompactPlaceholder):
-        return Placeholder(
-            run_id=m._internal.run_id,
-            label="",
-            metadata={"compact_placeholder": True},
-        )
-    if isinstance(m, CompactSummary):
-        # Render the full POST_COMPACT_TEMPLATE so the harness emits the
-        # same text the SDK would have sent to the model.
-        try:
-            content = m._render()
-        except Exception:
-            content = m.summary
-        meta: dict = {"compact_summary": True}
-        if m.revealed_tools:
-            meta["pre_compact_revealed_tools"] = list(m.revealed_tools)
-        return MemoryMessage(role="compact", content=content, metadata=meta)
-    return None
-
-
-def sdk_buffer_to_legacy_mixed(
-    buf: Iterable[Message],
-) -> tuple[MemoryMessage | Placeholder, ...]:
-    out: list[MemoryMessage | Placeholder] = []
-    for m in buf:
-        item = sdk_to_legacy_item(m)
-        if item is not None:
-            out.append(item)
-    return tuple(out)
-
-
-def sdk_buffer_to_legacy_pure(buf: Iterable[Message]) -> tuple[MemoryMessage, ...]:
-    """Returns the MemoryMessage-only subset (drops placeholders), in order."""
-    return tuple(
-        x for x in sdk_buffer_to_legacy_mixed(buf) if isinstance(x, MemoryMessage)
-    )
+def history_compaction_prefix(rows: Iterable[HistoryRow], session_id: str, agent_name: str,
+                              expected: tuple[MemoryMessage, ...]) -> tuple[str, ...]:
+    selected = [r for r in rows if (r.session_id, r.agent_name) == (session_id, agent_name)
+                and r.kind != "system"][:len(expected)]
+    normalized = tuple(sdk_to_memory(m) for r in selected if (m := memory_message_to_sdk(r.payload)) is not None)
+    if normalized != expected:
+        raise ValueError("history mirror does not match frozen compaction input")
+    return tuple(r.row_id for r in selected)

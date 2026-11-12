@@ -13,7 +13,7 @@ status: active
 ## 代码锚点
 
 - [interfaces.py](../src/xana/skills/interfaces.py) — `Skill`, `SkillRegistry`
-- [registry.py](../src/xana/skills/registry.py) — `InMemorySkillRegistry`
+- [registry.py](../src/xana/skills/registry.py) — `InMemorySkillRegistry` / `ManagedSkillRegistry`
 - [bundled/](../src/xana/skills/bundled/__init__.py) — `loop` / `schedule` / `skill_creator` 三 skill
 - [markdown_loader.py](../src/xana/skills/markdown_loader.py) — `MarkdownSkill` / `FileSkillLoader` / `scan_skill_docs()`，文件 SKILL.md 的加载
 - [boot.py](../src/xana/runtime/boot.py) — bundled + 文件 skill registry 组装 + `SkillLoadTool` 接线
@@ -44,14 +44,41 @@ status: active
 
 ## 两阶段注入模式
 
-boot 里有两个独立的 `InMemorySkillRegistry`：
+boot 使用同一个 `ManagedSkillRegistry` 保存内置技能，并通过 `SkillManagement`
+查询明确启用的外部技能。`SkillsListingContributor` 与 `SkillLoadTool` 都按
+当前 agent 调用 `discover`，`AgentSpec.skills` 仍作为进一步收窄的名单。
+内置技能保持原有行为；文件技能不再因为出现在磁盘上而自动对所有 agent 开放。
 
-1. **harness 的 `skill_registry`**（`ChatAgent.skill_registry`）：boot 时是**空的**，无任何注册——这是**有意设计**：文件 skill 走与 bundled 相同的两阶段按需加载（列表注入 + `skill_load` 取全文），不做每轮全文注入，所以不需要一个每轮注入用的 registry。
-2. **bundled + 文件 skill registry**（boot 局部变量 `bundled_skills`）：注册 bundled skill（default 项目另加 project_creator），以及 `scan_skill_docs()` 从 `{XANA_HOME}/skills/*/SKILL.md` 加载的文件 skill（`XANA_HOME` 默认 `~/.xana`）。文件 skill 与 bundled 是**同一个 registry、同一个 `Skill` 接口**（`MarkdownSkill.activate()` 同样返回正文 `prompt_blocks`），被两处消费：
-   - `SkillsListingContributor(skills=bundled_skills)`：每轮向 system prompt 注入「# 可用技能」段——每技能一行 `名字: 描述`，**不含全文**（零常驻 token），文件 skill 自动出现在列表里；agent 没有 `skill_load` 时不列，只列 `TurnInputContext.visible_skills` 内的技能（None = 全部）。仅当调用方未传 `extension_registry` 时由 boot 自动挂上。
-   - `SkillLoadTool(skills=bundled_skills)`：模型看到列表后按需调 `skill_load` 工具取全文，工具内部 `get(name)` → `activate()` → join `prompt_blocks` 返回，对文件 skill 和 bundled skill 一视同仁；名字不在 `ToolContext.visible_skills` 内时按不存在处理（`not_found`）。
+## 安装与按 agent 启用
 
-注意 `skill_load` 注入的是 bundled registry 而非 harness 的 `skill_registry`——两阶段模式的全部闭环都在这一个 registry 上，harness 那个口保持空转是刻意的（不做每轮全文注入）。坏 SKILL.md 由 `scan_skill_docs()` 收集为错误，boot 记 warning 跳过，不阻塞启动（见 [runtime_boot](runtime_boot.md)）。
+`skill_manage` 是用户聊天中的管理工具，子 agent 的委派上限排除此工具。
+
+- `list`：查看本地技能及已启用的 agent；带 `source` 列远程来源中的技能。
+- `install`：先按技能名查本地，已有则复用；缺少时通过官方 `npx skills` 安装。
+  `skills=["*"]` 明确安装来源中的全部技能。安装先落到临时目录，校验完整包后
+  归入项目 `.agents/skills/`，保留 references 等资源；已有包不覆盖。
+- `enable` / `disable`：必须显式给出 `skills` 和 `agents`，只调整指定 agent。
+- `install` 可同时给 `agents`，完成本地就绪检查后再启用；不填只安装、不改变启用范围。
+
+本地库存按 `~/.agents/skills` → `{XANA_HOME}/skills` → 项目 `.agents/skills` 的优先级
+查询，同名项目包优先。库存与启用范围分开：目录只负责包内容，项目
+`skill_bindings.json` 是外部技能启用范围的唯一记录，按 agent 保存名字和已选包路径。
+启用记录原子写入，重启后有效；启用无需重启。包缺失不会退到另一份同名实现。
+
+例如：
+
+```json
+{"action":"install","source":"https://github.com/MiniMax-AI/MiniMax-H3",
+ "skills":["h3-prompt-writing"],"agents":["video-director"]}
+```
+
+官方 npx CLI 由 `ProcessRunner` 以 argv 调用，有超时、取消支持；缺少 npx 或安装失败
+明确报错。通用 `npx` 命令仍可经 Bash 执行，但直接往标准目录放文件不会获得启用权限。
+安装不执行技能包的脚本，不自动提供技能需要的第三方工具/API/凭据。
+`skill_load` 返回真实技能目录，资源相对路径以该目录为准。
+
+验证：`tests/test_skill_install_loading.py`（本地复用、不联网、只给指定 agent、拒绝猜名字
+加载、名单继续收窄、重启保留、禁用不删包、参考文件保留及覆盖保护）。
 
 ## 与 AGENT.md 的边界
 

@@ -8,12 +8,11 @@ from __future__ import annotations
 
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
-from xana.tools.builtin._todo_store import TodoItem, TodoStore
+from xana.state.contracts import TodoItem, TODO_STATUSES
+from xana.state.todos import TodoStore
 from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
 
-
-_VALID_STATUS = {"pending", "in_progress", "completed"}
 
 _SPEC = ToolSpec(
     temporal="static",
@@ -35,7 +34,7 @@ _SPEC = ToolSpec(
                     "properties": {
                         "content":     {"type": "string"},
                         "active_form": {"type": "string"},
-                        "status":      {"type": "string", "enum": sorted(_VALID_STATUS)},
+                        "status":      {"type": "string", "enum": sorted(TODO_STATUSES)},
                     },
                     "required": ["content", "active_form", "status"],
                 },
@@ -62,11 +61,7 @@ class TodoWriteTool(Tool):
         for i, t in enumerate(todos):
             if not isinstance(t, dict):
                 raise ValueError(f"TodoWrite: item {i} must be an object")
-            if t.get("status") not in _VALID_STATUS:
-                raise ValueError(f"TodoWrite: item {i} has invalid status {t.get('status')!r}")
-            for k in ("content", "active_form"):
-                if not isinstance(t.get(k), str) or not t[k]:
-                    raise ValueError(f"TodoWrite: item {i} missing/empty '{k}'")
+            TodoItem(content=t.get("content"), active_form=t.get("active_form"), status=t.get("status"))
 
     async def check_permission(self, invocation: ToolInvocation, context: ToolContext) -> PermissionResult:
         return PermissionResult(decision="allow", reason="todo write allowed")
@@ -77,7 +72,7 @@ class TodoWriteTool(Tool):
             for t in invocation.input["todos"]
         )
         self.store.save(context.session_id, items)
-        counts = {s: sum(1 for i in items if i.status == s) for s in _VALID_STATUS}
+        counts = {s: sum(1 for i in items if i.status == s) for s in TODO_STATUSES}
         rendered = (
             f"[TodoWrite ok] {len(items)} item(s): "
             f"{counts['in_progress']} in-progress, "

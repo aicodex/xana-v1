@@ -95,15 +95,7 @@ class DaemonClient:
         r = await self._client.post(f"/sessions/{sid}/cancel", json=body)
         r.raise_for_status()
 
-    async def attach(self, sid: str, run_id: str) -> None:
-        r = await self._client.post(
-            f"/sessions/{sid}/attach", json={"run_id": run_id})
-        r.raise_for_status()
 
-    async def detach(self, sid: str, run_id: str) -> None:
-        r = await self._client.post(
-            f"/sessions/{sid}/detach", json={"run_id": run_id})
-        r.raise_for_status()
 
     async def button(self, sid: str, payload: dict) -> None:
         r = await self._client.post(f"/sessions/{sid}/button", json=payload)

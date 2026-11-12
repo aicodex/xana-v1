@@ -13,6 +13,8 @@ Three sub-systems live here, sharing a tree-of-nodes substrate:
 """
 from __future__ import annotations
 
+from xana.multimodal.contracts import MediaInput
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
@@ -33,7 +35,6 @@ LintSeverity = Literal["error", "warn", "info"]
 # recall = 本条消息召回的记忆全文(docs/design/memory-recall-design.md §3.2–3.3)
 InjectionPlacement = Literal["index", "pinned", "recall"]
 SearchBackendKind = Literal["keyword", "embedding", "hybrid", "external"]
-PlaceholderStatus = Literal["running", "completed", "cancelled", "failed"]
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class MemoryMessage:
     role: str
     content: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    media: tuple[MediaInput, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -71,20 +73,14 @@ class ReplayResult:
     errors: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
-class Placeholder:
-    """会话消息序列中的占位符：标记「这里有一个 run，状态见 status」。
 
-    与 MemoryMessage 平级，由 ActiveContextStore.snapshot() 返回为混合序列
-    `tuple[MemoryMessage | Placeholder, ...]`。**不**塞进 ActiveContext.messages
-    （那里只放 MemoryMessage，保持类型纯净）。
-    """
 
-    run_id: str
-    label: str
-    status: PlaceholderStatus = "running"
-    jsonl_path: Path | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +160,67 @@ class SearchHit:
     score: float
     matched_spans: tuple[str, ...] = ()
     node: MemoryNode | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class EvidenceCandidate:
+    id: str
+    source_path: str
+    source_hash: str
+    title: str
+    content: str
+    spans: tuple[tuple[int, int], ...] = ()
+    previous_score: float | None = None
+
+
+@dataclass(frozen=True)
+class EvidenceScore:
+    candidate_id: str
+    score: float
+
+
+@dataclass(frozen=True)
+class EvidenceJudgment:
+    scores: tuple[EvidenceScore, ...]
+    model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    requests: int = 1
+
+
+EvidenceJudge = Callable[[str, tuple[EvidenceCandidate, ...], tuple[EvidenceCandidate, ...]],
+                         Awaitable[EvidenceJudgment]]
+
+
+@dataclass(frozen=True)
+class EvidenceCriterion:
+    """Host-approved model instructions; no backend invents a scoring prompt."""
+    question: str
+    when_true: str
+    when_false: str
+    source: str
+    score_note: str = ""
+
+    def __post_init__(self) -> None:
+        if not all(value.strip() for value in (self.question, self.when_true, self.when_false, self.source)):
+            raise ValueError("evidence criterion and its source are required")
+
+
+@dataclass(frozen=True)
+class SAG2Options:
+    """Reference retrieval parameters; the host supplies its query deadline."""
+    candidate_k: int = 100
+    seed_k: int = 10
+    max_hops: int = 2
+    expansion_term_limit: int = 20
+
+    def __post_init__(self) -> None:
+        if any(type(value) is not int or value <= 0 for value in
+               (self.candidate_k, self.seed_k, self.expansion_term_limit)):
+            raise ValueError("SAG2 counts must be positive integers")
+        if type(self.max_hops) is not int or not 0 <= self.max_hops <= 2:
+            raise ValueError("SAG2 supports zero to two expansion rounds")
 
 
 # ---------------------------------------------------------------------------

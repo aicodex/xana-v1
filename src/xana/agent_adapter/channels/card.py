@@ -5,11 +5,9 @@
 - ViewModel = `Card` (本文件,生命周期 + 改动触发刷新 + 守门)
 - View = `unified_card_feishu.render` / `unified_card_telegram.render` (平台特定)
 
-Card 是 adapter 不再 "知道" 卡何时刷新 / 是否冻结 / 怎样合并的入口:
+Card 是 adapter 不再 "知道" 卡何时刷新 / 是否终态 / 怎样合并的入口:
     card.dispatch(event)         # 事件分发,内部自动 render+deliver
     card.reveal_tools()           # 按钮回调
-    card.freeze()                 # detach 瞬间
-    card.terminalize(**kw)        # ph_replaced
 绑定:`card.bind_transport(deliver, task_sink)` 注入平台交付 + task 追踪。
 
 drop / dirty / coalesce / terminal 判断全部在 Card 内,adapter 只:
@@ -25,8 +23,6 @@ from typing import Any, Awaitable, Callable
 from xana.agent_adapter.channels._throttle import DraftCoalescer
 from xana.agent_adapter.channels.unified_card import (
     UnifiedCardState,
-    apply_detach,
-    apply_ph_replaced,
     compute_top_buttons,
     load_pending_tools,
 )
@@ -39,15 +35,7 @@ Deliver = Callable[["Card"], Awaitable[None]]
 TaskSink = Callable[[asyncio.Task[Any]], None]
 
 
-# 解冻事件(detached 卡终态/退出冻结):
-_THAW_KINDS = frozenset({"ph_replaced", "run_completed_bg"})
-# 即使 detached 也仍要渲染的事件(compact 段挂到 PH 卡上,用户要看进度):
-_DETACHED_RENDER_KINDS = frozenset({
-    "compact_started", "compact_progress", "compact_finalized",
-})
 _FINALIZE_HARNESS_KINDS = frozenset({"final", "error", "cancelled"})
-# 切回前台(/attach)的事件:detached 卡收到后恢复为前台卡
-_REATTACH_KINDS = frozenset({"attached", "foreground_changed"})
 
 
 def _event_kind(event: Any) -> str:
@@ -94,48 +82,15 @@ class Card:
     def card_id(self) -> str:
         return self.state.card_id
 
-    @property
-    def is_detached(self) -> bool:
-        return self.state.detached and not self.terminal
-
-    # ------------------------------------------------------------------
-    # 公开入口
-    # ------------------------------------------------------------------
-
     def dispatch(self, event: Any) -> asyncio.Task[Any] | None:
-        """收到一条事件 — MVVM 数据绑定语义:
-
-        1) state 总是被 apply(数据保真,后台 run 仍在累积答案/工具),除非已 terminal
-        2) 是否渲染由"detach + 事件 kind"决定:
-           - terminal 卡:丢弃
-           - detached 卡:只渲 compact_* (用户要看 compact 段) 与 thaw kinds
-             (ph_replaced/run_completed_bg);其它仅累积,不刷视图
-           - 否则:正常渲染
-        3) 终态事件返回 finalize task,adapter await 后立即落地;其它返回 None(throttle)。
-        """
+        """Apply ordered run events and flush terminal state immediately."""
         if self.terminal:
             return None
         kind = _event_kind(event)
-        # 用 apply 前的 detached 判断,避免漏掉"detach 事件本身"的渲染。
-        was_detached = self.state.detached
-        # 守门:终态拒绝(上面已挡)、detached 拒绝那些不能跨冻结的事件 — 但只是不让
-        # apply_event 跑也不行,因为后台 run 的 model_delta/tool_finished 必须累积,
-        # 否则 ph_replaced 终态卡显示空回答。所以 apply 永远跑,渲染另判。
         apply_event(self.state, event)
-        # 是否要渲染:
-        #  - apply 前不是 detached → 总渲(包括 run_detached 自身)
-        #  - apply 前已 detached → 只允许 compact_* 和 thaw 解冻
-        should_render = (
-            not was_detached
-            or kind in _THAW_KINDS
-            or kind in _DETACHED_RENDER_KINDS
-            or kind in _REATTACH_KINDS          # 切回前台:立即重绘(去掉"后台"脚标),之后照常刷新
-        )
-        if not should_render:
-            return None
+        self.terminal = self.state.terminal
         self._refresh_top_buttons()
-        finalize = self._is_finalize_after(kind)
-        return self._schedule(finalize=finalize)
+        return self._schedule(finalize=kind in _FINALIZE_HARNESS_KINDS)
 
     def set_answer_page(self, page: int) -> asyncio.Task[Any] | None:
         """翻页:更新 answer.page,触发一次 patch。"""
@@ -173,82 +128,7 @@ class Card:
         load_pending_tools(self.state.answer)
         return self._schedule(finalize=True)
 
-    def freeze(self) -> asyncio.Task[Any] | None:
-        """detach 瞬间:折叠骨架,冻结后续刷新直到 terminalize。
-        top_buttons 由 apply_detach 内部调 compute_top_buttons 决定。
-        用户感受要求"瞬时" → 不等当前 in-flight patch 完成,立刻发 freeze。"""
-        if self.terminal:
-            return None
-        apply_detach(self.state)
-        if self._deliver is None:
-            return None
-        deliver = self._deliver
-
-        async def _runner() -> None:
-            await self.coalescer.finalize(
-                lambda: deliver(self), wait_inflight=False)
-
-        try:
-            task = asyncio.create_task(_runner())
-        except RuntimeError:
-            return None
-        if self._task_sink is not None:
-            self._task_sink(task)
-        return task
-
-    def terminalize(
-        self,
-        *,
-        final_answer: str = "",
-        ctx_used: int | None = None,
-        elapsed_s: int | None = None,
-    ) -> asyncio.Task[Any] | None:
-        """ph_replaced / run_completed_bg 终态:解冻 → 终态 patch。"""
-        if self.terminal:
-            return None
-        apply_ph_replaced(
-            self.state,
-            final_answer=final_answer,
-            ctx_used=(
-                ctx_used if ctx_used is not None else self.state.footer.ctx_used
-            ),
-            elapsed_s=(
-                elapsed_s if elapsed_s is not None
-                else self.state.footer.elapsed_s
-            ),
-        )
-        self.terminal = True
-        self.state.top_buttons = ()
-        return self._schedule(finalize=True)
-
-    # ------------------------------------------------------------------
-    # 内部:守门 / 渲染调度
-    # ------------------------------------------------------------------
-
-    def _is_finalize_after(self, kind: str) -> bool:
-        # ph_replaced / run_completed_bg → terminal(state.footer.state 已由
-        # apply_ph_replaced 设为 terminal)
-        if kind in _THAW_KINDS:
-            self.terminal = True
-            self.state.top_buttons = ()
-            return True
-        # harness final/error/cancelled → terminal。
-        # 仅在有 answer section 时把 footer 切到 "terminal"(让 🟢 绿点出现);
-        # 菜单卡(answer is None,state.menu 已被 _apply_agent_only 设为 menu 段)
-        # 保持 footer.state="menu",否则会被覆盖成 terminal,跳出 🟢 + 回答用时。
-        if kind in _FINALIZE_HARNESS_KINDS:
-            self.terminal = True
-            self.state.top_buttons = ()
-            if self.state.answer is not None:
-                self.state.footer.state = "terminal"
-            return True
-        # run_detached:一次 finalize patch 后进入 frozen
-        if kind == "run_detached":
-            return True
-        return False
-
     def _refresh_top_buttons(self) -> None:
-        # terminal → 无按钮;detached → 由 compute_top_buttons 决定(保留取消)。
         if self.terminal:
             self.state.top_buttons = ()
         else:

@@ -20,7 +20,6 @@ from xana.memory.contracts import (
     MemoryLintResult,
     MemoryMessage,
     MemoryNode,
-    Placeholder,
     ReplayResult,
     SearchHit,
     SearchQuery,
@@ -52,36 +51,31 @@ class ActiveContextStore(ABC):
     @abstractmethod
     async def snapshot(
         self, session_id: str, agent_name: str
-    ) -> tuple[MemoryMessage | Placeholder, ...]: ...
+    ) -> tuple[MemoryMessage, ...]: ...
 
-    @abstractmethod
-    async def append_placeholder(
-        self, session_id: str, agent_name: str, placeholder: Placeholder
-    ) -> None: ...
 
-    @abstractmethod
-    async def replace_placeholder(
-        self,
-        run_id: str,
-        replace_with: tuple[MemoryMessage, ...],
-    ) -> ActiveContext | None: ...
 
 class HistoryMirror(ABC):
     @abstractmethod
-    async def append(self, row: HistoryRow) -> None: ...
+    async def read_rows(self, session_id: str | None = None) -> tuple[HistoryRow, ...]: ...
+
+    @abstractmethod
+    async def append(self, row: HistoryRow) -> bool: ...
+
 
     @abstractmethod
     async def replay(self) -> ReplayResult: ...
 
-    @abstractmethod
-    async def append_placeholder(
-        self, session_id: str, agent_name: str, placeholder: Placeholder
-    ) -> None: ...
+
 
     @abstractmethod
-    async def replace_placeholder(
-        self, run_id: str, messages: tuple[MemoryMessage, ...]
-    ) -> None: ...
+    async def compaction_prefix(self, session_id: str, agent_name: str,
+                                expected: tuple[MemoryMessage, ...]) -> tuple[str, ...]:
+        """Freeze row identities matching exactly the SDK compaction input."""
+
+    @abstractmethod
+    async def compact(self, row_ids: tuple[str, ...], summary: HistoryRow) -> None:
+        """Replace only the captured prefix; preserve concurrent tail writes."""
 
 class MemoryReplayer(ABC):
     @abstractmethod

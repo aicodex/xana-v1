@@ -9,11 +9,13 @@ import asyncio
 import json
 import logging
 import time
+from urllib.parse import quote
 
 import httpx
 
 from xana.agent_adapter.channels.feishu import FeishuConfig
 from xana.agent_adapter.contracts import MediaSendError, OutboundMedia
+from xana.multimodal.files import MAX_IMAGE_BYTES, MAX_VIDEO_BYTES
 
 _logger = logging.getLogger(__name__)
 
@@ -131,6 +133,24 @@ class _HttpxFeishuSender:
     # ------------------------------------------------------------------
     # Native media
     # ------------------------------------------------------------------
+
+    async def download_media(self, *, message_id: str, file_key: str, kind: str) -> bytes:
+        if kind not in ("image", "file"):
+            raise ValueError("不支持的飞书资源类型")
+        token = await self._ensure_token()
+        limit = MAX_IMAGE_BYTES if kind == "image" else MAX_VIDEO_BYTES
+        url = f"/open-apis/im/v1/messages/{quote(message_id, safe='')}/resources/{quote(file_key, safe='')}"
+        async with self._client.stream("GET", url, params={"type": kind},
+                headers={"Authorization": f"Bearer {token}"}, timeout=_UPLOAD_TIMEOUT) as response:
+            response.raise_for_status()
+            if int(response.headers.get("content-length", "0")) > limit:
+                raise ValueError("飞书媒体超过大小限制（图片 10 MiB，视频 100 MiB）")
+            data = bytearray()
+            async for chunk in response.aiter_bytes(64 * 1024):
+                if len(data) + len(chunk) > limit:
+                    raise ValueError("飞书媒体超过大小限制（图片 10 MiB，视频 100 MiB）")
+                data.extend(chunk)
+            return bytes(data)
 
     async def upload_image(self, *, data: bytes, filename: str, content_type: str) -> str:
         token = await self._ensure_token()

@@ -12,10 +12,10 @@ turn loop、prompt 组装、工具调度、auto-compact、暂停/取消、事件
 
 ## 详细设计
 
-- [harness_core](harness_core.md) — `DefaultHarness` turn loop、sync/async 双路径、PH ritual、fork store、事件流合约。
+- [harness_core](harness_core.md) — `DefaultHarness` turn loop、单会话入场、插话与取消、事件流合约。
 - [harness_prompt_assembly](harness_prompt_assembly.md) — 会话内固定的 system prompt（7 静态段 + 拼装）、ContextNote（记忆召回/技能/按需工具/todo 提醒）、compact prompt。
 - [harness_tool_dispatch](harness_tool_dispatch.md) — 工具调用解析与 validate→permission→execute 管线、deferred 工具、取消宽限期。
-- [harness_compact](harness_compact.md) — auto-compact 同步触发、9 节摘要、Compact-as-PH、revealed tools 保留。
+- [harness_compact](harness_compact.md) — auto-compact 同步触发、9 节摘要、冻结前缀提交、revealed tools 保留。
 - [harness_usage](harness_usage.md) — `UsageSnapshot` 累积规则（exact vs estimated、cache token 并回）。
 - [harness_turn_controller](harness_turn_controller.md) — turn 状态转换（内联在 `DefaultHarness`）、`AbortSignal` 取消机制与 Stop 决策。
 
@@ -29,7 +29,7 @@ turn loop、prompt 组装、工具调度、auto-compact、暂停/取消、事件
 - 单 turn 内的 model↔tool 往返循环（工具轮上限读 `AgentSpec.max_turns`，缺省不限；显式配置时用完后多给一轮收尾总结，仍调工具则不执行并报 max_turns 错误）；纯文本结束时先走 Stop 决策（见 [harness_turn_controller](harness_turn_controller.md)）
 - system prompt 会话内固定（按会话缓存）；tools_schema 每轮组装（deferred 揭示后下一轮生效）；每轮变化的上下文以 ContextNote 追加进历史
 - auto-compact 的同步触发与摘要生成
-- placeholder（PH）的展开（`ph_expand.py`）与写回编排
+- 持久输入排队、边界消费与精确 run 取消
 - `HarnessEvent` 有序事件流（`turn_started` / `model_delta` / `tool_started` / `tool_finished` / `cancelled` / `final` / `error`）
 - run 级 usage 快照累积（`UsageAccumulator`）
 
@@ -38,7 +38,7 @@ turn loop、prompt 组装、工具调度、auto-compact、暂停/取消、事件
 - Protocol 渲染、provider HTTP 代码（`llm_driver`）
 - 持久化 config 加载、session/agent 外层 API（`agents` / `agent_adapter`）
 - 上下文持久化权威（`ActiveContextStore`）、durable log（`HistoryMirror`）、run 元数据（`state.RunStore`）——harness 只读写，不持有
-- 手动 `/compact` 命令流（`context` SDK 侧），harness 只与之共享 `compact.py` 纯函数
+- 手动 `/compact` 命令流（commands 侧），经共享 coordinator 排到安全边界
 
 ## Inputs
 
@@ -51,7 +51,7 @@ turn loop、prompt 组装、工具调度、auto-compact、暂停/取消、事件
 
 - 有序 `HarnessEvent` 流（末事件 `final` 携带 `UsageSnapshot`；无 `TurnUsage` 类型）
 - run 状态写回（`RunRecord` status / usage，经 `StateRepository`）
-- PH 替换 payload（经 write_queue / MainWriter / 直写 store 三级回退）
+- 有序主历史追加与独立 run trace
 - compact 摘要写回（boundary + `CompactSummary`，见 [harness_compact](harness_compact.md)）
 
 ## Replacement Rule

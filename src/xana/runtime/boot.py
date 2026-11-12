@@ -6,7 +6,7 @@ under it, so the CLI and tests can introspect.
 Model selection happens here: the DefaultConfigProvider reads
 ~/.xana/config/system.json (or $XANA_HOME), picks the chat default model,
 and we register the matching client (AnthropicDeepSeekClient for deepseek
-entries, FakeModelClient as the fallback when no api_key is configured).
+entries; FakeModelClient only when type="fake" is explicitly selected).
 ChatAgent's provider/model are pinned to whatever was actually registered
 so config_snapshot["provider"] resolves cleanly inside the harness.
 """
@@ -17,7 +17,7 @@ import hashlib
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from xana.config.paths import DEFAULT_PROJECT, project_home, project_id, xana_home
@@ -36,7 +36,7 @@ from xana.agents.researcher import RESEARCHER_AGENT
 from xana.agents.interfaces import Agent
 from xana.config.loader import (
     DefaultConfigProvider,
-    derive_compact_thresholds,
+    resolve_model_config,
 )
 from xana.extension_api.builtin.agent_listing import AgentListingContributor
 from xana.extension_api.builtin.skills_listing import SkillsListingContributor
@@ -59,7 +59,7 @@ from xana.memory.active_context import (
     InMemoryActiveContextStore,
     InMemoryHistoryMirror,
 )
-from xana.memory.file_history import FileHistoryMirror, FileMemoryReplayer, replay_and_detect_interrupts
+from xana.memory.file_history import FileHistoryMirror, FileMemoryReplayer
 from xana.memory.interfaces import (
     ActiveContextStore,
     HistoryMirror,
@@ -80,16 +80,20 @@ from xana.skills.bundled.skill_creator import SkillCreatorSkill
 from xana.skills.bundled.tool_creator import ToolCreatorSkill
 from xana.skills.interfaces import SkillRegistry
 from xana.skills.markdown_loader import MarkdownDocParser
-from xana.skills.registry import InMemorySkillRegistry
-from xana.memory.main_writer import MainWriter
-from xana.memory.write_queue import WriteQueue, WriteQueueConsumer
+from xana.skills.registry import ManagedSkillRegistry
+from xana.skills.management import SkillManagement
+from xana.tools.builtin.skill_manage import SkillManageTool
+from xana.tools.builtin.agent_publish import AgentPublishTool
 from xana.state.budget import BudgetTracker
 from xana.state.file_runs import FileRunStore, RunJsonlWriter
-from xana.state.in_memory import InMemorySessionStore, InMemoryStateRepository
+from xana.state.in_memory import InMemoryStateRepository
+from xana.state.file_sessions import FileSessionStore
+from xana.policy.approvals import PermissionService
 from xana.state.interfaces import RunStore, SessionStore, StateRepository
 from xana.session_config.file_store import FileSessionConfigStore
 from xana.session_config.interfaces import SessionConfigStore
-from xana.tools.builtin._todo_store import TodoStore
+from xana.state.todos import TodoStore
+from xana.state.contracts import TodoItem
 from xana.memory.recall import ProjectMemoryInjector
 from xana.memory.store import ProjectMemoryStore
 from xana.runtime.memory_extract import ModelMemoryExtractor
@@ -118,21 +122,30 @@ from xana.tools.builtin.grep_tool import GrepTool
 from xana.tools.builtin.memory_search import MemorySearchTool
 from xana.tools.builtin.memory_write import MemoryWriteTool
 from xana.tools.builtin.read import ReadTool
+from xana.tools.builtin.read_media import ReadMediaTool
+from xana.multimodal.files import FileMediaStore
 from xana.tools.builtin.skill_load import SkillLoadTool
 from xana.tools.builtin.todo_write import TodoWriteTool
 from xana.tools.builtin.tool_search import ToolSearchTool
 from xana.tools.builtin.web_fetch import WebFetchTool
 from xana.tools.builtin.notify_user import NotifyUserTool
 from xana.tools.builtin.send_media import SendMediaTool
-from xana.tools.builtin.report_goal import ReportGoalTool
+from xana.tools.builtin.goal_tools import GoalTool
+from xana.harness_sdk.goal import GoalService, GOAL_TOOLS
+from xana.state.process_logs import ProcessLogs
+from xana.workbench.media import MediaUploads
 from xana.tools.builtin.web_search import WebSearchTool
 from xana.tools.builtin.xana_search import (BackgroundResearchTool, WebOpenUrlTool, XanaSearchClient,
                                             XanaWebSearchTool)
 from xana.tools.builtin.write import WriteTool
 from xana.tools.interfaces import Tool, ToolRegistry
 from xana.harness_sdk.background import BackgroundTasks, QuotaFreeze
+from xana.harness_sdk.contracts import HarnessEvent, TaskNotification
+from xana.harness_sdk.turn_control import TurnCoordinator
+from xana.harness_sdk.events import RunEvents
+from xana.workbench.conversations import ConversationService
 from xana.runtime.delivery import MediaDelivery, SessionDelivery
-from xana.tools.builtin.task_tools import TaskStopTool, TaskWaitTool
+from xana.tools.builtin.task_tools import TaskListTool, TaskStopTool, TaskWaitTool
 from xana.tools.environment import TapeToolEnvironment
 from xana.tools.file_registry import FileToolRegistry
 from xana.tools.toolsets import BUILTIN_TOOLSETS, unknown_names
@@ -165,16 +178,18 @@ class BootResult:
     session_resolver: SessionResolver | None = None
     agent_runner: AgentRunner | None = None
     scheduler_dispatch: ScheduledTaskDispatcher | None = None
-    main_writer: MainWriter | None = None
     run_jsonl_writer: RunJsonlWriter | None = None
-    write_queue: WriteQueue | None = None
-    write_consumer: WriteQueueConsumer | None = None
-    write_consumer_task: asyncio.Task | None = None
     budget_tracker: BudgetTracker | None = None
     agent_registry: Any = None
     ledger: Any = None
     episode_runner: Any = None
     background: BackgroundTasks | None = None    # serve 在渠道起来后调 recover():上次中断的后台任务通知父会话
+    conversations: ConversationService | None = None
+    permissions: PermissionService | None = None
+    todos: TodoStore | None = None
+    goals: GoalService | None = None
+    process_logs: ProcessLogs | None = None
+    media_uploads: MediaUploads | None = None
 
 
 class _CompositeStateRepository(StateRepository):
@@ -214,8 +229,16 @@ async def boot(
     config_provider: DefaultConfigProvider | None = None,
     extension_registry: ExtensionRegistry | None = None,
     history_root: Path | None = None,
+    default_agent: str = "chat",
 ) -> BootResult:
     project_root = Path(project_root).resolve()
+    # Fail before starting workers or changing persisted runtime state.
+    cp = config_provider or DefaultConfigProvider()
+    runtime_config = await cp.load(project_root)
+    system_cfg = cp.load_system_config()
+    provider = runtime_config.default_model.provider
+    model = runtime_config.default_model.model
+    client = _build_model_client(provider, model, cp)
 
     engine = SQLiteMemorySearchEngine(_search_db_path(project_root))
     tree = MarkdownMemoryTree(root=project_root, entrypoint="README_ai.md", search_engine=engine)
@@ -225,7 +248,7 @@ async def boot(
     memory_store = ProjectMemoryStore(project_root)
     injector_registry = DefaultMemoryInjectorRegistry()
 
-    # §1.5 Compact-as-PH: the ContextSDK buffer is the single authority for session context;
+    # ContextSDK is the replayable runtime view of the ordered session log;
     # InMemoryActiveContextStore (below) reads and writes it.
     from xana.context.sdk import ContextSDK
     context_sdk = ContextSDK()
@@ -234,25 +257,19 @@ async def boot(
     # 列表段由 SkillsListingContributor 注入(仅当调用方未传 extension_registry)。
     # §5.1 文件 SKILL.md 与 bundled 注册进同一个 registry、走同一个
     # skill_load 两阶段路径(不新建平行机制);坏文档记 warning 不阻塞 boot。
-    from xana.skills.markdown_loader import FileSkillLoader, scan_skill_docs
     _doc_parser = MarkdownDocParser()
-    bundled_skills = InMemorySkillRegistry()
+    skill_management = SkillManagement(
+        roots=(Path.home() / ".agents" / "skills", xana_home() / "skills", project_root / ".agents" / "skills"),
+        install_root=project_root / ".agents" / "skills",
+        bindings_path=project_home() / "skill_bindings.json",
+    )
+    bundled_skills = ManagedSkillRegistry(management=skill_management)
     for bundled in (LoopSkill(), ScheduleSkill(), SkillCreatorSkill(), AgentCreatorSkill(), ToolCreatorSkill(),
                     CodingSkill()):
         await bundled_skills.register(bundled)
     if project_id() == DEFAULT_PROJECT:   # default 项目是管理台:在聊天里创建 / 管理项目(project-design §7)
         await bundled_skills.register(ProjectCreatorSkill())
-    _file_skills, _skill_doc_errors = await scan_skill_docs(
-        xana_home() / "skills", loader=FileSkillLoader(parser=_doc_parser),
-    )
-    for _err in _skill_doc_errors:
-        _logger.warning("SKILL.md 加载失败: %s", _err)
-    for _file_skill in _file_skills:
-        await bundled_skills.register(_file_skill)
     # agent 表与工具目录先建空容器(后面逐个注册):默认扩展(可委派 agent 列表)持有的是活的引用。
-    cp = config_provider or DefaultConfigProvider()
-    runtime_config = await cp.load(project_root)
-    system_cfg = cp.load_system_config()
     # 出站媒体(图片/视频)只给用户聊天 agent:只有本项目接了飞书机器人才注册;
     # 内置 chat 显式加 media 组,自建 agent / 子 agent 不自动继承。
     _fs = system_cfg.channels.feishu
@@ -260,7 +277,8 @@ async def boot(
         (os.environ.get("FEISHU_APP_ID") or _fs.app_id)
         and (os.environ.get("FEISHU_APP_SECRET") or _fs.app_secret_key)
     )
-    _chat_extra_tools: tuple[str, ...] = ("media",) if _has_feishu else ()
+    _has_media_channel = _has_feishu or bool(os.environ.get("TELEGRAM_BOT_TOKEN") or system_cfg.channels.telegram.bot_token)
+    _chat_extra_tools: tuple[str, ...] = ("publishing", "media") if _has_media_channel else ("publishing",)
     agents: dict[str, Agent] = {}
     # 工具目录 = 内置 / 扩展登记的工具 + 两级目录 TOOL.md 派生工具(热加载,iteration-agent-design §5.3)
     tool_dirs = (xana_home() / "tools", project_root / ".xana" / "tools")
@@ -284,9 +302,6 @@ async def boot(
                                                            tool_registry=tools))
                               .build())
 
-    provider = runtime_config.default_model.provider
-    model = runtime_config.default_model.model
-    client = _build_model_client(provider, model, cp)
     # §4.3: 消费 SystemConfig.limit().max_concurrent —— per-provider 并发位,
     # InMemoryModelRegistry 外包 semaphore;未配置的 provider 不限制。
     model_registry = InMemoryModelRegistry(concurrency_limits={
@@ -314,54 +329,60 @@ async def boot(
     # delivery 依赖下文组装的 gateway,这里先持有引用
     _delivery: list[SessionDelivery] = []
 
-    async def _deliver_background(session_id: str, text: str) -> None:
+    async def _deliver_background(notice: TaskNotification) -> bool:
         if _delivery:
-            await _delivery[0].deliver(session_id, text, source="background")
+            return await _delivery[0].deliver(notice.session_id, notice.text,
+                source="background", input_id=notice.input_id)
+        return False
 
     quota_freeze = QuotaFreeze()      # 额度冻结期间后台任务的硬上限计时暂停
     background = BackgroundTasks(
         deliver=_deliver_background, freeze=quota_freeze,
         state_path=(project_home() / "run" / "background.json") if history_root is not None else None)
+    run_events = RunEvents()
+    def todo_changed(sid: str, items: tuple[TodoItem, ...]) -> None:
+        run_events.publish(HarnessEvent("checklist_changed", sid, "",
+                                       {"items": [asdict(item) for item in items]}))
+    todo_store = TodoStore(root=project_home() / "sessions", on_change=todo_changed)
+    goals = GoalService(root=Path(history_root).parent / "goals" if history_root is not None else None,
+        on_change=lambda sid, goal: run_events.publish(HarnessEvent("goal_changed", sid, "", {"goal": goal})))
+    session_config_store: SessionConfigStore = FileSessionConfigStore(root=project_home() / "sessions")
+    state: StateRepository
+    run_store: RunStore | None = None
+    if history_root is not None:
+        run_store = FileRunStore(root=Path(history_root).parent / "runs")
+        state = _CompositeStateRepository(sessions=FileSessionStore(Path(history_root).parent / "session_records"),
+                                          runs=run_store)
+    else:
+        state = InMemoryStateRepository()
+    permissions = PermissionService(configs=session_config_store, sessions=state.sessions(), events=run_events)
     _harness = DefaultHarness(
         extension_registry=extension_registry, memory_extractor=memory_extractor,
         tool_environment=TapeToolEnvironment(runs_dir=Path(history_root) / "runs") if history_root is not None else None,
         background=background,
+        permissions=permissions,
+        todos=todo_store,
+        goals=goals,
+        control=TurnCoordinator(Path(history_root).parent / "run" / "inputs.json" if history_root is not None else None,
+                                events=run_events),
         # 模型调用被限流且 Kimi 额度确已用完:原地等重置后重发同一请求(不让一次 run 因额度报错结束)
         quota_wait=_kimi_quota_wait(0.99) if provider.startswith("kimi") else None,
         quota_freeze=quota_freeze)
 
     active_ctx_inner = InMemoryActiveContextStore(
         context_sdk=context_sdk,
-        on_clear=_harness.forget_prompt_tokens,
     )
-    main_writer: MainWriter | None = None
     run_jsonl_writer: RunJsonlWriter | None = None
-    mirror: HistoryMirror
-    active_ctx: ActiveContextStore
     if history_root is not None:
         history_root = Path(history_root)
-        file_mirror = FileHistoryMirror(root=history_root)
-        await replay_and_detect_interrupts(file_mirror, active_ctx_inner, FileMemoryReplayer())
-        main_writer = MainWriter(inner_store=active_ctx_inner, inner_mirror=file_mirror)
-        await main_writer.start()
-        active_ctx = main_writer.store
-        mirror = main_writer.mirror
-        run_jsonl_writer = RunJsonlWriter(sessions_root=history_root)
+        mirror = FileHistoryMirror(root=history_root)
+        active_ctx = active_ctx_inner
+        await FileMemoryReplayer().rebuild_active_context(mirror, active_ctx)
+        run_jsonl_writer = RunJsonlWriter(sessions_root=history_root, on_append=run_events.committed)
+        await run_jsonl_writer.reconcile(await mirror.read_rows())
     else:
         mirror = InMemoryHistoryMirror()
         active_ctx = active_ctx_inner
-
-    # Group C: write queue + single consumer for PH replacement.
-    # CRITICAL (spec section 11): consumer runs as a SEPARATE asyncio task
-    # so sync mode does not deadlock when _invoke enqueues during a run.
-    write_queue = WriteQueue()
-    write_consumer = WriteQueueConsumer(
-        write_queue, store=active_ctx, mirror=mirror,
-    )
-    write_consumer_task = asyncio.create_task(
-        write_consumer.run(), name="xana-write-queue-consumer",
-    )
-
 
     # 工具目录(docs/design/agent-composition-design.md §3.1–3.2):内置工具组先登记;
     # system.json tools.disabled 里的组 / 工具不注册,对所有 agent 都不存在。
@@ -377,6 +398,9 @@ async def boot(
     await _register(MemorySearchTool(engine))
     await _register(MemoryWriteTool(store=memory_store, tree=tree))
     await _register(ReadTool())
+    media_store = FileMediaStore((Path(history_root) if history_root else project_home() / "sessions") / "media")
+    await _register(ReadMediaTool(media_store, "image"))
+    await _register(ReadMediaTool(media_store, "video"))
     # 写保护:记忆目录 memory/ 只能经 memory_write 写,两级 agent 文档目录只能经 agent_define 写;
     # root 内 .md 写后增量 reindex(memory_tree)。
     agent_dirs = (xana_home() / "agents", project_root / ".xana" / "agents")
@@ -384,9 +408,11 @@ async def boot(
     await _register(WriteTool(memory_tree=tree, protected_dir=(memory_store.dir, *agent_dirs, *tool_dirs, evals_dir)))
     await _register(GlobTool())
     await _register(GrepTool())
-    await _register(BashTool())
+    process_logs = ProcessLogs(Path(history_root) / "process_logs") if history_root is not None else None
+    await _register(BashTool(logs=process_logs))
     await _register(ToolSearchTool(tool_registry=tools))
-    await _register(ReportGoalTool())  # 仅目标模式会话可见(harness 按 PromptProfile 过滤)
+    for name in sorted(GOAL_TOOLS):
+        await _register(GoalTool(goals, name))
     # SessionResolver — single source of truth for (adapter_id, thread_id) -> sid.
     # Seeded from system_cfg.sessions (read-once at boot per I16); mirror-writes
     # the map back to this project's config.json (project-design §4).
@@ -403,19 +429,17 @@ async def boot(
     await _register(CronDeleteTool(scheduler))
 
     # 会话级数据都属于当前项目(docs/design/project-design.md §3)
-    todo_root = project_home() / "sessions"
     worktree_root = project_home() / "worktrees"
-    session_config_root = project_home() / "sessions"
-    session_config_store: SessionConfigStore = FileSessionConfigStore(root=session_config_root)
-    todo_store = TodoStore(root=todo_root)
     await _register(TodoWriteTool(todo_store))
     await _register(EnterPlanModeTool(session_config_store=session_config_store))
     await _register(EnterWorktreeTool(session_config_store=session_config_store, worktree_root=worktree_root))
+    await _register(AgentPublishTool())
     await _register(SkillLoadTool(skills=bundled_skills))
+    await _register(SkillManageTool(management=skill_management, agents=agents, agent_registry=agent_registry))
     if project_id() == DEFAULT_PROJECT:
         await _register(ProjectManageTool(tool_registry=tools, skills=bundled_skills))
 
-    model_thresholds = {e.name: derive_compact_thresholds(e) for e in system_cfg.models}
+    model_configs = {e.name: resolve_model_config(e) for e in system_cfg.models if e.type == provider}
     # 联网:配置了 xana-search 服务时用 web_search(只返回搜索摘要)/ web_open_url(读全文 + 按目标提炼)
     # / background_research(服务端后台研究,本地模型);deep_research(主模型 + 子研究员)在 agent 注册后接入。
     # 未配置时沿用旧的 web_search / web_fetch(brave key 走
@@ -435,17 +459,10 @@ async def boot(
     # §4.3 预算护栏:concrete helper(boot 组装,不抽 ABC),注入 harness ctx.metadata。
     budget_tracker = BudgetTracker()
 
-    state: StateRepository
-    run_store: RunStore | None = None
-    if history_root is not None:
-        run_store = FileRunStore(root=history_root.parent / "runs")
-        state = _CompositeStateRepository(sessions=InMemorySessionStore(), runs=run_store)
-    else:
-        state = InMemoryStateRepository()
-
     gateway = DefaultAgentGateway(
         agents=agents,
-        router=DefaultAgentRequestRouter(default_agent="chat", session_config_store=session_config_store),
+        control=_harness.control,
+        router=DefaultAgentRequestRouter(default_agent=default_agent, session_config_store=session_config_store),
         agent_registry=agent_registry,
         route_of=session_resolver.route_of,
     )
@@ -459,12 +476,11 @@ async def boot(
     ledger = Ledger()
     episode_runner = EpisodeRunner(ledger=ledger, run_store=run_store)
 
-    # P5.5/5.6: after replay, scan runs/ dir → PH-replace completed, mark
+    # After replay, scan unfinished traces and mark
     # unfinished as resumable (exit_reason=shutdown_force).
     if history_root is not None and run_store is not None:
         from xana.state.startup_scan import (
             mark_unfinished_as_resumable,
-            replace_completed_placeholders,
             scan_runs_dir,
         )
         runs_root = history_root / "runs"
@@ -478,7 +494,6 @@ async def boot(
             session_ids = ["default"]
         # 按 run_id 替换、与会话无关:只过一遍。曾按会话循环,demo 积累 768 个会话 × 833 个 run(60MB)后
         # 启动要把 60MB 解析 768 遍,serve 卡在启动(2026-10-28)
-        await replace_completed_placeholders(report=report, runs_root=runs_root, store=active_ctx)
         # mark_unfinished_as_resumable is idempotent per-run (get → update vs
         # create); call once with the first session_id to avoid duplicate
         # create errors across sessions.
@@ -490,7 +505,7 @@ async def boot(
     progress_sink = AdapterProgressSink(gateway.adapters)
 
     chat_agent = ChatAgent(
-        spec=build_chat_agent_spec(system_cfg.agent_defaults, extra_tools=_chat_extra_tools),
+        media_store=media_store,        spec=build_chat_agent_spec(system_cfg.agent_defaults, extra_tools=_chat_extra_tools),
         harness=_harness,
         active_context_store=active_ctx,
         history_mirror=mirror,
@@ -503,13 +518,10 @@ async def boot(
         provider=provider,
         session_config_store=session_config_store,
         progress_sink=progress_sink,
-        todo_store=todo_store,
-        context_window=runtime_config.default_model.context_window,
-        force_compact=runtime_config.default_model.force_compact,
-        model_thresholds=model_thresholds,
-        main_writer=main_writer,
+        model_configs=model_configs,
+
         run_jsonl_writer=run_jsonl_writer,
-        write_queue=write_queue,
+
         budget_tracker=budget_tracker,
         episode_runner=episode_runner,
     )
@@ -523,7 +535,7 @@ async def boot(
 
     def _doc_agent_factory(spec: AgentSpec, *, progress: bool = True) -> Agent:
         return ChatAgent(
-            spec=spec,
+            media_store=media_store,            spec=spec,
             harness=_harness,
             active_context_store=active_ctx,
             history_mirror=mirror,
@@ -536,13 +548,10 @@ async def boot(
             provider=provider,
             session_config_store=session_config_store,
             progress_sink=progress_sink if progress else None,
-            context_window=runtime_config.default_model.context_window,
-            force_compact=runtime_config.default_model.force_compact,
-            model_thresholds=model_thresholds,
-            main_writer=main_writer,
+            model_configs=model_configs,
+
             run_jsonl_writer=run_jsonl_writer,
-            write_queue=write_queue,
-            todo_store=todo_store,
+
             budget_tracker=budget_tracker,
             episode_runner=episode_runner,
         )
@@ -554,9 +563,9 @@ async def boot(
     agent_runner = GatewayAgentRunner(agents=gateway.agents, session_store=state.sessions(),
                                       gate=episode_runner.ensure_gate)
     _delivery.append(SessionDelivery(gateway=gateway, resolver=session_resolver, session_store=state.sessions()))
-    # 出站图片/视频:只有本项目接了飞书机器人时才注册 send_media(默认项目 / bind_feishu 后的新项目)。
+    # 出站图片/视频:本项目接了飞书或 Telegram 机器人时才注册 send_media(默认项目 / bind_feishu 后的新项目)。
     # 工具只给 session_id,MediaDelivery 按会话路由并沿子会话父链上溯。
-    if _has_feishu:
+    if _has_media_channel:
         media_delivery = MediaDelivery(
             gateway=gateway, resolver=session_resolver, session_store=state.sessions())
         await _register(SendMediaTool(delivery=media_delivery))
@@ -567,6 +576,7 @@ async def boot(
                                  tool_registry=tools, background=background))
     await _register(TaskWaitTool(background))
     await _register(TaskStopTool(background))
+    await _register(TaskListTool(background))
     await _register(ToolDefineTool(registry=tools, project_root=project_root))
     # 评测套件(iteration-agent-design §8):eval_run 经 agent_runner 跑样本,eval_score 调套件的打分命令
     def _agent_fingerprint(name: str) -> str | None:
@@ -648,11 +658,15 @@ async def boot(
         resolver=session_resolver, delivery=_delivery[0])
     await _register(NotifyUserTool(dispatcher=scheduler_dispatch))
 
-    # §1.5 Compact-as-PH: /compact reaches the SDK through active_ctx.sdk() (same buffer).
+    # Manual compaction uses the same coordinator, SDK and durable prefix contract.
     command_router = DefaultCommandRouter(
+        control=_harness.control,
+        harness=_harness,
+        request_mapper=chat_agent.request_mapper,
         session_config_store=session_config_store,
         agent_registry=agent_registry,
         active_context_store=active_ctx,
+        history_mirror=mirror,
         gateway=gateway,
         # 只列同 provider 的模型:进程内只注册了当前 provider 的 client,
         # 跨 provider 的模型名发给它会出错。
@@ -665,6 +679,7 @@ async def boot(
         model_registry=model_registry,
         provider=provider,
         model=model,
+        model_configs=model_configs,
         progress_sink=progress_sink,
     )
     await gateway.register_command_router(command_router)
@@ -689,67 +704,53 @@ async def boot(
         session_resolver=session_resolver,
         agent_runner=agent_runner,
         scheduler_dispatch=scheduler_dispatch,
-        main_writer=main_writer,
+
         run_jsonl_writer=run_jsonl_writer,
-        write_queue=write_queue,
-        write_consumer=write_consumer,
-        write_consumer_task=write_consumer_task,
+
+
+
         budget_tracker=budget_tracker,
         agent_registry=agent_registry,
         ledger=ledger,
         episode_runner=episode_runner,
         background=background,
+        conversations=ConversationService(sessions=state.sessions(), runs=state.runs(),
+            transcripts=run_jsonl_writer, events=run_events, default_agent=default_agent,
+            control=_harness.control, workspace=project_root) if run_jsonl_writer is not None else None,
+        permissions=permissions,
+        todos=todo_store,
+        goals=goals,
+        process_logs=process_logs,
+        media_uploads=MediaUploads(store=media_store, configs=session_config_store, models=model_registry,
+            provider=provider, default_model=agents[default_agent].spec().model or model),
     )
 
 
 def _build_model_client(provider: str, model: str, cp: DefaultConfigProvider) -> ModelClient:
-    """Pick a concrete ModelClient based on the resolved provider string.
-
-    Treats any provider starting with "deepseek" as the DSv4 Anthropic-dialect
-    client. The model entry's api_key + optional base_url are pulled from the
-    SystemConfig that DefaultConfigProvider cached during load(). Missing
-    entry or empty api_key falls back to FakeModelClient so a fresh setup
-    (empty models[]) still boots.
-    """
+    """Build the explicitly selected provider; never substitute a fake client."""
     if provider == _FAKE_PROVIDER:
-        return _fake()
+        return FakeModelClient(ScriptedTurn(usage_input_tokens=4, usage_output_tokens=8))
+    entry = cp.load_system_config().model(model)
+    if entry is None:
+        raise ValueError(f"模型 {model!r} 不在 system.json models[] 中")
+    output_limits = {e.name: e.max_tokens for e in cp.load_system_config().models
+                     if e.type == provider and e.max_tokens is not None}
     if "deepseek" in provider:
-        # type 匹配用包含而非前缀:wizard 提示的名字是 "anthropic_deepseek",
-        # 用户手填的多是 "deepseek-v4-flash" — 两种都要命中。
-        system = cp.load_system_config()
-        entry = system.model(model)
-        if entry is None or not entry.api_key:
-            _logger.warning(
-                "deepseek 模型 %s 的 entry 缺失或 api_key 为空 — 当前回落 fake client;"
-                "请检查 system.json models[]",
-                model,
-            )
-            return _fake()
+        if not entry.api_key.strip():
+            raise ValueError(f"DeepSeek 模型 {model!r} 未配置 api_key；请检查 system.json")
         config = (
-            AnthropicDeepSeekConfig(api_key=entry.api_key, base_url=entry.base_url)
+            AnthropicDeepSeekConfig(api_key=entry.api_key, base_url=entry.base_url, model_max_tokens=output_limits)
             if entry.base_url
-            else AnthropicDeepSeekConfig(api_key=entry.api_key)
+            else AnthropicDeepSeekConfig(api_key=entry.api_key, model_max_tokens=output_limits)
         )
         return AnthropicDeepSeekClient(config)
     if provider.startswith("kimi"):
-        # kimi 走 OAuth(见 `xana login`),不用 api_key;token 到期自动刷新。
-        # 未登录时回落 fake 并给出明确指引,与 deepseek 缺 key 的行为一致。
-        system = cp.load_system_config()
-        entry = system.model(model)
         store = KimiTokenStore()
         tokens = store.load()
         if tokens is None:
-            _logger.warning(
-                "kimi 模型 %s 已配置但未登录 — 请先运行 `xana login`;当前回落 fake client",
-                model,
-            )
-            return _fake()
-        base_url = (entry.base_url if entry and entry.base_url else None) or kimi_api_base(
-            tokens.region
-        )
-        return KimiClient(KimiConfig(base_url=base_url), token_store=store)
-    return _fake()
-
-
-def _fake() -> FakeModelClient:
-    return FakeModelClient(ScriptedTurn(usage_input_tokens=4, usage_output_tokens=8))
+            raise ValueError(f"Kimi 模型 {model!r} 未登录；请先运行 xana login")
+        base_url = entry.base_url or kimi_api_base(tokens.region)
+        modalities = {e.name: tuple(e.input_modalities) for e in cp.load_system_config().models
+                      if e.type == provider}
+        return KimiClient(KimiConfig(base_url=base_url, model_input_modalities=modalities, model_max_tokens=output_limits), token_store=store)
+    raise ValueError(f"不支持的模型 provider {provider!r}；请检查 system.json models[].type")

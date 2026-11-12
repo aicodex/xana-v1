@@ -51,9 +51,7 @@ from xana.agent_adapter.channels.unified_card import (
     append_step,
     append_thinking,
     append_tool,
-    apply_detach,
-    apply_ph_replaced,
-    build_attach_menu,
+    finish_card,
     build_help_menu,
     cancel_answer,
     cancel_compact,
@@ -96,9 +94,13 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
     kind = ev.kind
     payload = ev.payload or {}
     if kind == "turn_started":
+        state.pending_input_id = None
+        state.menu = None
+        state.footer.state = "fg_running"
         if state.answer is None:
             state.answer = AnswerSection()
         state.answer.state = "streaming"
+        state.run_id = ev.run_id
         state.top_buttons = compute_top_buttons(state)
         return
     if kind == "model_delta":
@@ -111,6 +113,19 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
         else:
             append_answer(state.answer, text)
             state.answer._in_thinking = False
+        return
+    if kind == "input_accepted":
+        if payload.get("delivery") == "queue" and not payload.get("duplicate"):
+            state.pending_input_id = str(payload["input_id"])
+            state.menu = MenuSection(body_md=str(payload["text"]) + "\n\n" + str(payload.get("user_input", "")))
+            state.footer.state = "menu"
+        if state.answer is not None:
+            state.answer.progress_text = str(payload.get("text") or "已收到补充")
+        return
+    if kind == "input_promoted":
+        state.pending_input_id = None
+        state.menu = MenuSection(body_md=str(payload.get("text", "已插话")))
+        state.terminal = True
         return
     if kind == "progress_update":
         # 模型在工具轮写的进度说明:显示在进度行;显示模式下开启一个新过程组并作为组标题
@@ -217,14 +232,16 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
         if state.answer is not None:
             cancel_answer(state.answer)
             _mark_running_tools_cancelled(state.answer)
-        state.footer.cancelled = True   # footer 终态 dot 改 🔴
-        state.top_buttons = compute_top_buttons(state)
+        state.footer.cancelled = True
+        finish_card(state)
         return
     if kind == "final":
+        if state.answer is None:
+            state.answer = AnswerSection()
         if state.answer is not None:
             text = str(payload.get("text", "") or state.answer.answer_text)
             finalize_answer(state.answer, final_text=text)
-        state.top_buttons = compute_top_buttons(state)
+        finish_card(state)
         return
     if kind == "error":
         # 出错不是取消:回答区写明原因(保留已有输出),脚标红点。
@@ -235,7 +252,7 @@ def _apply_harness(state: UnifiedCardState, ev: HarnessEvent) -> None:
         prev = state.answer.answer_text.rstrip()
         finalize_answer(state.answer, final_text=(prev + "\n\n" if prev else "") + f"⚠️ 出错:{msg}")
         state.footer.cancelled = True
-        state.top_buttons = compute_top_buttons(state)
+        finish_card(state)
         return
 
 
@@ -293,52 +310,15 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
         if state.answer is None:
             state.answer = AnswerSection()
         state.answer.state = "streaming"
-        if ev.run_id and not state.ph_run_id:
-            state.ph_run_id = ev.run_id
+        if ev.run_id and not state.run_id:
+            state.run_id = ev.run_id
         state.top_buttons = compute_top_buttons(state)
         return
-    if kind == "run_detached":
-        apply_detach(state)
-        return
-    if kind in ("attached", "foreground_changed"):
-        # the card becomes foreground again — clear detached, restore answer
-        # streaming state, recompute buttons.
-        state.detached = False
-        if state.answer is not None and state.answer.state == "detached":
-            state.answer.state = "streaming"
-        if state.footer.state == "bg_frozen":
-            state.footer.state = "fg_running"
-        state.top_buttons = compute_top_buttons(state)
-        return
-    if kind == "ph_replaced":
-        final_text = str(payload.get("text", "") or payload.get("final", "") or "")
-        try:
-            ctx_used = int(payload.get("ctx_used", state.footer.ctx_used) or 0)
-        except (TypeError, ValueError):
-            ctx_used = state.footer.ctx_used
-        try:
-            elapsed_s = int(payload.get("elapsed_s", state.footer.elapsed_s) or 0)
-        except (TypeError, ValueError):
-            elapsed_s = state.footer.elapsed_s
-        # cancelled 优先看 payload,再看 footer.cancelled(之前 HarnessEvent 已设)
-        was_cancelled = bool(payload.get("cancelled")) or state.footer.cancelled
-        apply_ph_replaced(
-            state,
-            final_answer=final_text,
-            ctx_used=ctx_used,
-            elapsed_s=elapsed_s,
-            cancelled=was_cancelled,
-        )
-        return
-    if kind == "run_completed_bg":
-        # ph_replaced typically already fired; ensure terminal state.
-        if not state.terminal and state.answer is not None:
-            if state.detached:
-                state.terminal_from_bg = True
-            finalize_answer(state.answer, final_text=state.answer.answer_text)
-            state.footer.state = "terminal"
-            state.terminal = True
-            state.top_buttons = ()
+    if kind == "run_stopping":
+        state.stopping = True
+        if state.answer is not None:
+            state.answer.progress_text = "正在停止，等待当前操作收尾…"
+        state.top_buttons = ()
         return
     if kind == "compact_started":
         if state.compact is None:
@@ -362,7 +342,7 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
             state.answer = None
             state.footer.state = "menu"
         # 启动 "compact" 菜单段计时;footer 同时维持 fg/bg/terminal 状态,
-        # 菜单段渲染在最右(解决 compact + bg 竞态)。
+        # 菜单段渲染在最右(解决 压缩与回答进度交错)。
         state.footer.menu_label = "compact"
         _menu_started_at(state, ev.session_id or "")
         state.top_buttons = compute_top_buttons(state)
@@ -370,6 +350,8 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
     if kind == "compact_progress":
         if state.compact is None:
             state.compact = CompactSection(state="input")
+        if "partial_summary" in payload:
+            state.compact.summary_text = str(payload["partial_summary"])
         # Two payload shapes supported:
         #   - pct: 0..100 (Group H bar) → map to 0..10 cells
         #   - sections_done: 0..7        → use streaming advancer
@@ -402,7 +384,10 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
     if kind == "compact_finalized":
         if state.compact is None:
             state.compact = CompactSection()
-        if payload.get("cancelled"):
+        if payload.get("error"):
+            state.compact.state = "failed"
+            state.compact.summary_text = "压缩失败，原始历史已保留"
+        elif payload.get("cancelled"):
             cancel_compact(state.compact)
         else:
             try:
@@ -415,11 +400,14 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
         # 菜单段 "compact" 计时落点。
         if state.footer.menu_label == "compact":
             state.footer.menu_elapsed_s = _menu_elapsed(state, ev.session_id or "")
+        if state.answer is None:
+            finish_card(state)
+        state.top_buttons = compute_top_buttons(state)
         return
     if kind == "usage_progress":
         # Live usage updates the footer running model/ctx/elapsed; once the
         # card is terminal we freeze the footer (caller writes terminal ctx
-        # via ph_replaced).
+        # via the terminal run event).
         if state.terminal:
             return
         model = payload.get("model")
@@ -432,10 +420,11 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
         if tin:
             state.footer.ctx_used = tin
         try:
-            cw = int(payload.get("context_window") or 0)
+            # 原始容量与派生预算分开，卡片显示实际自动压缩预算。
+            cw = int(payload.get("context_budget") or 0)
         except (TypeError, ValueError):
             cw = 0
-        if cw:
+        if payload.get("context_budget") is not None and cw >= 0:
             state.footer.ctx_max = cw
         try:
             es = int(payload.get("elapsed_s") or 0)
@@ -468,19 +457,6 @@ def _apply_progress(state: UnifiedCardState, ev: ProgressEvent) -> None:
         state.footer.state = "menu"
         state.footer.menu_label = "help"
         return
-    if kind == "attach_options":
-        cands_raw = payload.get("candidates") or ()
-        cands = tuple(
-            (str(run_id), str(label)) for run_id, label in cands_raw
-        )
-        built = build_attach_menu(card_id=state.card_id, candidates=cands)
-        state.menu = built.menu
-        state.bottom_buttons = built.bottom_buttons
-        state.footer.state = "menu"
-        state.footer.menu_label = "attach"
-        return
-
-
 # --- helpers --------------------------------------------------------------
 
 

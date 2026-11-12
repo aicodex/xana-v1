@@ -5,6 +5,8 @@ status: draft
 date: 2026-09-24
 ---
 
+> 2026-11-09 更新：本文的独立目标评估器 / report_goal 设计已由 [Web 工作台实施计划](web-workbench-implementation-plan.md) 和持久 GoalService 原位替代；其余历史调研不作为当前执行契约。
+
 # 回合控制与提示词组装(P2.5)
 
 > 状态:**草案 v3**。v2 按 Claude Code 2.1.88 / Codex / Kimi Code 源码实证修订;v3 按最新 Claude Code 2.1.281(2026-09-23,二进制抽取,见 `~/project/best_agent/claude-code-2.1.281-prompts/HARNESS_MECHANISMS.md`)校正 §2、§5、§6、§7。

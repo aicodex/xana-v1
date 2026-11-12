@@ -100,32 +100,19 @@ class AdapterHealth:
     details: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
-class InflightRun:
-    """Gateway 侧 per-run 追踪。非 frozen——is_attached 字段可变。
-
-    is_attached=True 表示此 run 是 session 当前前台(foreground)。
-    新 submit 会把现有 attached run 翻成 is_attached=False(detach)。
-    """
-    session_id: str
-    run_id: str
-    label: str
-    task: _asyncio.Task[Any] | None = None
-    is_attached: bool = True
 
 
 @dataclass(frozen=True)
 class TaskPanelRow:
-    """任务面板一行(§4.4):_inflight 活体状态 + RunStore 持久状态的合并视图。
+    """任务面板一行：TurnCoordinator 活动状态与 RunStore 持久状态的合并视图。
 
-    live=True 表示该 run 当前在 gateway._inflight 里(在途);live=False
-    表示只来自持久化 RunStore(detached 遗留 / 已完成)。
+    live=True 表示该 run 当前由 TurnCoordinator 执行；live=False
+    表示只来自持久化 RunStore（中断或已完成）。
     """
     run_id: str
     session_id: str
     label: str
     status: RunStatus
-    attached: bool
     duration_s: float | None
     live: bool
 

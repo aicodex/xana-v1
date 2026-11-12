@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import os
 import signal
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Literal
 from dataclasses import dataclass
 
 MAX_OUTPUT_CHARS = 50_000
@@ -28,13 +30,14 @@ class ExecOutcome:
 
 
 class ProcessRunner:
-    """按 key(call_id)登记活跃子进程,支持协作式取消。"""
+    """按单次执行身份登记活跃子进程，支持协作式取消。"""
 
     def __init__(self) -> None:
         self._procs: dict[str, asyncio.subprocess.Process] = {}
 
     async def run(self, key: str, *, shell: str | None = None, argv: Sequence[str] | None = None,
-                  cwd: str, timeout_s: float, env: Mapping[str, str] | None = None) -> ExecOutcome:
+                  cwd: str, timeout_s: float, env: Mapping[str, str] | None = None,
+                  on_output: Callable[[Literal["stdout", "stderr"], str], None] | None = None) -> ExecOutcome:
         """shell 与 argv 二选一:shell 经 /bin/sh 解释;argv 直接执行,不经 shell。"""
         started = time.monotonic()
         full_env = {**os.environ, **env} if env else None
@@ -47,29 +50,32 @@ class ProcessRunner:
             proc = await asyncio.create_subprocess_exec(*argv, **common)
         self._procs[key] = proc
         combined: list[str] = []
-        err_chunks: list[str] = []
-        readers = asyncio.gather(_pump(proc.stdout, combined), _pump(proc.stderr, combined, err_chunks))
+        errors: list[str] = []
+        readers = asyncio.gather(_pump(proc.stdout, combined, on_output=on_output),
+            _pump(proc.stderr, combined, errors, channel="stderr", on_output=on_output))
         timed_out = False
         try:
             try:
-                await asyncio.wait_for(asyncio.shield(readers), timeout=timeout_s)
-                await proc.wait()
+                deadline = started + timeout_s
+                await asyncio.wait_for(asyncio.shield(readers), timeout=max(0.0, deadline - time.monotonic()))
+                await asyncio.wait_for(proc.wait(), timeout=max(0.0, deadline - time.monotonic()))
             except asyncio.TimeoutError:
                 timed_out = True
                 _signal_group(proc, signal.SIGKILL)
                 await proc.wait()
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(readers, timeout=1.0)
-            except asyncio.CancelledError:
+            except BaseException:
                 # 外层 task.cancel() 兜底强杀(grace 已过期或 read_only 路径)。
                 _signal_group(proc, signal.SIGKILL)
                 await proc.wait()
                 readers.cancel()
+                await asyncio.gather(readers, return_exceptions=True)
                 raise
         finally:
             self._procs.pop(key, None)
         exit_code = -1 if timed_out or proc.returncode is None else proc.returncode
-        return ExecOutcome(output="".join(combined), stderr="".join(err_chunks), exit_code=exit_code,
+        return ExecOutcome(output="".join(combined), stderr="".join(errors), exit_code=exit_code,
                            timed_out=timed_out, elapsed_s=time.monotonic() - started)
 
     async def cancel(self, key: str) -> None:
@@ -91,15 +97,23 @@ def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:
 
 
 async def _pump(stream: asyncio.StreamReader | None, combined: list[str],
-                also: list[str] | None = None) -> None:
+                also: list[str] | None = None, *, channel: Literal["stdout", "stderr"] = "stdout",
+                on_output: Callable[[Literal["stdout", "stderr"], str], None] | None = None) -> None:
     """按块读管道,解码后追加到 combined(两路共用 → 保持到达顺序);also 另存一份(stderr)。"""
     if stream is None:
         return
-    while chunk := await stream.read(65536):
-        text = chunk.decode("utf-8", errors="replace")
-        combined.append(text)
-        if also is not None:
-            also.append(text)
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    while True:
+        chunk = await stream.read(65536)
+        text = decoder.decode(chunk, final=not chunk)
+        if text:
+            combined.append(text)
+            if also is not None:
+                also.append(text)
+            if on_output is not None:
+                on_output(channel, text)
+        if not chunk:
+            return
 
 
 def format_exec_output(output: str, exit_code: int, elapsed_s: float, *, note: str = "") -> tuple[str, bool]:

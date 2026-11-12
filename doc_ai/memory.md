@@ -12,11 +12,13 @@ status: active
 
 项目记忆(跨会话的长期记忆)在项目目录的 `memory/`:一条记忆一个文件(name / description / type / topic / pinned);每个会话强制注入索引与置顶记忆,每条消息由选择模型召回相关记忆的全文;模型侧写入口是 `memory_write`,每轮结束后另有后台提取兜底漏记。设计见 [memory-recall-design](../docs/design/memory-recall-design.md)、[memory-dream-design](../docs/design/memory-dream-design.md)。
 
+接入中：[SAG2 memory 检索方案](../docs/design/memory-sag2-design.md)（2026-11-10，implementing），代码入口见 [memory_sag2](memory_sag2.md)。算法、项目索引和可替换评分契约已进入源码；运行时尚未切换，仍使用上述选择器和既有 FTS 路径。评分指令来源确认、统一调用与旧路径删除仍待完成，没有因此迁移记忆文件或切换服务。
+
 ## 详细设计
 
 - [memory_active_context](memory_active_context.md) — `ActiveContextStore`，当前 turn 可见上下文的运行时权威
-- [context](context.md) — `ContextSDK`，active context 的运行时载体与 compact-as-placeholder 协议
-- [memory_history_mirror](memory_history_mirror.md) — `HistoryMirror` / `MemoryReplayer`，history 只是副本写和恢复输入
+- [context](context.md) — `ContextSDK`，active context 的运行时载体与 有序消息与前缀压缩协议
+- [memory_history_mirror](memory_history_mirror.md) — `HistoryMirror` / `MemoryReplayer`，主日志持久写入和恢复输入
 - [memory_tree](memory_tree.md) — `MemoryTree`，知识树节点和原子变更操作
 - [memory_search_engine](memory_search_engine.md) — `MemorySearchEngine`，统一检索接口
 - [memory_injector](memory_injector.md) — `ProjectMemoryInjector`:记忆索引 / 置顶 / 每轮召回
@@ -43,7 +45,7 @@ Agent behavior, LLM calls, adapter protocol, or tool execution.
 ## Rules
 
 - Active context is the runtime authority.
-- History is a message mirror plus necessary metadata.
+- History is the durable conversation authority; SDK is its rebuildable runtime view.
 - Normal runtime reads active context, not history.
 - Cold start may replay history to rebuild active context.
 - Markdown memory content is source of truth; SQLite/search indexes are rebuildable views.

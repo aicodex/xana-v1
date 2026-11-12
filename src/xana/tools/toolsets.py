@@ -25,9 +25,10 @@ BUILTIN_TOOLSETS: tuple[Toolset, ...] = (
     Toolset("research", "多步深度研究:deep_research / background_research", default=True),
     Toolset("schedule", "定时任务:cron_create / cron_list / cron_delete,无人值守时的 notify_user", default=True),
     Toolset("agents", "委派子 agent 与创建 agent:agent_run / agent_define", default=True),
+    Toolset("publishing", "发布独立 agent 应用，仅默认 chat 可用", default=False),
     Toolset("projects", "管理 xana 项目(只在 default 项目):project_manage", default=True),
     # 只给用户聊天 agent 用:不在默认组合里,由内置 chat 显式选中;子 agent 永远拿不到。
-    Toolset("media", "把 workspace 内的图片/视频发到当前聊天:send_media(目前仅飞书)", default=False),
+    Toolset("media", "把 workspace 内的图片/视频发到当前聊天:send_media(飞书 / Telegram)", default=False),
     Toolset("derived", "本项目派生工具(TOOL.md 声明的命令工具,见 tool_define catalog)", default=True),
     Toolset("eval", "回看运行记录(trace_view),供迭代与排查;不在 default 内", default=False),
 )

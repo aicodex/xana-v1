@@ -8,6 +8,7 @@ skill(默认)与 agent;物理目录分开(~/.xana/skills/ 与 ~/.xana/agents/)�
 from __future__ import annotations
 
 from pathlib import Path
+import stat
 from typing import Any
 
 import yaml
@@ -50,7 +51,10 @@ def split_frontmatter(text: str, *, path: Path):
             reason="缺少结束的 --- 行",
         ) from None
     raw = "\n".join(lines[1:end])
-    data = yaml.safe_load(raw) if raw.strip() else {}
+    try:
+        data = yaml.safe_load(raw) if raw.strip() else {}
+    except yaml.YAMLError as exc:
+        raise SkillManifestError(path=path, kind="?", field="frontmatter", reason="无效的 YAML") from exc
     if data is None:
         data = {}
     if not isinstance(data, dict):
@@ -94,6 +98,9 @@ class MarkdownDocParser(SkillManifestParser):
     """
 
     async def parse(self, path: Path) -> SkillManifest:
+        return self.parse_sync(path)
+
+    def parse_sync(self, path: Path) -> SkillManifest:
         path = Path(path)
         fm, _body = split_frontmatter(path.read_text(encoding="utf-8"), path=path)
         kind = fm.get("kind") or "skill"
@@ -241,6 +248,9 @@ class FileSkillLoader(SkillLoader):
         path = Path(source).expanduser()
         if path.is_dir():
             path = path / _SKILL_DOC_NAME
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
+            raise SkillManifestError(path=path, kind="skill", field="file", reason="SKILL.md 必须是普通文件且不超过 1 MiB")
         manifest = await self._parser.parse(path)
         if manifest.metadata.get("kind") != "skill":
             raise SkillManifestError(
@@ -280,4 +290,6 @@ async def scan_skill_docs(root: Path, *, loader: SkillLoader | None = None):
             skills.append(await loader.load(str(path)))
         except SkillManifestError as err:
             errors.append(err)
+        except OSError as err:
+            errors.append(SkillManifestError(path=path, kind="skill", field="file", reason=str(err)))
     return tuple(skills), tuple(errors)

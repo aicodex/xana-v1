@@ -48,11 +48,8 @@ class DraftCoalescer:
             delay = self.min_interval_s - (now - self._last_flush_mono)
             self._trailing = asyncio.create_task(self._trailing_send(delay, send))
 
-    async def finalize(self, send: Callable[[], Awaitable[None]],
-                       *, wait_inflight: bool = True) -> None:
-        """Cancel trailing, optionally wait for in-flight, then force-send。
-        wait_inflight=False:detach/cancel 等"瞬时"场景用,不等当前 in-flight
-        send 完成(让它在背景里跑完),立刻发新 patch — 用户感受更快。"""
+    async def finalize(self, send: Callable[[], Awaitable[None]]) -> None:
+        """Cancel trailing, wait for in-flight, then force-send in order."""
         if self._trailing is not None and not self._trailing.done():
             self._trailing.cancel()
             try:
@@ -60,26 +57,16 @@ class DraftCoalescer:
             except asyncio.CancelledError:
                 pass
         self._trailing = None
-        if wait_inflight and self._inflight is not None and not self._inflight.done():
+        if self._inflight is not None and not self._inflight.done():
             try:
                 await self._inflight
             except asyncio.CancelledError:
                 pass
             self._inflight = None
         self._last_flush_mono = time.monotonic()
-        if wait_inflight:
-            async with self._lock:
-                try:
-                    await send()
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    _logger.exception("draft coalescer: finalize send failed")
-        else:
-            # 不等 inflight,直接 spawn send;并发安全靠 lock。
+        async with self._lock:
             try:
-                async with self._lock:
-                    await send()
+                await send()
             except asyncio.CancelledError:
                 raise
             except Exception:

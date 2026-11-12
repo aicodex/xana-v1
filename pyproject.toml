@@ -14,6 +14,12 @@ dependencies = [
     "ddgs>=9.0",
     "textual>=0.85",
     "telegramify-markdown>=1.2.0",
+    "tree-sitter>=0.25,<0.26",
+    "tree-sitter-bash>=0.25,<0.26",
+    "jieba==0.42.1",
+    "pyuca==1.2",
+    "regex>=2024.0",
+    "tiktoken>=0.12",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +46,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "xana.config" = ["defaults/*.json"]
+"xana.workbench" = ["static/*", "static/assets/*"]
+"xana.memory.sag2" = ["LICENSE", "NOTICE.md", "native/*.c", "native/*.h"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]

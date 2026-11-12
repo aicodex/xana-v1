@@ -81,7 +81,7 @@ class FakeModelClient(ModelClient):
         self._turns: list[ScriptedTurn] = list(turns) or [ScriptedTurn()]
         self._cursor = 0
 
-    def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
+    def stream(self, request: ModelRequest) -> AsyncGenerator[ModelEvent, None]:
         return self._stream(request)
 
     async def _stream(self, request: ModelRequest) -> AsyncGenerator[ModelEvent, None]:
@@ -166,7 +166,7 @@ class FakeModelClient(ModelClient):
     async def cancel(self, request_id: str) -> None:
         return None
 
-    async def capabilities(self) -> ProviderCapabilities:
+    async def capabilities(self, model: str | None = None) -> ProviderCapabilities:
         return ProviderCapabilities(provider="fake", supports_streaming=True, supports_tools=True)
 
 
@@ -183,14 +183,14 @@ class _ConcurrencyGuardedClient(ModelClient):
             async for event in self._inner.stream(request):
                 yield event
 
-    def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
+    def stream(self, request: ModelRequest) -> AsyncGenerator[ModelEvent, None]:
         return self._guarded_stream(request)
 
     async def cancel(self, request_id: str) -> None:
         await self._inner.cancel(request_id)
 
-    async def capabilities(self) -> ProviderCapabilities:
-        return await self._inner.capabilities()
+    async def capabilities(self, model: str | None = None) -> ProviderCapabilities:
+        return await self._inner.capabilities(model=model)
 
 
 class InMemoryModelRegistry(ModelRegistry):

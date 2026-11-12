@@ -4,14 +4,17 @@ Tools declare validation, permission, sandbox, execution input, and output shape
 """
 from __future__ import annotations
 
+from xana.multimodal.contracts import MediaInput, InputModality
+
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
+from uuid import uuid4
 
 from xana.component.contracts import ComponentSpec
-from xana.policy.contracts import PermissionContext, SandboxPolicySpec
+from xana.policy.contracts import PermissionContext, PermissionDecision, SandboxPolicySpec
 
-PermissionDecision = Literal["allow", "ask", "deny"]
 ToolConcurrency = Literal["parallel", "serialized", "exclusive"]
 InterruptBehavior = Literal["cancel", "block", "ignore"]
 
@@ -106,6 +109,8 @@ class ToolSpec:
     yields_to_native: bool = False
     # 所属工具组(docs/design/agent-composition-design.md §3.1);"" = 未分组,只能按工具名或 "*" 选中
     toolset: str = ""
+    allowed_agents: tuple[str, ...] | None = None  # 模型可见性与执行范围的硬限制
+    input_modality: InputModality | None = None  # 需要当前模型开启的输入能力
 
 
 @dataclass(frozen=True)
@@ -123,6 +128,7 @@ class ToolInvocation:
     call_id: str
     session_id: str
     run_id: str | None = None
+    execution_id: str = field(default_factory=lambda: uuid4().hex)
 
 
 EnvStrategy = Literal["replay", "live", "deny", "simulate"]
@@ -147,6 +153,8 @@ class ToolContext:
     permission: PermissionContext
     run_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    model_input_modalities: tuple[InputModality, ...] = ()
+    input_wakeup: asyncio.Event | None = None
     # 执行中上报进度(一句给人看的话,如"正在阅读 18/40 个网页");harness 转成 tool_progress 事件
     # 由渠道显示,不进入模型上下文。None = 调用方不接收进度。
     report_progress: Callable[[str], None] | None = None
@@ -158,6 +166,7 @@ class ToolContext:
     visible_skills: frozenset[str] | None = None
     # 本 run 的工具环境(评测会话由 eval_run 设置,子 run 继承);None = 普通会话,工具原样执行
     env: ToolEnvConfig | None = None
+    goal_id: str | None = None
 
     @property
     def as_of(self) -> str | None:
@@ -208,3 +217,6 @@ class ToolResult:
     truncated: bool = False
     retryable: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    media: tuple[MediaInput, ...] = ()
+    # Finished background result; harness confirms delivery only after history commit.
+    background_task_id: str | None = None

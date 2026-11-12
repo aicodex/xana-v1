@@ -1,8 +1,8 @@
 """Feishu event parsing.
 
 Targets the "v2" event format (header + event envelopes). Recognizes
-`im.message.receive_v1` messages of type `text` and `post` (rich text: Feishu sends
-multi-line / formatted / linked messages as post), flattened to plain text.
+`im.message.receive_v1` text, post, image and video messages. Media resource
+keys stay at this boundary; downloaded data is normalized to MediaInput.
 Anything else returns None from parse_message_event() and the adapter ignores it.
 """
 from __future__ import annotations
@@ -13,7 +13,13 @@ from dataclasses import dataclass
 from typing import Any
 
 _logger = logging.getLogger(__name__)
-TEXT_TYPES = ("text", "post")
+MESSAGE_TYPES = ("text", "post", "image", "media")
+
+
+@dataclass(frozen=True)
+class MessageResource:
+    file_key: str
+    kind: str  # Feishu resource query type: image | file
 
 
 @dataclass(frozen=True)
@@ -24,6 +30,7 @@ class ParsedMessageEvent:
     message_type: str
     text: str
     sender_open_id: str | None
+    resources: tuple[MessageResource, ...] = ()
 
 
 def parse_message_event(event: dict[str, Any]) -> ParsedMessageEvent | None:
@@ -33,7 +40,7 @@ def parse_message_event(event: dict[str, Any]) -> ParsedMessageEvent | None:
     body = event.get("event") or {}
     msg = body.get("message") or {}
     message_type = msg.get("message_type")
-    if message_type not in TEXT_TYPES:
+    if message_type not in MESSAGE_TYPES:
         _logger.info("飞书消息类型 %s 暂不支持,已忽略(message_id=%s)", message_type, msg.get("message_id"))
         return None
     content_raw = msg.get("content") or "{}"
@@ -41,7 +48,28 @@ def parse_message_event(event: dict[str, Any]) -> ParsedMessageEvent | None:
         content = json.loads(content_raw)
     except json.JSONDecodeError:
         return None
-    text = (str(content.get("text", "")) if message_type == "text" else post_text(content)).strip()
+    if not isinstance(content, dict):
+        return None
+    resources = []
+    if message_type == "image":
+        text = "[图片]"
+        if content.get("image_key"):
+            resources.append(MessageResource(str(content["image_key"]), "image"))
+    elif message_type == "media":
+        text = "[视频]"
+        if content.get("file_key"):
+            resources.append(MessageResource(str(content["file_key"]), "file"))
+    elif message_type == "post":
+        content = _post_body(content)
+        text = post_text(content)
+        for paragraph in content.get("content") or []:
+            for element in paragraph or []:
+                key = "image_key" if element.get("tag") == "img" else "file_key" if element.get("tag") == "media" else None
+                if key and element.get(key):
+                    resources.append(MessageResource(str(element[key]), "image" if key == "image_key" else "file"))
+    else:
+        text = str(content.get("text", ""))
+    text = text.strip()
     if not text:
         return None
     sender = body.get("sender") or {}
@@ -53,14 +81,14 @@ def parse_message_event(event: dict[str, Any]) -> ParsedMessageEvent | None:
         message_type=str(msg.get("message_type") or "text"),
         text=text,
         sender_open_id=sender_id.get("open_id"),
+        resources=tuple(resources),
     )
 
 
 def post_text(content: dict[str, Any]) -> str:
     """富文本(post)转纯文本:标题一行,每段一行;链接保留地址,@ 保留名字,图片 / 视频写占位。
     接收事件里的 content 是 {"title", "content": [[元素...], ...]},个别客户端外面包一层语言键。"""
-    if "content" not in content and content:
-        content = next((v for v in content.values() if isinstance(v, dict)), {})
+    content = _post_body(content)
     lines = [str(content.get("title") or "").strip()]
     for paragraph in content.get("content") or []:
         parts: list[str] = []
@@ -83,3 +111,9 @@ def post_text(content: dict[str, Any]) -> str:
                 parts.append(f"[{el.get('emoji_type', '表情')}]")
         lines.append("".join(parts))
     return "\n".join(line for line in lines if line.strip())
+
+
+def _post_body(content: dict[str, Any]) -> dict[str, Any]:
+    if "content" not in content and content:
+        return next((v for v in content.values() if isinstance(v, dict)), {})
+    return content

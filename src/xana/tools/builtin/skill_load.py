@@ -60,10 +60,11 @@ class SkillLoadTool(Tool):
             cwd=Path(context.cwd) if context.cwd else None,
         )
         visible = context.visible_skills
-        skill = await self.skills.get(name) if visible is None or name in visible else None
+        discovered = await self.skills.discover(activation)
+        skill = next((s for s in discovered if s.spec().component.name == name), None) if visible is None or name in visible else None
         if skill is None:
             available = sorted(
-                n for n in (s.spec().component.name for s in await self.skills.discover(activation))
+                n for n in (s.spec().component.name for s in discovered)
                 if visible is None or n in visible
             )
             listing = ", ".join(available) or "(无)"
@@ -76,4 +77,7 @@ class SkillLoadTool(Tool):
             )
         contribution = await skill.activate(activation)
         rendered = "\n\n".join(contribution.prompt_blocks)
+        root = skill.spec().package.root
+        if root is not None:
+            rendered = f"技能目录: {root.resolve()}（相对资源路径以此为基准）\n\n" + rendered
         return ToolResult(ok=True, content={"name": name}, rendered=rendered)

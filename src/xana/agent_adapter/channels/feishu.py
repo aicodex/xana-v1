@@ -1,12 +1,4 @@
-"""FeishuAdapter: Feishu (Lark) channel adapter — unified PH card edition (T10).
-
-Each PH (or menu card) owns one ``UnifiedCardState`` keyed by card_id.
-Events flow through ``unified_card_events.apply_event(state, event)`` and the
-result is rendered via ``unified_card_feishu.render(state)``; the adapter
-sends or patches a single lark message per card. Throttle = DraftCoalescer
-0.25s. Replaces old build_fg_streaming_card / build_bg_placeholder_card /
-build_frozen_ph_card / build_attach_menu_card paths.
-"""
+"""Feishu 渠道：归一化输入、配对校验、按 run 渲染回答卡及精确取消。"""
 from __future__ import annotations
 
 import asyncio
@@ -19,7 +11,6 @@ from xana.agent_adapter.channels.feishu_events import parse_message_event
 from xana.agent_adapter.channels.process_view import DEFAULT_IM_VIEW_MODE as DEFAULT_VIEW_MODE
 from xana.agent_adapter.channels.unified_card import (
     UnifiedCardState,
-    build_attach_menu,
     build_help_menu,
     build_notice_card,
 )
@@ -35,6 +26,7 @@ from xana.agent_adapter.contracts import (
 from xana.agent_adapter.interfaces import Adapter
 from xana.agents.contracts import AgentEvent
 from xana.harness_sdk.contracts import ProgressEvent
+from xana.multimodal.files import FileMediaStore, MAX_ATTACHMENTS
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +48,9 @@ class FeishuConfig:
 
 
 class FeishuApiSender:
+    async def download_media(self, *, message_id: str, file_key: str, kind: str) -> bytes:
+        raise NotImplementedError
+
     async def send_card(
         self, *, receive_id: str, card: dict,
         reply_message_id: str | None = None,
@@ -78,7 +73,7 @@ class FeishuApiSender:
 class _SessionBuffer:
     chat_id: str | None = None
     session_id: str = ""
-    # card_id -> Card. card_id == run_id for PH cards; dedicated id for menus.
+    # card_id -> Card. card_id == run_id for answer cards; dedicated id for menus.
     cards: dict[str, Card] = field(default_factory=dict)
     # 待用于下一次新卡片首次 send 的 reply_to(飞书原话引用框)。
     pending_reply_to: str | None = None
@@ -99,8 +94,10 @@ class FeishuAdapter(Adapter):
         api_sender: FeishuApiSender | None = None,
         pairing: PairingStore | None = None,
         session_resolver: Any,
+        media_store: FileMediaStore | None,
     ) -> None:
         self._config = config
+        self._media_store = media_store
         self._api_sender = api_sender
         self._pairing = pairing
         self._resolver = session_resolver
@@ -181,6 +178,25 @@ class FeishuAdapter(Adapter):
         sender_id = parsed.sender_open_id or ""
         if not await self._gate_pairing(sender_id, parsed.chat_id, parsed.text):
             return
+        attachments = []
+        try:
+            if len(parsed.resources) > MAX_ATTACHMENTS:
+                raise ValueError(f"单条消息最多支持 {MAX_ATTACHMENTS} 个媒体附件")
+            for resource in parsed.resources:
+                if self._api_sender is None or self._media_store is None:
+                    raise ValueError("媒体接收服务未配置")
+                data = await self._api_sender.download_media(message_id=parsed.message_id,
+                    file_key=resource.file_key, kind=resource.kind)
+                media = await asyncio.to_thread(self._media_store.save_bytes, data)
+                attachments.append({"file_path": media.path})
+        except Exception as exc:
+            if self._api_sender is None:
+                raise
+            card = render_unified(build_notice_card(card_id="media-error",
+                text=f"媒体接收失败，请重新发送：{exc}"))
+            await self._api_sender.send_card(receive_id=parsed.chat_id, card=card,
+                reply_message_id=parsed.message_id or None)
+            return
         session_id = self._allocate_sid(parsed.chat_id)
         buf = self._get_or_create_buffer(session_id)
         buf.chat_id = parsed.chat_id
@@ -190,6 +206,7 @@ class FeishuAdapter(Adapter):
             adapter_id=self.adapter_id,
             session_id=session_id,
             text=parsed.text,
+            attachments=tuple(attachments),
             user_id=parsed.sender_open_id,
             metadata={"chat_id": parsed.chat_id, "message_id": parsed.message_id},
         )
@@ -217,20 +234,40 @@ class FeishuAdapter(Adapter):
     async def _on_card_action(self, event: dict[str, Any]) -> None:
         value = (event.get("action") or {}).get("value", {}) or {}
         chat_id = str((event.get("context") or {}).get("open_chat_id", "") or "")
-        # 回调 value 只有三种(unified_card_feishu._btn):send_text / load_tools / detach。
+        # 回调动作：send_text / load_tools / cancel。
         # 加载剩余工具:adapter 本地动作,不走 router,只刷卡。
         load_card = value.get("load_tools")
         if load_card:
             await self._handle_load_tools(chat_id, str(load_card))
             return
-        if "detach" in value:  # 值可能为空串(无 ph_run_id),按键判断
-            if not chat_id or self._gateway is None:
+        if "steer" in value:
+            open_id = str((event.get("operator") or {}).get("open_id", "") or "")
+            if self._pairing is not None and not await self._gate_pairing(open_id, chat_id, ""):
                 return
-            session_id = self._allocate_sid(chat_id)
-            try:
-                await self._gateway.detach_foreground(session_id)
-            except Exception:
-                pass
+            if self._gateway is not None:
+                for sid, buf in self._buffers.items():
+                    if buf.chat_id == chat_id and any(card.state.pending_input_id == value["steer"] for card in buf.cards.values()):
+                        try:
+                            await self._gateway.control.promote(sid, str(value["steer"]))
+                        except (LookupError, ValueError):
+                            pass  # A consumed/stale button cannot steer another input.
+                        return
+            return
+        if "cancel" in value or "compact_cancel" in value:
+            action = "cancel" if "cancel" in value else "compact_cancel"
+            open_id = str((event.get("operator") or {}).get("open_id", "") or "")
+            if self._pairing is not None and not await self._gate_pairing(open_id, chat_id, ""):
+                return
+            rid = str(value[action])
+            if self._gateway is not None:
+                for sid, buf in self._buffers.items():
+                    if buf.chat_id == chat_id and rid in buf.cards:
+                        if action == "cancel":
+                            await self._gateway.cancel(sid, rid)
+                        else:
+                            await self._inbound.put(InboundMessage(self.adapter_id, sid, f"/compact_cancel {rid}",
+                                user_id=open_id, metadata={"chat_id": chat_id}))
+                        return
             return
         send_text = str(value.get("send_text", "") or "")
         open_id = str((event.get("operator") or {}).get("open_id", "") or "")
@@ -295,27 +332,6 @@ class FeishuAdapter(Adapter):
 
     async def render(self, event: AgentEvent) -> RenderedMessage:
         buf = self._get_or_create_buffer(event.session_id)
-        # /attach menu-card detour: payload may carry attach_choices.
-        choices = event.payload.get("attach_choices") if event.payload else None
-        if isinstance(choices, list) and choices:
-            cands = tuple(
-                (str(c.get("run_id") or ""), str(c.get("label") or c.get("run_id") or ""))
-                for c in choices
-                if c.get("run_id")
-            )
-            card_id = self._next_menu_card_id(event.session_id, prefix="attach")
-            state = build_attach_menu(card_id=card_id, candidates=cands)
-            card = self._make_card(buf, state)
-            card.terminal = True   # 菜单卡一次性
-            buf.cards[card_id] = card
-            await self._direct_send_or_patch(buf, card)
-            return RenderedMessage(
-                adapter_id=self.adapter_id,
-                session_id=event.session_id,
-                text=str(event.payload.get("text", "") or ""),
-                metadata={"event_kind": event.kind, "attach_menu": True},
-            )
-
         card_id = self._card_id_for(event)
         if not card_id:
             return RenderedMessage(
@@ -324,7 +340,7 @@ class FeishuAdapter(Adapter):
                 text="",
                 metadata={"event_kind": event.kind},
             )
-        card = self._ensure_card(buf, card_id, ph_run_id=card_id)
+        card = self._ensure_card(buf, card_id, run_id=card_id)
         task = card.dispatch(event)
         if task is not None:
             try:
@@ -359,12 +375,12 @@ class FeishuAdapter(Adapter):
         return card
 
     def _ensure_card(
-        self, buf: _SessionBuffer, card_id: str, *, ph_run_id: str | None = None
+        self, buf: _SessionBuffer, card_id: str, *, run_id: str | None = None
     ) -> Card:
         card = buf.cards.get(card_id)
         if card is None:
             # 工具过程默认按组折叠(IM 卡片放不下逐条调用);会话 /view 可覆盖
-            state = UnifiedCardState(card_id=card_id, ph_run_id=ph_run_id, view_mode=DEFAULT_VIEW_MODE)
+            state = UnifiedCardState(card_id=card_id, run_id=run_id, view_mode=DEFAULT_VIEW_MODE)
             card = self._make_card(buf, state)
             buf.cards[card_id] = card
         return card
@@ -393,10 +409,6 @@ class FeishuAdapter(Adapter):
                 message_id=card.message_id, card=schema
             )
 
-    async def _direct_send_or_patch(self, buf: _SessionBuffer, card: Card) -> None:
-        """绕开 coalescer 直接交付(用于 attach_choices 这种命令直送)。"""
-        await self._deliver(buf, card)
-
     # ------------------------------------------------------------------
     # ProgressEvent path (note_progress)
     # ------------------------------------------------------------------
@@ -407,20 +419,11 @@ class FeishuAdapter(Adapter):
             return
         buf = self._get_or_create_buffer(sid)
         kind = payload.get("kind")
-        # Menu cards (one-shot, no PH).
-        if kind in ("menu_response", "attach_options"):
-            if kind == "menu_response":
-                specs = tuple(
-                    (str(n), str(d)) for n, d in (payload.get("specs") or ())
-                )
-                cid = self._next_menu_card_id(sid, prefix="help")
-                state = build_help_menu(card_id=cid, specs=specs)
-            else:
-                cands = tuple(
-                    (str(r), str(l)) for r, l in (payload.get("candidates") or ())
-                )
-                cid = self._next_menu_card_id(sid, prefix="attach")
-                state = build_attach_menu(card_id=cid, candidates=cands)
+        # Menu cards (one-shot, no answer).
+        if kind == "menu_response":
+            specs = tuple((str(n), str(d)) for n, d in (payload.get("specs") or ()))
+            cid = self._next_menu_card_id(sid, prefix="help")
+            state = build_help_menu(card_id=cid, specs=specs)
             card = self._make_card(buf, state)
             card.terminal = True
             buf.cards[cid] = card
@@ -429,7 +432,7 @@ class FeishuAdapter(Adapter):
         rid = str(payload.get("run_id") or "")
         if not rid:
             return
-        card = self._ensure_card(buf, rid, ph_run_id=rid)
+        card = self._ensure_card(buf, rid, run_id=rid)
         pe = ProgressEvent(
             session_id=sid, run_id=rid,
             message=str(kind or ""), payload=dict(payload),

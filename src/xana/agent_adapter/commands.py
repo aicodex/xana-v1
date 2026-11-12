@@ -16,11 +16,21 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import uuid
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
 
 from xana.config.paths import project_home, project_id, project_root
 from xana.agent_adapter.contracts import CommandResult, CommandSpec, InboundMessage
 from xana.agent_adapter.interfaces import CommandRouter
+from xana.memory.interfaces import HistoryMirror
+from xana.harness_sdk.turn_control import TurnCoordinator
+from xana.harness_sdk.contracts import AbortSignal
+from xana.harness_sdk.interfaces import Harness
+from xana.agents.interfaces import AgentRequestMapper
+from xana.agents.contracts import AgentRequest
+from xana.config.contracts import ModelConfig
+from xana.config.loader import resolve_model_config
+from xana.config.system_model import ModelEntry
 
 if TYPE_CHECKING:
     from xana.session_config.contracts import SessionConfig
@@ -47,22 +57,32 @@ class DefaultCommandRouter(CommandRouter):
         *,
         session_config_store: Any = None,  # SessionConfigStore | None — typed loose to avoid cycles in tests
         active_context_store: Any = None,
+        history_mirror: HistoryMirror | None = None,
         gateway: Any = None,
+        control: TurnCoordinator | None = None,
+        harness: Harness | None = None,
+        request_mapper: AgentRequestMapper | None = None,
         available_models: tuple[str, ...] = (),
         available_search_providers: tuple[str, ...] = (),
         available_efforts: tuple[str, ...] = ("high", "max"),
         model_registry: Any = None,
         provider: str = "",
         model: str = "",
+        model_configs: dict[str, ModelConfig] | None = None,
         progress_sink: Any = None,
         default_agent: str = "chat",
         agent_registry: Any = None,   # AgentRegistry | None — /agent 前刷新(热加载)
     ) -> None:
         self.session_config_store = session_config_store
         self.default_agent = default_agent
+        self.model_configs = dict(model_configs) if model_configs is not None else None
         self.agent_registry = agent_registry
         self.active_context_store = active_context_store
+        self.history_mirror = history_mirror
         self.gateway = gateway
+        self.control = control
+        self.harness = harness
+        self.request_mapper = request_mapper
         self.available_models = available_models
         self.available_search_providers = available_search_providers
         self.available_efforts = available_efforts
@@ -70,8 +90,7 @@ class DefaultCommandRouter(CommandRouter):
         self.provider = provider
         self.model = model
         self.progress_sink = progress_sink
-        self._compact_seq = 0
-        self._compact_cancels: dict[str, asyncio.Event] = {}
+        self._compact_cancels: dict[str, tuple[str, AbortSignal]] = {}
 
         self._specs: tuple[CommandSpec, ...] = (
             CommandSpec(name="/help",     description="显示命令菜单。用法 `/help` 或 `/help /命令`"),
@@ -83,14 +102,14 @@ class DefaultCommandRouter(CommandRouter):
             CommandSpec(name="/effort",   description="推理强度切换，无参列出可选"),
             CommandSpec(name="/streaming", description="token 流开关 on/off(无参数切换)"),
             CommandSpec(name="/thinking", description="思考链开关 on/off(无参数切换)"),
-            CommandSpec(name="/async",    description="异步模式开关 on/off(无参数切换)"),
-            CommandSpec(name="/attach",   description="切回某个后台运行"),
+
+
             CommandSpec(name="/cancel",   description="取消当前 turn"),
             CommandSpec(name="/project",  description="显示当前项目"),
             CommandSpec(name="/search_provider", description="搜索引擎切换"),
             CommandSpec(name="/view",    description="工具过程显示模式:详细 / 分组 / 摘要(无参列出可选)"),
-            CommandSpec(name="/resume",  description="列出可恢复的后台 run,或 /resume <run_id> 续跑"),
-            CommandSpec(name="/tasks",   description="任务面板:列出在途/后台/已完成的 run(可 /tasks <session_id> 过滤)"),
+            CommandSpec(name="/resume",  description="列出可恢复的已停止 run,或 /resume <run_id> 续跑"),
+            CommandSpec(name="/tasks",   description="任务面板:列出执行中/已停止/已完成的 run(可 /tasks <session_id> 过滤)"),
         )
         self._handlers: dict[str, _HandlerFn] = {
             "/help":            DefaultCommandRouter._cmd_help,
@@ -102,11 +121,11 @@ class DefaultCommandRouter(CommandRouter):
             "/effort":          DefaultCommandRouter._cmd_effort,
             "/streaming":       DefaultCommandRouter._cmd_streaming,
             "/thinking":        DefaultCommandRouter._cmd_thinking,
-            "/async":           DefaultCommandRouter._cmd_async,
+
             "/search_provider": DefaultCommandRouter._cmd_search_provider,
             "/view":            DefaultCommandRouter._cmd_view,
             "/cancel":          DefaultCommandRouter._cmd_cancel,
-            "/attach":          DefaultCommandRouter._cmd_attach,
+
             "/project":         DefaultCommandRouter._cmd_project,
             "/resume":          DefaultCommandRouter._cmd_resume,
             "/tasks":           DefaultCommandRouter._cmd_tasks,
@@ -237,223 +256,94 @@ class DefaultCommandRouter(CommandRouter):
         return CommandResult(ok=True, message=f"[agent] 已关闭 {name} 的 Bash,写入 {path}")
 
     async def _cmd_compact(self, inbound: InboundMessage, args: str) -> CommandResult:
-        from xana.harness_sdk.compact import (
-            _CompactCancelled,
-            generate_summary, partial_summary, persist_compact_transcript,
-            revealed_tools_from_messages, summary_progress,
-        )
-        from xana.harness_sdk.contracts import ProgressEvent
-        if self.active_context_store is None:
-            return CommandResult(ok=False, message="active_context_store 未配置")
-        if self.model_registry is None:
-            return CommandResult(ok=False, message="model_registry 未配置,无法压缩")
-        snapshot = await self.active_context_store.get(inbound.session_id, await self._session_agent(inbound.session_id))
-        live = snapshot.messages if snapshot else ()
-        if not live:
-            # 空上下文(常见于 /clear 之后)→ 给个 run_id 让 gateway 渲菜单卡,
-            # 否则 /compact 是 silent_cmd 不预建卡,error 路径会 card_id 空 → 用户看不到。
-            self._compact_seq += 1
-            empty_rid = f"compactcmd-{inbound.session_id}-{self._compact_seq}"
-            return CommandResult(
-                ok=False,
-                message="无可压缩内容(请先发条消息再 /compact)",
-                payload={"run_id": empty_rid},
-            )
-        model = self.model
-        if self.session_config_store is not None:
-            cfg = await self.session_config_store.get(inbound.session_id)
-            if cfg.model:
-                model = cfg.model
-        client = await self.model_registry.get(self.provider)
-        if client is None:
-            return CommandResult(ok=False, message=f"provider {self.provider!r} 未注册")
-        self._compact_seq += 1
-        # PH-driven path:
-        #  1) detach 所有 in-flight run
-        #  2) run_id 选择:
-        #     - 有 in-flight → 用 inflight[0].run_id(compact 段挂到现存 PH 卡)
-        #     - 无 in-flight → 自产 compactcmd-...(新建一张 compact 卡)
-        #  gateway 不为 /compact 预建命令卡(见 _submit silent_cmd),所以这里
-        #  全权决定 run_id,避免重复出现"⏳ /compact"占位卡 + PH 卡两张。
-        ph_note = None
-        inflight_run_id: str | None = None
-        if self.gateway is not None:
-            await self.gateway.detach_foreground(inbound.session_id)
-            inflight = list(self.gateway._inflight.get(
-                inbound.session_id, []))
-            if inflight:
-                inflight_run_id = inflight[0].run_id
-            adapters = getattr(self.gateway, "adapters", {}) or {}
-            adapter = adapters.get(inbound.adapter_id)
-            if adapter is not None:
-                ph_note = getattr(adapter, "note_progress", None)
-        run_id = (
-            inflight_run_id
-            or inbound.metadata.get("command_run_id")
-            or f"compactcmd-{inbound.session_id}-{self._compact_seq}"
-        )
-        if ph_note is not None:
-            ph_note({
-                "kind": "compact_started",
-                "session_id": inbound.session_id,
-                "run_id": run_id,
-                "fork_point": 0,
-            })
-        last_emitted: list[tuple[str, str, str]] = [("", "", "")]
-        cancel_event = asyncio.Event()
-        self._compact_cancels[run_id] = cancel_event
-        cancel_button = [[{"text": "取消", "send": f"/compact_cancel {run_id}"}]]
-
-        async def _emit(text_so_far: str = "", phase: str = "running") -> None:
-            if cancel_event.is_set():
-                raise _CompactCancelled()
-            if self.progress_sink is None:
-                return
-            bar, status = summary_progress(text_so_far)
-            partial = partial_summary(text_so_far) or ""
-            if phase == "running" and (bar, status, partial) == last_emitted[0]:
-                return  # 进度条/状态/部分摘要都没变 → 不发纯重复
-            last_emitted[0] = (bar, status, partial)
-            await self.progress_sink.report(ProgressEvent(
-                session_id=inbound.session_id, run_id=run_id,
-                message="compact_progress",
-                payload={"kind": "compact_progress", "session_id": inbound.session_id,
-                         "run_id": run_id, "model": model, "phase": phase, "text": bar,
-                         "thinking": partial,
-                         "thinking_title": f"🗜 正在压缩 · {status}",
-                         "buttons": cancel_button},
-            ))
-
-        # §1.5 Compact-as-PH: acquire SDK compact lock before LLM call. This
-        # is the race fix — once the PH is appended under the SDK's per-sid
-        # write_lock+compact_lock, any concurrent ph_replaced + subsequent
-        # writeback are serialized; the summary replaces ONLY the
-        # CompactPlaceholder (by run_id), never "all messages including the
-        # freshly-arrived answer".
-        sdk = self.active_context_store.sdk()
-        agent = await self._session_agent(inbound.session_id)
-        try:
-            await sdk.append_compact_placeholder(
-                inbound.session_id, agent, run_id=run_id, ph_id=run_id,
-                transcript_path=f"runs/{run_id}.jsonl",
-            )
-        except Exception:
-            # 锁已由 SDK 在失败时释放;没有占位符就无法写回,直接报失败
-            _logger.exception("/compact: append_compact_placeholder failed")
-            return CommandResult(ok=False, message="压缩失败:无法开始压缩,请重试")
-        sdk_ph_acquired = True
-        try:
-            await _emit("")  # 立即出卡:空进度条 + 取消按钮
+        from xana.harness_sdk.contracts import AbortSignal
+        if self.active_context_store is None or self.history_mirror is None or self.model_registry is None:
+            return CommandResult(False, "active_context_store / history_mirror / model_registry 未配置")
+        if self.control is None:
+            return CommandResult(False, "会话执行协调器未配置")
+        run_id = inbound.metadata.get("command_run_id") or f"compact-{uuid.uuid4().hex}"
+        abort = AbortSignal()
+        self._compact_cancels[run_id] = (inbound.session_id, abort)
+        async def perform(owner_abort):
+            async def follow():
+                await owner_abort.wait()
+                abort.trigger(owner_abort.reason or "cancelled")
+            linked = asyncio.create_task(follow())
             try:
-                summary = await generate_summary(
-                    client, provider=self.provider, model=model, messages=live,
-                    on_progress=_emit)
-            except _CompactCancelled:
-                # 用户取消:停流、不写回。仍需 finalize 防止 PH 卡片永久停在 running。
-                await sdk.cancel_compact_placeholder(inbound.session_id, agent, run_id)
-                sdk_ph_acquired = False
-                if ph_note is not None:
-                    ph_note({
-                        "kind": "compact_finalized",
-                        "session_id": inbound.session_id,
-                        "run_id": run_id,
-                        "summary": "",
-                        "cancelled": True,
-                    })
-                return CommandResult(
-                    ok=False, message="🛑 压缩已取消", payload={"run_id": run_id})
-            if summary is None:
-                await sdk.cancel_compact_placeholder(inbound.session_id, agent, run_id)
-                sdk_ph_acquired = False
-                if ph_note is not None:
-                    ph_note({
-                        "kind": "compact_finalized",
-                        "session_id": inbound.session_id,
-                        "run_id": run_id,
-                        "summary": "",
-                        "error": True,
-                    })
-                return CommandResult(ok=False, message="压缩失败:模型未返回 <summary>,请重试")
-            # §1.5 Compact-as-PH writeback: replace the CompactPlaceholder
-            # we appended above with a CompactSummary. SDK serializes this
-            # under its write_lock, so a racing ph_replaced cannot stomp on
-            # the freshly-arrived answer (the previous race source — see
-            # §11.3 / B3).
-            # 摘要引用的"完整记录"要真实存在(与 auto-compact 同一落盘函数);压缩前已揭示的工具随摘要保留
-            transcript = (persist_compact_transcript(project_home() / "sessions", inbound.session_id, live)
-                          or f"runs/{run_id}.jsonl")
-            revealed = tuple(sorted(revealed_tools_from_messages(snapshot.messages))) if snapshot else ()
-            from xana.context._internal import _PlaceholderInternal
-            from xana.context.message import CompactSummary
-            cs = CompactSummary(
-                summary=summary,
-                _internal=_PlaceholderInternal(
-                    run_id=run_id, ph_id=run_id,
-                    transcript_path=transcript,
-                ),
-                revealed_tools=revealed,
-            )
-            await sdk.replace_placeholder(inbound.session_id, agent, run_id, (cs,))
-            sdk_ph_acquired = False
-            # §1.9 single-source render: same string the model will see
-            # (CompactSummary.render, via the bridge) is what the card panel
-            # shows. Without this, the card body was the raw model output
-            # (no template prefix/suffix), while the model context had the
-            # full templated form — visible divergence between front-end
-            # and back-end "compact summary".
-            from xana.context.message import CompactSummary as _CS
-            rendered_summary = _CS.render(summary, transcript_path=transcript)
-            if ph_note is not None:
-                ph_note({
-                    "kind": "compact_finalized",
-                    "session_id": inbound.session_id,
-                    "run_id": run_id,
-                    "summary": rendered_summary,
-                    "compacted_n": len(live),
-                })
-            # compact 完成:visual 已由 compact_finalized note_progress 落到
-            # PH 卡上(compact 段切完成态)。
-            #  - 用了 inflight PH 卡 → 直接 silent(避免再发一条 final 把卡覆盖)
-            #  - 自建 compactcmd-... 卡 → 正常发 final 把卡 patch 为完成态
-            # /compact 始终 silent:compact_finalized note_progress 已经把
-            # 卡片的 compact 段切到完成态。再发 final 会让 _apply_agent_only 把
-            # CommandResult.message ('▰▰▰▰▰▰▰') 落到 menu section,在同一张卡
-            # 上出现"第二个进度条"。
-            return CommandResult(
-                ok=True, message="", payload={"silent": True})
-        except Exception:
-            if sdk_ph_acquired:
+                return await self._compact_session(inbound, run_id, abort)
+            finally:
+                linked.cancel()
                 try:
-                    await sdk.cancel_compact_placeholder(inbound.session_id, agent, run_id)
-                except Exception:
+                    await linked
+                except asyncio.CancelledError:
                     pass
-                sdk_ph_acquired = False
-            if ph_note is not None:
-                ph_note({
-                    "kind": "compact_finalized",
-                    "session_id": inbound.session_id,
-                    "run_id": run_id,
-                    "summary": "",
-                    "error": True,
-                })
-            raise
+        try:
+            return await self.control.maintenance(inbound.session_id, run_id, perform)
         finally:
             self._compact_cancels.pop(run_id, None)
-            # Safety: if for any reason we still hold the SDK compact lock
-            # (e.g. an early `return` path skipped release), let it go.
-            if sdk_ph_acquired:
-                try:
-                    await sdk.cancel_compact_placeholder(inbound.session_id, agent, run_id)
-                except Exception:
-                    pass
+
+    async def _compact_session(self, inbound, run_id, abort) -> CommandResult:
+        from xana.harness_sdk.compact import summary_progress, _CompactCancelled
+        from xana.harness_sdk.contracts import ProgressEvent
+        from xana.context.message import CompactSummary
+        if self.harness is None or self.request_mapper is None:
+            return CommandResult(False, "压缩执行服务未配置")
+        agent = await self._session_agent(inbound.session_id)
+        active = self.control.active(inbound.session_id)
+        if active and active[0].context is not None:
+            context = dataclasses.replace(active[0].context, abort=abort)
+        else:
+            target = self.gateway.agents.get(agent) if self.gateway is not None else None
+            if target is None:
+                return CommandResult(False, f"未知 agent {agent}")
+            context = await self.request_mapper.to_harness_context(target.spec(), AgentRequest(
+                inbound.session_id, "", inbound.adapter_id, metadata={"gateway_run_id": run_id}))
+            context = dataclasses.replace(context, abort=abort)
+        model = context.model
+        messages = await self.active_context_store.snapshot(inbound.session_id, agent)
+        async def report(kind, payload):
+            if self.progress_sink is not None:
+                await self.progress_sink.report(ProgressEvent(inbound.session_id, run_id, kind, {
+                    "kind": kind, "session_id": inbound.session_id, "run_id": run_id,
+                    "input_id": inbound.metadata.get("input_id"), **payload}))
+        async def emit(text="", phase="running"):
+            if abort.aborted:
+                raise _CompactCancelled()
+            bar, status = summary_progress(text)
+            await report("compact_progress", {"model": model, "phase": phase, "text": bar,
+                "sections_done": bar.count("▰"), "partial_summary": text})
+        summary = ""
+        cancelled = False
+        failed = False
+        try:
+            await report("compact_started", {})
+            if not messages or (len(messages) == 1 and messages[0].role == "compact"):
+                summary = "历史已压缩，无新增可压缩内容"
+            else:
+                await emit()
+                result = await self.harness.compact(context, on_progress=emit)
+                if abort.aborted:
+                    raise _CompactCancelled()
+                if result is None:
+                    raise ValueError("模型未返回有效且更短的摘要，原始历史已保留")
+                summary = CompactSummary.render(result.summary, result.transcript_path)
+        except _CompactCancelled:
+            cancelled = True
+        except Exception:
+            _logger.exception("compaction failed")
+            failed = True
+        await report("compact_finalized", {"summary": summary, "cancelled": cancelled, "error": failed,
+            "compacted_n": len(messages) if not (cancelled or failed) else 0})
+        return CommandResult(not (cancelled or failed),
+            ("" if self.progress_sink is not None and not (cancelled or failed) else summary or
+             ("压缩已取消" if cancelled else "压缩失败")),
+            {"run_id": run_id, "silent": self.progress_sink is not None})
 
     async def _cmd_compact_cancel(self, inbound: InboundMessage, args: str) -> CommandResult:
-        """隐藏命令 /compact_cancel <run_id>:置取消事件,静默(不渲染卡片)。"""
-        run_id = args.strip()
-        event = self._compact_cancels.get(run_id)
-        if event is not None:
-            event.set()
-        return CommandResult(ok=True, message="", payload={"silent": True})
+        entry = self._compact_cancels.get(args.strip())
+        if entry is not None and entry[0] == inbound.session_id:
+            entry[1].trigger("user_cancel")
+        return CommandResult(True, "已请求取消压缩", {"silent": True})
 
     async def _persist_with(self, session_id: str, **changes) -> "SessionConfig":
         """只改 changes 里的字段,其余(含 prompt_profile / metadata)原样保留。"""
@@ -531,27 +421,6 @@ class DefaultCommandRouter(CommandRouter):
         new = await self._persist_with(inbound.session_id, thinking=new_val)
         return CommandResult(ok=True, message=f"thinking={new.thinking}")
 
-    async def _cmd_async(self, inbound: InboundMessage, args: str) -> CommandResult:
-        val = args.strip().lower()
-        if val and val not in {"on", "off"}:
-            return CommandResult(ok=False, message="async 用法: /async [on|off](无参数=切换)")
-        if self.session_config_store is None:
-            return CommandResult(ok=False, message="session_config_store 未配置")
-        current = await self.session_config_store.get(inbound.session_id)
-        if val:
-            new_val = val == "on"
-        else:
-            new_val = not current.async_mode
-        # on→off guard: 若仍有 running placeholder,拒绝
-        if current.async_mode and not new_val and self.active_context_store is not None:
-            from xana.memory.contracts import Placeholder
-            snap = await self.active_context_store.snapshot(inbound.session_id, await self._session_agent(inbound.session_id))
-            for item in snap:
-                if isinstance(item, Placeholder) and item.status == "running":
-                    return CommandResult(
-                        ok=False, message="有后台 run 在跑,请等完成或 /cancel")
-        new = await self._persist_with(inbound.session_id, async_mode=new_val)
-        return CommandResult(ok=True, message=f"async={new.async_mode}")
 
     async def _cmd_view(self, inbound: InboundMessage, args: str) -> CommandResult:
         """/view [detailed|grouped|summary|default]:本会话的工具过程显示模式;default = 渠道默认。"""
@@ -585,79 +454,10 @@ class DefaultCommandRouter(CommandRouter):
         return CommandResult(ok=True, message=f"搜索引擎切换为 {new.search_provider}")
 
     async def _cmd_cancel(self, inbound: InboundMessage, args: str) -> CommandResult:
-        """/cancel <run_id> → 取消该 run。
-        /cancel(无参) → 列出当前 session 所有 running Placeholder,渲染菜单。
-        每项点击 send `/cancel <run_id>` 取消该后台 run(类比 /attach)。"""
         if self.gateway is None:
-            return CommandResult(ok=False, message="gateway 未注入")
-        rid = (args or "").strip()
-        if rid:
-            await self.gateway.cancel(inbound.session_id, rid)
-            return CommandResult(
-                ok=True, message=f"[cancel] 已请求取消 {rid}")
-        # 无参 → 列出可取消的后台 run
-        from xana.memory.contracts import Placeholder
-        if self.active_context_store is None:
-            return CommandResult(ok=False, message="active_context_store 未配置")
-        snap = await self.active_context_store.snapshot(
-            inbound.session_id, await self._session_agent(inbound.session_id))
-        sends: list[dict[str, Any]] = []
-        labels: list[str] = []
-        for m in snap:
-            if isinstance(m, Placeholder) and m.status == "running":
-                sends.append({
-                    "text": f"取消 {m.label[:30]}",
-                    "send": f"/cancel {m.run_id}",
-                })
-                labels.append(m.label)
-        if not sends:
-            return CommandResult(
-                ok=True, message="没有后台运行可取消",
-                payload={"triggers_turn": False})
-        # 一列一个按钮
-        rows = [[s] for s in sends]
-        text_lines = ["选择要取消的后台运行:"] + [f"  {l}" for l in labels]
-        return CommandResult(
-            ok=True, message="\n".join(text_lines),
-            payload={"triggers_turn": False, "buttons": rows},
-        )
-
-    async def _cmd_attach(self, inbound: InboundMessage, args: str) -> CommandResult:
-        """/attach(无参):列出当前 session 所有 running Placeholder,渲染为菜单(payload.attach_choices);
-        菜单按钮发 /attach <run_id> → gateway.attach(sid, run_id) 切回前台(自动 detach 当前 fg)。"""
-        from xana.memory.contracts import Placeholder
-        if self.active_context_store is None:
-            return CommandResult(ok=False, message="active_context_store 未配置")
-        snap = await self.active_context_store.snapshot(inbound.session_id, await self._session_agent(inbound.session_id))
-        choices: list[dict[str, Any]] = []
-        for m in snap:
-            if isinstance(m, Placeholder) and m.status == "running":
-                choices.append({"run_id": m.run_id, "label": m.label})
-        target = args.strip()
-        if target:
-            # 菜单按钮"切回 X"发的是 /attach <run_id>:直接切回前台,原卡片继续刷新,不再发菜单
-            # (2026-10-19:以前忽略参数,点了只会再弹一次菜单)
-            if self.gateway is None:
-                return CommandResult(ok=False, message="gateway 未注入,无法切回")
-            if target not in {c["run_id"] for c in choices}:
-                return CommandResult(ok=True, message="这个后台运行已经结束,不用切回了",
-                                     payload={"triggers_turn": False})
-            await self.gateway.attach(inbound.session_id, target)
-            return CommandResult(ok=True, message="", payload={"triggers_turn": False, "silent": True})
-        if not choices:
-            return CommandResult(
-                ok=True, message="没有后台运行可切换",
-                payload={"triggers_turn": False},
-            )
-        return CommandResult(
-            ok=True,
-            message="选择要切回前台的后台运行",
-            payload={
-                "triggers_turn": False,
-                "requires_detach": True,
-                "attach_choices": choices,
-            },
-        )
+            return CommandResult(False, "gateway 未注入")
+        await self.gateway.cancel(inbound.session_id, args.strip() or None)
+        return CommandResult(True, "已请求停止当前回答")
 
     async def _cmd_resume(self, inbound: InboundMessage, args: str) -> CommandResult:
         """/resume(无参) → 列出当前 session 可恢复的 run;/resume <run_id> → 续跑。"""
@@ -682,7 +482,7 @@ class DefaultCommandRouter(CommandRouter):
     async def _cmd_tasks(self, inbound: InboundMessage, args: str) -> CommandResult:
         """/tasks [session_id] → 任务面板(§4.4):run_id/状态/运行时长/label。
 
-        数据面 = gateway.list_inflight():_inflight 活体 + RunStore 持久状态合并。
+        数据面 = gateway.list_inflight():TurnCoordinator 活动状态与 RunStore 持久状态合并。
         cli daemon 渲染文本即可;feishu/tg 卡片后续接入同一数据面。
         """
         gateway = self.gateway
@@ -691,15 +491,13 @@ class DefaultCommandRouter(CommandRouter):
         sid = args.strip() or None
         rows = await gateway.list_inflight(sid)
         if not rows:
-            return CommandResult(ok=True, message="没有 run 记录",
-                                 payload={"triggers_turn": False})
+            return CommandResult(ok=True, message="没有 run 记录")
         lines = ["run_id · 状态 · 时长 · 标签"]
         for r in sorted(rows, key=lambda r: (r.session_id, r.run_id)):
             dur = f"{int(r.duration_s)}s" if r.duration_s is not None else "-"
-            fg = "" if r.attached else " [后台]"
-            lines.append(f"{r.run_id} · {r.status} · {dur} · {r.label}{fg}  ({r.session_id})")
-        return CommandResult(ok=True, message="\n".join(lines),
-                             payload={"triggers_turn": False})
+            activity = " [执行中]" if r.live else ""
+            lines.append(f"{r.run_id} · {r.status} · {dur} · {r.label}{activity}  ({r.session_id})")
+        return CommandResult(ok=True, message="\n".join(lines))
 
     async def _cmd_project(self, inbound: InboundMessage, args: str) -> CommandResult:
         """/project:显示当前项目(只读)。一个 serve 就是一个项目,会话不能换项目

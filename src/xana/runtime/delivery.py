@@ -25,7 +25,7 @@ class SessionDelivery:
         self._sessions = session_store
 
     async def deliver(self, session_id: str, text: str, *, route: tuple[str, str] | None = None,
-                      source: str = "scheduler") -> bool:
+                      source: str = "scheduler", input_id: str | None = None) -> bool:
         """投递成功返回 True;子会话或没有可用渠道返回 False(记日志)。"""
         if self._sessions is not None:
             rec = await self._sessions.get(session_id)
@@ -42,15 +42,15 @@ class SessionDelivery:
             _logger.warning("没有可用的渠道,消息无法送达会话 %s", session_id)
             return False
         metadata: dict[str, Any] = {"source": source}
+        if input_id is not None:
+            metadata["input_id"] = input_id
         if route and route[0] == adapter_id:
             # serve 重启后渠道还不知道这个会话对应哪个聊天:先绑定,回复卡片才能发出去
             await adapters[adapter_id].bind_session(SessionBinding(
                 adapter_id=adapter_id, external_thread_id=route[1], session_id=session_id))
             metadata["chat_id"] = route[1]
-        async for _rendered in self._gateway.submit(InboundMessage(
-                adapter_id=adapter_id, session_id=session_id, text=text, metadata=metadata)):
-            pass
-        return True
+        return await self._gateway.accept(InboundMessage(
+            adapter_id=adapter_id, session_id=session_id, text=text, metadata=metadata))
 
 
 class MediaDelivery:

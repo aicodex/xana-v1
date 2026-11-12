@@ -3,9 +3,58 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 RunStatus = Literal["running", "paused", "cancelled", "failed", "completed"]
+TodoStatus = Literal["pending", "in_progress", "completed"]
+TODO_STATUSES: tuple[TodoStatus, ...] = get_args(TodoStatus)
+GoalStatus = Literal["active", "paused", "blocked", "complete"]
+
+
+@dataclass(frozen=True)
+class ProcessLogPage:
+    records: tuple[dict[str, str], ...]
+    start_offset: int
+    next_offset: int
+    has_more: bool
+    complete: bool
+    issue: str = ""
+
+
+@dataclass(frozen=True)
+class GoalRecord:
+    goal_id: str
+    session_id: str
+    objective: str
+    status: GoalStatus = "active"
+    completion_criterion: str = ""
+    token_budget: int | None = None
+    tokens_used: int = 0
+    steps_used: int = 0
+    elapsed_ms: int = 0
+    active_since: float | None = None
+    reason: str = ""
+    accounted_run_id: str = ""
+    accounted_tokens: int = 0
+    accounted_steps: int = 0
+    revision: int = 0
+    completion_requested: bool = False
+
+
+
+@dataclass(frozen=True)
+class TodoItem:
+    content: str
+    active_form: str
+    status: TodoStatus
+
+    def __post_init__(self) -> None:
+        if self.status not in TODO_STATUSES:
+            raise ValueError("invalid todo status")
+        if not isinstance(self.content, str) or not self.content or not isinstance(self.active_form, str) or not self.active_form:
+            raise ValueError("todo content and active_form must be nonempty strings")
+
+
 ExitReason = Literal[
     "user_cancel",
     "tool_kill_timeout",
@@ -17,7 +66,6 @@ ExitReason = Literal[
     "tool_error",
     "unknown",
 ]
-ResumeAction = Literal["resume_from_checkpoint", "rerun_turn", "drop", "mark_cancelled"]
 CheckpointName = Literal[
     "turn_started",
     "before_llm_request",

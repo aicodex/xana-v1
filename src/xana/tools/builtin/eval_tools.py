@@ -40,7 +40,7 @@ _RUN_SPEC = _spec(
     "返回批次号与每个样本的运行状态、run_id(可用 trace_view 查看过程)、用时与用量。跑完后用 eval_score 打分。\n"
     "- split:train / heldout / live;或用 case_ids 指定样本。repeat:每个样本重复几次(估计噪声)。\n"
     "- agent:被测 agent(默认套件指定的;对比候选版本时传候选 agent 名)。tape:回放用的 run_id 列表(可选)。\n"
-    "- 先等待 wait_s 秒(默认 600):没跑完就转为后台任务,返回任务 id;用 task_wait 等,或先做别的事,结束时结果会自动送到这里。",
+    "- 先等待 wait_s 秒(默认 600):没跑完就转为后台任务,返回任务 id;结束时结果会自动送到这里。",
     {"suite": {"type": "string"}, "split": {"type": "string", "enum": ["train", "heldout", "live"]},
      "case_ids": {"type": "array", "items": {"type": "string"}}, "repeat": {"type": "integer", "minimum": 1, "maximum": 5},
      "agent": {"type": "string"}, "label": {"type": "string", "description": "批次标签,如 v1-baseline"},
@@ -109,15 +109,16 @@ class EvalRunTool(Tool):
                                      parent_session=context.session_id, parent_run=context.run_id or "",
                                      run=run_batch)
         try:
-            rec = await self._background.wait(rec.id, min(int(inp.get("wait_s", 600)), 1800))
+            rec = await self._background.wait(rec.id, min(int(inp.get("wait_s", 600)), 1800), wakeup=context.input_wakeup)
         except asyncio.CancelledError:
-            self._background.stop(rec.id)
+            await self._background.stop(rec.id)
             raise
         if rec.status == "running":
             return ToolResult(ok=True, content={"task_id": rec.id, "status": "running"}, rendered=(
                 f"[eval_run] 批次仍在运行,转为后台任务 {rec.id}。进度:{'; '.join(rec.progress[-3:]) or '无'}。\n"
-                f"用 task_wait(task_id=\"{rec.id}\") 等它,或先做别的事;结束时结果会自动送到这里。"))
+                "结束时结果会自动送到这里。"))
         return ToolResult(ok=rec.status == "completed", content=rec.content, rendered=rec.rendered,
+                          background_task_id=rec.id,
                           error=None if rec.status == "completed" else rec.status,
                           failure_kind=None if rec.status == "completed" else "execution")
 

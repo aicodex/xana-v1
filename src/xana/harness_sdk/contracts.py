@@ -4,6 +4,9 @@ The harness owns turn lifecycle and event stream shape. Run state is owned by st
 """
 from __future__ import annotations
 
+from xana.multimodal.contracts import MediaInput, InputModality
+
+import asyncio
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, TYPE_CHECKING
 
@@ -11,6 +14,8 @@ from xana.policy.contracts import PermissionContext
 from xana.state.contracts import UsageSnapshot
 
 if TYPE_CHECKING:
+    from xana.harness_sdk.turn_control import RunControl
+    from xana.state.file_runs import RunJsonlWriter
     from xana.llm_driver.interfaces import ModelRegistry
     from xana.memory.interfaces import (
         ActiveContextStore,
@@ -22,7 +27,23 @@ if TYPE_CHECKING:
     from xana.state.interfaces import StateRepository
     from xana.tools.interfaces import ToolRegistry
 
-HarnessEventKind = Literal["turn_started", "model_delta", "tool_started", "tool_progress", "tool_finished", "paused", "cancelled", "continuation", "progress_update", "final", "error"]
+HarnessEventKind = Literal["turn_started", "input_accepted", "input_promoted", "model_delta", "tool_started", "tool_progress", "tool_finished", "paused", "cancelled", "continuation", "progress_update", "final", "error", "row_committed", "run_closed", "approval_requested", "approval_resolved", "permission_changed", "checklist_changed", "goal_changed"]
+
+
+def task_notification_id(task_id: str) -> str:
+    """Stable identity shared by tool results, inline notes and queued notifications."""
+    return f"background:{task_id}"
+
+
+@dataclass(frozen=True)
+class TaskNotification:
+    task_id: str
+    session_id: str
+    text: str
+
+    @property
+    def input_id(self) -> str:
+        return task_notification_id(self.task_id)
 
 
 @dataclass
@@ -34,10 +55,18 @@ class AbortSignal:
     captured this instance in its `HarnessContext`."""
     aborted: bool = False
     reason: str | None = None
+    _event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     def trigger(self, reason: str) -> None:
+        if self.aborted:
+            return
         self.aborted = True
         self.reason = reason
+        self._event.set()
+
+    async def wait(self) -> None:
+        if not self.aborted:
+            await self._event.wait()
 
 
 @dataclass(frozen=True)
@@ -119,6 +148,7 @@ class HarnessRequest:
     agent_name: str
     user_input: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    media: tuple[MediaInput, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -140,9 +170,11 @@ class HarnessContext:
     model_registry: "ModelRegistry | None" = None
     progress_sink: "ProgressSink | None" = None
     abort: AbortSignal = field(default_factory=AbortSignal)
-    async_mode: bool = False
+    control: RunControl | None = None
+    run_writer: RunJsonlWriter | None = None
     config_snapshot: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    model_input_modalities: tuple[InputModality, ...] = ()
 
 
 @dataclass(frozen=True)

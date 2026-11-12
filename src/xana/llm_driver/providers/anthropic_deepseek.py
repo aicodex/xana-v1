@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, AsyncIterator
 
 import httpx
@@ -62,6 +62,7 @@ class AnthropicDeepSeekConfig:
     api_key: str
     base_url: str = _DEFAULT_BASE_URL
     max_tokens: int = _DEFAULT_MAX_TOKENS
+    model_max_tokens: dict[str, int] = field(default_factory=dict)
     timeout_s: float = 60.0
     anthropic_version: str = _ANTHROPIC_VERSION
 
@@ -84,10 +85,14 @@ class AnthropicDeepSeekClient(ModelClient):
         self._http = http_client
         self._owns_http = http_client is None
 
-    def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
+    def stream(self, request: ModelRequest) -> AsyncGenerator[ModelEvent, None]:
         return self._stream(request)
 
     async def _stream(self, request: ModelRequest) -> AsyncGenerator[ModelEvent, None]:
+        if any(message.media for message in request.messages):
+            yield ModelEvent(kind="error", error=ProviderError(kind="bad_request",
+                message="当前 DeepSeek provider 未声明媒体输入能力", retryable=False))
+            return
         body = _build_request_body(request, self._config)
         url = self._config.base_url.rstrip("/") + "/v1/messages"
         headers = {
@@ -144,13 +149,13 @@ class AnthropicDeepSeekClient(ModelClient):
     async def cancel(self, request_id: str) -> None:
         return None
 
-    async def capabilities(self) -> ProviderCapabilities:
+    async def capabilities(self, model: str | None = None) -> ProviderCapabilities:
         return ProviderCapabilities(
             provider="anthropic_deepseek",
             supports_streaming=True,
             supports_tools=True,
             supports_cache_control=False,
-            max_output_tokens=self._config.max_tokens,
+            max_output_tokens=self._config.model_max_tokens.get(model, self._config.max_tokens),
         )
 
     async def aclose(self) -> None:
@@ -242,7 +247,7 @@ def _build_request_body(request: ModelRequest, config: AnthropicDeepSeekConfig) 
 
     body: dict[str, Any] = {
         "model": request.model,
-        "max_tokens": config.max_tokens,
+        "max_tokens": request.max_tokens if request.max_tokens is not None else config.model_max_tokens.get(request.model, config.max_tokens),
         "messages": history,
         "stream": True,
     }

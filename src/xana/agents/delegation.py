@@ -17,7 +17,7 @@ AGENT_DEFINE_TOOL = "agent_define"
 
 # 子 agent 永远拿不到的工具 / 组:委派与创建 agent(因此委派深度固定为 1),以及会话控制类工具。
 SUBAGENT_EXCLUDED: tuple[str, ...] = (
-    AGENT_RUN_TOOL, AGENT_DEFINE_TOOL, "EnterPlanMode", "EnterWorktree", "report_goal", "schedule",
+    AGENT_RUN_TOOL, AGENT_DEFINE_TOOL, "skill_manage", "publishing", "EnterPlanMode", "EnterWorktree", "create_goal", "get_goal", "update_goal", "schedule",
     "media",   # 出站图片/视频只给用户聊天 agent;被聊天驱动的子 agent 不需要
 )
 
@@ -38,6 +38,7 @@ def effective_tools(
     spec: AgentSpec, ceiling: frozenset[str], specs: Iterable[ToolSpec], toolsets: Iterable[Toolset],
 ) -> frozenset[str]:
     """子 agent 实际拿到的工具 = 它自己的工具选择解析结果 ∩ 上限(harness 端同样取交集)。"""
+    specs = tuple(s for s in specs if s.allowed_agents is None or spec.component.name in s.allowed_agents)
     return resolve_tools(spec.tools, spec.disallowed_tools, specs, toolsets) & ceiling
 
 

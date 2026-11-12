@@ -1,20 +1,19 @@
-"""Compact 共享纯函数 — auto-compact(DefaultHarness 内联触发)与 /compact 共用。
-
-无 class、无 ABC;写回走 ContextSDK 的 Compact-as-PH(docs/design/session-and-card-state.md §1.5):
-compact 占位符替换成 CompactSummary 时,SDK 把它之前的全部历史折叠进摘要。
-"""
+"""摘要请求与输出校验；上下文生命周期由 ContextSDK 统一维护。"""
 from __future__ import annotations
+from contextlib import aclosing
 
-import collections.abc
+from dataclasses import replace
 import json
 import logging
-import time
-from pathlib import Path
-from typing import Awaitable, Callable, Sequence
+from typing import Awaitable, Callable
 
 from xana.harness_sdk.compact_prompt import get_compact_prompt
-from xana.llm_driver.contracts import ModelMessage, ModelRequest
+from xana.llm_driver.contracts import ModelMessage, ModelRequest, ProviderError
+from xana.llm_driver.interfaces import ModelClient
+from xana.harness_sdk.contracts import AbortSignal
 from xana.memory.contracts import MemoryMessage
+from xana.context.sdk import estimate_tokens as _estimate_tokens
+from xana.harness_sdk.stream_control import model_events
 
 _logger = logging.getLogger(__name__)
 
@@ -23,13 +22,9 @@ class _CompactCancelled(Exception):
     必须穿透 generate_summary 的重试循环(否则会被当成传输异常吞掉重试)。"""
 
 
-_CHARS_PER_TOKEN = 4  # 与 DefaultUsageAccumulator 同源启发式
-BLOCKING_HEADROOM = 3_000    # blocking 线 = context_window - 3K
 _COMPACT_RETRIES = 3
 
 
-def estimate_tokens(messages: Sequence[MemoryMessage]) -> int:
-    return max(1, sum(len(m.content or "") for m in messages) // _CHARS_PER_TOKEN)
 
 
 SUMMARY_SECTIONS = (
@@ -71,49 +66,116 @@ def summary_progress(text: str) -> tuple[str, str]:
     return bar, current
 
 
-async def generate_summary(
-    client, *, provider: str, model: str, messages: Sequence[MemoryMessage],
-    on_progress: Callable[[str], Awaitable[None]] | None = None,
-) -> str | None:
-    """同模型生成摘要: 无 tools、单回合;<summary> 缺失重试,3 次后放弃返回 None。"""
-    def _plain(m: MemoryMessage) -> ModelMessage:
-        # 摘要请求必须是纯文本转录:tool 消息降级为 user 文本,
-        # assistant 的 tool_calls 元数据丢弃 — 否则 Anthropic 方言会拼出孤儿 tool_result(400)。
-        if m.role == "tool":
-            name = m.metadata.get("tool_name", "?")
-            return ModelMessage(role="user", content=f"[工具 {name} 的结果]\n{m.content}")
-        role = m.role if m.role in ("user", "assistant", "system") else "system"
-        return ModelMessage(role=role, content=m.content)
+def _overflow_request(request: ModelRequest, attempt: int) -> ModelRequest | None:
+    """Kimi 725194d7: shrinkCompactionHistoryAfterOverflow, whole messages only.
 
-    model_msgs = tuple(_plain(m) for m in messages) + (
-        ModelMessage(role="user", content=get_compact_prompt()),)
-    req = ModelRequest(provider=provider, model=model, messages=model_msgs, tools_schema=(),
-                       metadata={"thinking": "disabled"})  # CC: compact 调用关思考
-    for _ in range(_COMPACT_RETRIES):
+    Ratios and recent-token selection are copied from fullCompactionService.ts.
+    Never edit message text, media, call metadata or the live conversation.
+    """
+    ratios = (0.7, 0.5, 0.35)
+    messages = request.messages
+    first = 0
+    while first < len(messages) and messages[first].role == "system":
+        first += 1
+    history = messages[first:]
+    if len(history) <= 1:
+        return None
+    costs = [_estimate_tokens((MemoryMessage(m.role, m.content, m.metadata, m.media),)) for m in history]
+    budget = int(sum(costs) * ratios[min(attempt - 1, len(ratios) - 1)])
+    start, tokens = len(history), 0
+    for index in range(len(history) - 1, -1, -1):
+        if tokens + costs[index] > budget:
+            break
+        tokens += costs[index]
+        start = index
+    start = max(1, start)
+    while start < len(history) and history[start].role == "tool":
+        start += 1
+    if start == len(history):
+        return None
+    return replace(request, messages=messages[:first] + history[start:])
+
+
+def _complete_summary(text: str) -> str | None:
+    """Accept the existing prompt's closed envelope; partial output is progress only."""
+    import re
+    match = re.fullmatch(r"\s*(?:<analysis>.*</analysis>\s*)?<summary>(.*)</summary>\s*", text, re.S)
+    if match is None or re.search(r"</summary>\s*<summary>", match.group(1)):
+        return None
+    summary = match.group(1).strip()
+    return summary or None
+
+
+def _overflow_error(error: ProviderError | None) -> bool:
+    if error is None or error.kind != "bad_request":
+        return False
+    text = (error.message + " " + json.dumps(error.raw, ensure_ascii=False)).lower()
+    return any(term in text for term in (
+        "context_length", "context window", "context length", "too many tokens", "prompt too long",
+        "maximum context", "token limit", "context overflow"))
+
+
+async def generate_summary(
+    client: ModelClient, request: ModelRequest, *,
+    on_progress: Callable[[str], Awaitable[None]] | None = None,
+    summary_limit_tokens: int | None = None,
+    abort: AbortSignal | None = None,
+) -> str | None:
+    """Append the existing compact instruction to the ordinary request unchanged.
+
+    No agent, session or alternate transcript is created. Only failed attempts may
+    shrink the oldest history; generation never mutates the active conversation.
+    Preserve output/thinking settings because output caps can change cache identity.
+    """
+    current = request
+    signal = abort or AbortSignal()
+    overflows = 0
+    for attempt in range(_COMPACT_RETRIES):
+        if signal.aborted:
+            raise _CompactCancelled()
+        req = replace(current, messages=current.messages + (ModelMessage("user", get_compact_prompt()),))
         parts: list[str] = []
-        stream = client.stream(req)
+        failure = "invalid_summary"
+        completed = False
+        tool_called = False
         try:
-            async for event in stream:
-                if event.kind == "text_delta":
-                    # CC 的 compact 调用 thinking=disabled;provider 暂无请求级开关,
-                    # 等价处理:reasoning 通道不进摘要缓冲(否则思考过程混进结果)。
-                    if event.payload.get("channel") == "thinking":
-                        continue
-                    parts.append(event.payload.get("text", ""))
-                    if on_progress is not None:
-                        await on_progress("".join(parts))
-                elif event.kind in ("done", "error"):
-                    break
+            async with aclosing(model_events(client.stream(req), signal)) as events:
+                async for event in events:
+                    if event.kind == "text_delta":
+                        if event.payload.get("channel") != "thinking":
+                            parts.append(event.payload.get("text", ""))
+                            if on_progress is not None:
+                                await on_progress("".join(parts))
+                    elif event.kind == "tool_call":
+                        tool_called = True  # Schemas are retained for caching; never execute tools here.
+                    elif event.kind == "error":
+                        if _overflow_error(event.error):
+                            failure = "overflow"
+                        elif event.error is not None and event.error.retryable:
+                            failure = "transport"
+                        else:
+                            return None
+                        break
+                    elif event.kind == "done":
+                        completed = event.payload.get("stop_reason") not in ("length", "max_tokens", "tool_calls")
+                        break
         except _CompactCancelled:
-            raise  # 用户取消 → 不重试,直接穿透给调用方
-        except Exception:
-            continue  # 传输层异常 = 一次失败重试,与缺 <summary> 同等对待
-        finally:
-            if isinstance(stream, collections.abc.AsyncGenerator):
-                await stream.aclose()
-        extracted = _extract_summary("".join(parts))
-        if extracted:
-            return extracted
+            raise
+        except Exception as exc:
+            _logger.warning("compact attempt %s failed: %s", attempt + 1, type(exc).__name__)
+            failure = "transport"
+        if signal.aborted:
+            raise _CompactCancelled()
+        summary = _complete_summary("".join(parts)) if completed and not tool_called else None
+        if summary and (summary_limit_tokens is None or _estimate_tokens((MemoryMessage("compact", summary),)) < summary_limit_tokens):
+            return summary
+        if failure == "overflow":
+            overflows += 1
+            smaller = _overflow_request(current, overflows)
+            if smaller is None:
+                return None
+            current = smaller
+        _logger.warning("compact attempt %s rejected (%s); original context retained", attempt + 1, failure)
     return None
 
 
@@ -132,33 +194,3 @@ def _extract_summary(text: str) -> str | None:
 
 # 公开别名:/compact 命令流式进度需要随时取「目前已生成的部分摘要」
 partial_summary = _extract_summary
-
-
-def persist_compact_transcript(sessions_root: Path, session_id: str, messages) -> str | None:
-    """compact 前把将被压缩的消息落盘 {sessions_root}/{sid}/compact-{ts}.jsonl,返回路径(失败 None)。
-    CompactSummary 引用的"完整记录"必须真实存在;auto-compact 与 /compact 共用。"""
-    try:
-        target_dir = Path(sessions_root) / session_id
-        target_dir.mkdir(parents=True, exist_ok=True)
-        path = target_dir / f"compact-{int(time.time() * 1_000_000)}.jsonl"
-        with path.open("w", encoding="utf-8") as fh:
-            for m in messages:
-                fh.write(json.dumps({"role": m.role, "content": m.content, "metadata": dict(m.metadata)},
-                                    ensure_ascii=False) + "\n")
-        return str(path)
-    except Exception:
-        _logger.exception("compact transcript persist failed")
-        return None
-
-
-def revealed_tools_from_messages(messages) -> set[str]:
-    """已揭示工具 = 消息 metadata.revealed_tools ∪ 压缩摘要带下来的
-    pre_compact_revealed_tools(CC: preCompactDiscoveredTools 同思路)。"""
-    out: set[str] = set()
-    for m in messages:
-        for key in ("revealed_tools", "pre_compact_revealed_tools"):
-            names = m.metadata.get(key)
-            if names:
-                out.update(names)
-    return out
-

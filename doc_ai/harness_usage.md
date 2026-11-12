@@ -37,11 +37,11 @@ status: active
 
 ## 与 auto-compact 的耦合
 
-- `exact_input_tokens` 首次到达时，以 `(prompt_tokens, history_len)` 存入 `_session_prompt_tokens[(session_id, agent_name)]`，auto-compact 用它做精确 token 判断（见 [harness_compact](harness_compact.md)）；历史变短（/clear 等）时旧值失效，退回字符估算。
+- 每个 run 保存自己的 `(exact_input_tokens, estimated_history_tokens)` 基线，加上其后新增内容的估算用于 auto-compact。压缩成功后清除该基线；新 run 从自己的视图估算，不读取同会话其他 run 的 usage（见 [harness_compact](harness_compact.md)）。
 
 ## 进度上报
 
-每个 usage 事件经 `ProgressSink` 发 `usage_progress`（model、tokens_in/out、elapsed_s、context_window）；turn 开头还会抢发一次零值事件，让 adapter footer 立刻拿到 model 与 context_window，不留空窗。
+每个 usage 事件经 `ProgressSink` 发 `usage_progress`（model、tokens_in/out、elapsed_s、context_window、context_budget）；turn 开头还会抢发一次零值事件，让 adapter footer 立刻拿到 model 与 context_budget（最终自动压缩预算），不留空窗。
 
 ## 预算护栏（§4.3）
 

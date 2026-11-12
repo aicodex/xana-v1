@@ -15,7 +15,7 @@ CLI/TG/Feishu/HTTP 等外部协议翻译。
 - [agent_adapter_inbound](agent_adapter_inbound.md) — Parse external protocol payloads into InboundMessage.
 - [agent_adapter_commands](agent_adapter_commands.md) — Command listing and routing.
 - [agent_adapter_rendering](agent_adapter_rendering.md) — Draft open/update/close and protocol-specific rendered message.
-- [agent_adapter_gateway](agent_adapter_gateway.md) — Register adapters, submit inbound messages, attach/detach foreground runs（subscribe 为 v1 未实现，见该文）.
+- [agent_adapter_gateway](agent_adapter_gateway.md) — Register adapters, submit inbound messages, 排队插话与按 sid/run_id 取消.
 
 ## 全局合约
 

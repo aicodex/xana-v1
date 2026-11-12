@@ -91,12 +91,13 @@ class DaemonBridgeAdapter(Adapter):
             yield msg
 
     async def submit_inbound(self, session_id: str, text: str,
-                             metadata: dict | None = None) -> None:
+                             metadata: dict | None = None, *, attachments: tuple[dict, ...] = ()) -> None:
         await self._inbound.put(InboundMessage(
             adapter_id=self.adapter_id,
             session_id=session_id,
             text=text,
             metadata=metadata or {},
+            attachments=attachments,
         ))
 
     def _get_or_create(self, sid: str) -> _SessionState:
@@ -120,6 +121,11 @@ class DaemonBridgeAdapter(Adapter):
                 dead.append(q)
         for q in dead:
             st.subscribers.discard(q)
+            # Wake the stream and close it. The client reconnects with its last
+            # delivered sequence; the ring retains events discarded here.
+            while not q.empty():
+                q.get_nowait()
+            q.put_nowait(None)
 
     async def render(self, event: AgentEvent) -> RenderedMessage:
         sid = event.session_id
@@ -142,21 +148,26 @@ class DaemonBridgeAdapter(Adapter):
     ) -> AsyncIterator[tuple[int, str, dict]]:
         st = self._get_or_create(sid)
         q: asyncio.Queue = asyncio.Queue(maxsize=queue_size)
-        # Replay phase
-        if st.ring:
-            oldest_seq = st.ring[0][0]
-            if last_event_id is not None and last_event_id < oldest_seq - 1:
-                yield (st.seq, "replay_gap", {"reason": "out_of_range",
-                                              "oldest_available": oldest_seq})
-            else:
-                threshold = last_event_id if last_event_id is not None else 0
-                for seq, t, d in list(st.ring):
-                    if seq > threshold:
-                        yield (seq, t, d)
+        # Snapshot and registration happen without yielding: events arriving
+        # during replay go only into q, after the snapshot's sequence boundary.
+        replay = tuple(st.ring)
+        boundary = st.seq
         st.subscribers.add(q)
         try:
+            if replay:
+                oldest_seq = replay[0][0]
+                if last_event_id is not None and last_event_id < oldest_seq - 1:
+                    yield (boundary, "replay_gap", {"reason": "out_of_range",
+                                                   "oldest_available": oldest_seq})
+                else:
+                    threshold = last_event_id if last_event_id is not None else 0
+                    for seq, t, d in replay:
+                        if seq > threshold:
+                            yield (seq, t, d)
             while True:
                 item = await q.get()
+                if item is None:
+                    return
                 yield item
         finally:
             st.subscribers.discard(q)

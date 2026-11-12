@@ -4,59 +4,21 @@ type: doc
 status: active
 ---
 
-# runtime lifecycle
+# 服务生命周期
 
-## 上级模块
+当前完整契约见 [会话、插话与取消](../docs/design/session-and-card-state.md)。
 
-- [runtime](runtime.md) — 模块设计
+serve 获取每项目实例锁 → boot → 渠道与 daemon → 调度轮询 → 恢复后台结果和待处理输入。
+每个渠道 pump 独立接收入站消息；每条输入单独提交，使忙碌会话能立即接收插话。
+后台任务登记表在 boot 构造时先加载；渠道就绪后启动通知恢复和重试任务，退出时取消该任务。
+结果通知的接收与后续渠道渲染分开，均走现有 gateway/control，见[后台任务](harness_background_tasks.md)。
 
-## 代码锚点
+HTTP 保留 submit、stream、cancel、button；没有 attach/detach 动作端点。
+SSE 观察断线不会取消服务持有的执行；Last-Event-ID 继续从 ring buffer 恢复事件。
+原有 Origin、Bearer、Unix socket 权限边界保持。
 
-- [serve.py](../src/xana/cli/serve.py) — `xana serve` 进程生命周期编排
-- [daemon_http.py](../src/xana/runtime/daemon_http.py) — HTTP+SSE daemon app 构造
+SIGTERM 先停止调度器领取新任务，等待已领取的任务执行并记录结果，再关闭会话入场并请求
+活动 run 停止，最多等 30 秒收尾，最后关闭 pump、daemon 和渠道。已领取的一次性任务不能
+在写执行结果前被进程退出吞掉。迁移不重建 scheduled_tasks.json。
 
-## 职责
-
-进程级生命周期：`xana serve` 的启动（单实例锁 → boot → adapters → preflight → daemon HTTP）、运行中健康维持（心跳 / idle 卸载 / 调度轮询）、关闭（SIGTERM → `cancel_all` → 任务回收）。runtime 不定义生命周期 ABC，生命周期由 `serve.py` 的函数体承担。
-
-## 启动序列（serve.py）
-
-1. **单实例锁**：进程一启动就对 `projects/<id>/run/serve.lock` 加非阻塞 `flock` 并写 `run/serve.pid`（每个项目一把锁，拿不到即退出，见 [cli_serve](cli_serve.md)）；项目目录由 `projects/<id>/project.json` 解析。
-2. **boot()**：调 [runtime_boot](runtime_boot.md) 的 `boot()` 拿 `BootResult`。
-3. **adapters**：`build_adapters(...)` 按合并配置（项目 config.json）的 channels 构造 feishu/telegram adapter，注册进 gateway；每个 adapter 一条 `_run_inbound_pump` task（每条 inbound 独立 task，detach 才有机会触发）。
-3b. **preflight**：bind `(daemon_cfg.bind, daemon_cfg.port)` 探测再释放——端口被占（另一个 serve 或其他进程占用）即 EADDRINUSE 干净退出。
-4. **daemon HTTP**：构造 `DaemonBridgeAdapter` 并注册为 `cli` adapter，然后双通道：
-   - **unix socket**（`daemon_socket(daemon_cfg)`：`daemon.unix_socket` 为空（默认）时取 `~/.xana/projects/<id>/run/serve.sock`）：`build_daemon_app(bridge, token="", ...)` + `run_unix_socket`（0600 权限）。本地通道不设 token——文件权限即边界。
-   - **TCP**（`daemon_cfg.bind:port`，每个项目各自端口；default 项目默认 `127.0.0.1:17777`，新项目创建时分配空闲端口）：`build_daemon_app(bridge, token=daemon_cfg.token, ...)` + `run_tcp`。`bind == "0.0.0.0"` 时打印 LAN 暴露警告。
-5. **SchedulerRunner**：`boot_result.scheduler` 非空时启动轮询任务（详见 [runtime_scheduler](runtime_scheduler.md)）。
-6. 无 chat adapters 时退化为 daemon-only 模式，挂起等待 shutdown。
-
-## daemon HTTP（daemon_http.py）
-
-`build_daemon_app(*, bridge, token, on_action, heartbeat_interval_s=15.0, idle_unload_s=1800.0)` 返回 aiohttp app：
-
-- **中间件两道**：`origin_reject`（带 `Origin` 头的请求一律 403，挡浏览器跨站）→ `auth`（`/healthz` 豁免；`token` 为空则放行；否则校验 `Authorization: Bearer <token>`，不符 401）。
-- **路由**：
-  - `GET /healthz` → `{"ok": true, "version"}`，免鉴权；
-  - `GET /resolve?adapter=cli&thread=` → 问 `SessionResolver` 当前 sid（客户端 `/clear` 轮转会话前用来对齐）；
-  - `POST /sessions/{sid}/submit` → `bridge.submit_inbound`，202；
-  - `GET /sessions/{sid}/stream` → SSE 流：先写 `initialize` 事件（server/protocol 版本、supported_methods），再写当前 `session.status`，然后进入 `bridge.subscribe(sid, last_event_id=...)` 的事件泵；支持 `Last-Event-ID` 断线续传；heartbeat 每 15s 一条注释行；
-  - `POST /sessions/{sid}/{action:cancel|attach|detach|button}` → `on_action(sid, action, payload)` 异步触发（202），由 serve 桥到 gateway.cancel / attach / detach / Card.dispatch。
-- **idle 卸载**：app on_startup 起 `_idle_loop`，每 `min(max(idle_unload_s/2, 1), 60)` 秒调 `bridge.sweep_idle(idle_unload_s)`，空闲 session 回收。
-
-## 关闭序列
-
-SIGTERM/取消 → `gateway.cancel_all()`（翻所有 inflight run 的 abort signal，标 `exit_reason=shutdown_graceful`）→ gather 回收 daemon/adapter/scheduler 任务 → `daemon_bridge.stop()` → 进程退出。中途单个请求失败不杀死进程；`SchedulerRunner` 与 SSE heartbeat 的异常均就地记日志。
-
-## 不变量
-
-- TCP 端口永远绑定（单实例锁），即使走 unix socket 模式。
-- unix socket 通道不设 token；鉴权边界是 0600 文件权限。
-- `/healthz` 是唯一免鉴权端点，其余一律过 Origin 拒绝 + Bearer 校验。
-- 关闭时先翻 abort 再回收任务，保证 inflight run 落盘 exit_reason。
-
-## 验收要求
-
-- 输入/输出与 [runtime](./runtime.md) 的模块边界一致。
-- 不引入隐藏状态权威。
-- 不绕过 [replacement_rule](replacement_rule.md)。
+测试：`test_single_loop_shutdown.py`、scheduler/serve/daemon 相关测试与单循环回归。

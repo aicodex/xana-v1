@@ -1,8 +1,4 @@
-"""GatewayAgentRunner:AgentRunner 的实现——直接调用已注册 agent 的 ``send()`` 跑完一个子 run 并取回最终文本。
-
-不走 gateway._submit,因此不发渠道通知、不建卡片、不切换前台;调用方 await 结果。等待中的任务被取消时触发子 run 的 AbortSignal(异步模式下子 run 在后台任务里跑,
-不中止就会继续跑完)。
-"""
+"""AgentRunner：独立子会话执行、收集终态与统计；取消时通过 Agent.cancel 停止所属执行。"""
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +12,6 @@ from xana.agents.interfaces import Agent
 from xana.extension_api.capabilities import AgentRunner
 from xana.extension_api.contracts import AgentRunOutcome, SubagentStep
 from xana.tools.contracts import ToolEnvConfig
-from xana.harness_sdk.contracts import AbortSignal
 from xana.state.contracts import SessionRecord
 
 logger = logging.getLogger(__name__)
@@ -66,15 +61,15 @@ class GatewayAgentRunner(AgentRunner):
                 session_id=session_id, current_agent=agent_name, parent_session_id=parent_session_id,
                 parent_run_id=parent_run_id, depth=1))
         run_id = f"run-{session_id}-{uuid.uuid4().hex[:8]}"
-        abort = AbortSignal()
         request = AgentRequest(
             session_id=session_id, text=prompt, source="agent_runner", target_agent=agent_name,
-            metadata={"gateway_run_id": run_id, "parent_run_id": parent_run_id, "abort_signal": abort,
+            metadata={"gateway_run_id": run_id, "parent_run_id": parent_run_id,
                       **({"tool_env": tool_env} if tool_env is not None else {})},
             tool_ceiling=tool_ceiling)
         text, status, error = "", "error", "子 agent 没有产出最终回答"
         counts: dict[str, int] = {}
         thinking: list[str] = []
+        partial: list[str] = []
         emit = on_step or (lambda _step: None)
 
         def flush_thinking() -> None:
@@ -93,9 +88,13 @@ class GatewayAgentRunner(AgentRunner):
                     if kind == "model_delta":
                         if payload.get("channel") == "thinking":
                             thinking.append(str(payload.get("text") or ""))
-                        elif str(payload.get("text") or "").strip():
-                            flush_thinking()        # 思考段结束,开始写可见文字
+                        else:
+                            chunk = str(payload.get("text") or "")
+                            partial.append(chunk)
+                            if chunk.strip():
+                                flush_thinking()    # 思考段结束,开始写可见文字
                     elif kind == "tool_started":
+                        partial.clear()
                         flush_thinking()
                         name = str(payload.get("tool_name") or "")
                         counts[name] = counts.get(name, 0) + 1
@@ -107,10 +106,12 @@ class GatewayAgentRunner(AgentRunner):
                         emit(SubagentStep(kind="answer", text=text))
                     elif kind == "error" and status != "completed":
                         error = str(payload.get("error") or payload.get("text") or "error")
+                        text = "".join(partial)
                     elif kind == "cancelled":
                         status, error = "cancelled", "子 agent 被取消"
+                        text = "".join(partial)
         except asyncio.CancelledError:
-            abort.trigger("parent_cancelled")   # 父任务被取消:连同后台子 run 一起中止
+            await asyncio.shield(agent.cancel(session_id, run_id))
             raise
         return AgentRunOutcome(run_id=run_id, status=status, text=text, tool_counts=counts, error=error)
 

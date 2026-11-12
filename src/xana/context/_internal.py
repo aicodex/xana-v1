@@ -1,14 +1,13 @@
 """Private context internals — ContextSDK only.
 
 Importing this module from anywhere else than ``xana.context.sdk`` or
-``xana.context._store`` raises ImportError. This is the §1.9 路线 3
-mechanism that keeps internal metadata (run_id / ph_id / tool call_id /
-transcript_path / debug fields) from leaking into prompt-building code.
+the authorized memory bridge raises ImportError. This is the §1.9 路线 3
+mechanism that keeps tool call IDs separate from model-visible message text.
 """
 import sys
 from dataclasses import dataclass
 
-_ALLOWED_CALLERS = {"xana.context.sdk", "xana.context._store"}
+_ALLOWED_CALLERS = {"xana.context.sdk", "xana.memory._message_bridge"}
 
 
 def importer_of(module_name: str) -> str:
@@ -30,11 +29,6 @@ if _caller not in _ALLOWED_CALLERS:
     )
 
 
-@dataclass(frozen=True)
-class _PlaceholderInternal:
-    run_id: str
-    ph_id: str
-    transcript_path: str = ""  # for CompactSummary template
 
 
 @dataclass(frozen=True)

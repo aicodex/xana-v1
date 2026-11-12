@@ -69,7 +69,7 @@ def _panel(title: str, body_md: str, *, folded: bool = True) -> dict:
     }
 
 
-def _btn(b: Button, *, ph_run_id: str | None) -> dict:
+def _btn(b: Button, *, run_id: str | None) -> dict:
     """飞书 card v2:button 点击 callback 必须包在 ``behaviors`` 里;
     裸 ``value`` 在 v2 schema 下不触发(用户报的'按钮报错'根因)。
     """
@@ -77,10 +77,10 @@ def _btn(b: Button, *, ph_run_id: str | None) -> dict:
         value: dict = {"send_text": b.send}
     elif b.action == "load_tools":
         value = {"load_tools": b.action_arg or ""}
-    elif b.action == "detach":
-        value = {"detach": b.action_arg or ph_run_id or ""}
+    elif b.action in {"cancel", "compact_cancel", "steer"}:
+        value = {b.action: b.action_arg or run_id or ""}
     else:
-        value = {"detach": ph_run_id or ""}
+        raise ValueError(f"unsupported card action: {b.action}")
     return {
         "tag": "button",
         "type": "default",
@@ -90,11 +90,11 @@ def _btn(b: Button, *, ph_run_id: str | None) -> dict:
     }
 
 
-def _btn_row(row: ButtonRow, *, ph_run_id: str | None) -> dict:
+def _btn_row(row: ButtonRow, *, run_id: str | None) -> dict:
     return {
         "tag": "column_set",
         "columns": [
-            {"tag": "column", "elements": [_btn(b, ph_run_id=ph_run_id)]}
+            {"tag": "column", "elements": [_btn(b, run_id=run_id)]}
             for b in row.buttons
         ],
     }
@@ -106,6 +106,8 @@ def _render_compact(sec: CompactSection) -> list[dict]:
     out: list[dict] = []
     if sec.state == "completed":
         status = "完成压缩"
+    elif sec.state == "failed":
+        status = "压缩失败"
     elif sec.state == "cancelled":
         status = "压缩已取消"
     else:
@@ -117,6 +119,8 @@ def _render_compact(sec: CompactSection) -> list[dict]:
         out.append(_md(f"{_progress_bar(sec.progress_cells)} **{status}**"))
     if sec.state == "completed":
         panel_title = f"已压缩 {sec.compacted_n} 条消息"
+    elif sec.state == "failed":
+        panel_title = "压缩失败"
     elif sec.state == "cancelled":
         panel_title = "压缩已取消"
     else:
@@ -127,7 +131,7 @@ def _render_compact(sec: CompactSection) -> list[dict]:
 
 def _render_process(sec: AnswerSection, mode: str) -> list[dict]:
     """grouped / summary:按过程组或整轮渲染;失败的调用单独一行红字,不折叠。"""
-    alive = sec.state in ("streaming", "detached")
+    alive = sec.state == "streaming"
     view = build_view(sec, mode, alive=alive)
     out: list[dict] = []
     for b in view.blocks:
@@ -140,7 +144,7 @@ def _render_process(sec: AnswerSection, mode: str) -> list[dict]:
 
 
 def _render_answer(
-    sec: AnswerSection, *, card_id: str, from_bg: bool = False, view_mode: str = "detailed",
+    sec: AnswerSection, *, card_id: str, view_mode: str = "detailed",
 ) -> list[dict]:
     out: list[dict] = []
     # thinking — 默认折叠,空内容不放占位(只动 body,不动标题状态)
@@ -154,16 +158,13 @@ def _render_answer(
     for t in (sec.tools if policy.unit == "call" else ()):
         out.append(_panel(t.header, tool_panel_body(t, 800), folded=True))   # 活动时间线 + 结果
     # tools overflow 槽位:
-    #   detached: 不可点的静态文字(detach 期间不接受交互)
     #   streaming / terminal: 可点按钮 → reveal 当前 buf
     #   cancelled / 空 buf: 不出
     if sec.tools_pending > 0 and policy.unit == "call":
-        if sec.state == "detached":
-            out.append(_md("_后台 ✎ 中_"))
-        elif sec.state in ("streaming", "terminal"):
+        if sec.state in ("streaming", "terminal"):
             label = f"展开 ✎×{sec.tools_pending}"
             btn = Button(text=label, action="load_tools", action_arg=card_id)
-            out.append(_btn_row(ButtonRow(buttons=(btn,)), ph_run_id=None))
+            out.append(_btn_row(ButtonRow(buttons=(btn,)), run_id=None))
     # 进度行(§5.5a):进行中显示最近一条进度说明,灰色一行
     line = progress_line(sec) if policy.progress_line else ""
     if line:
@@ -172,10 +173,6 @@ def _render_answer(
     ans_title = "✦ 回答" if sec.answer_text else "✦ 回答中"
     if sec.state == "cancelled":
         ans_title, ans_folded = "✦ 回答已取消", True
-    elif sec.state == "detached":
-        ans_folded = True
-    elif sec.state == "terminal":
-        ans_folded = from_bg
     else:
         ans_folded = False
     out.append(_panel(ans_title, sec.answer_text or " ", folded=ans_folded))
@@ -189,18 +186,18 @@ def render(state: UnifiedCardState) -> dict:
     """
     elements: list[dict] = []
     for row in state.top_buttons:
-        elements.append(_btn_row(row, ph_run_id=state.ph_run_id))
+        elements.append(_btn_row(row, run_id=state.run_id))
     if state.compact is not None:
         elements.extend(_render_compact(state.compact))
     if state.answer is not None:
         elements.extend(_render_answer(
             state.answer, card_id=state.card_id,
-            from_bg=state.terminal_from_bg, view_mode=state.view_mode,
+            view_mode=state.view_mode,
         ))
     if state.menu is not None:
         elements.append(_md(state.menu.body_md))
     for row in state.bottom_buttons:
-        elements.append(_btn_row(row, ph_run_id=state.ph_run_id))
+        elements.append(_btn_row(row, run_id=state.run_id))
     footer_text = state.footer.render()
     if footer_text:
         elements.append(_md(f"_{footer_text}_"))

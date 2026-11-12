@@ -14,7 +14,8 @@ from xana.context.message import ContextNote
 from xana.memory.contracts import InjectedBlock, MemoryMessage
 
 if TYPE_CHECKING:
-    from xana.tools.builtin._todo_store import TodoItem
+    from xana.harness_sdk.contracts import HarnessRequest
+    from xana.state.contracts import TodoItem
 
 # 记忆召回上限(照 Claude Code relevant_memories)
 RECALL_MAX_SESSION_BYTES = 60 * 1024   # 一个会话累计召回的上限(照 Claude Code relevant_memories)
@@ -37,7 +38,22 @@ def _key(text: str) -> str:
 def _note(kind: str, text: str, *, paths: tuple[str, ...] = (), size: int = 0) -> MemoryMessage:
     note = ContextNote(kind=kind, text=text, key=_key(text), paths=paths, size=size)
     return MemoryMessage(role="user", content=ContextNote.wrap(text),
-                         metadata=note.legacy_metadata())
+                         metadata=note.to_metadata())
+
+
+def background_result_note(text: str, input_id: str) -> MemoryMessage:
+    note = ContextNote(kind="background_done", key=input_id, input_id=input_id,
+                       text=text)
+    return MemoryMessage("user", ContextNote.wrap(note.text), note.to_metadata())
+
+
+def input_message(request: HarnessRequest, input_id: str) -> MemoryMessage:
+    """Preserve automated origin across normal consumption and cancellation cleanup."""
+    if request.metadata.get("source") == "background":
+        return background_result_note(request.user_input, input_id)
+    if request.metadata.get("source") == "goal":
+        return MemoryMessage("user", request.user_input, {"input_id": input_id, "note_kind": "goal_continuation"})
+    return MemoryMessage("user", request.user_input, {"input_id": input_id}, request.media)
 
 
 def _notes(history: Iterable[MemoryMessage], kind: str) -> list[dict[str, Any]]:

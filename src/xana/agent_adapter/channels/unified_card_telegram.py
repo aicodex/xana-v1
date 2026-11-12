@@ -114,6 +114,8 @@ def _render_compact(sec: CompactSection) -> str:
     """一行进度条+状态;下方折叠"已压缩 N 条消息"。"""
     if sec.state == "completed":
         status = "完成压缩"
+    elif sec.state == "failed":
+        status = "压缩失败"
     elif sec.state == "cancelled":
         status = "压缩已取消"
     else:
@@ -126,6 +128,8 @@ def _render_compact(sec: CompactSection) -> str:
         parts.append(f"{_progress_bar(sec.progress_cells)} *{_esc(status)}*")
     if sec.state == "completed":
         panel_title = f"已压缩 {sec.compacted_n} 条消息"
+    elif sec.state == "failed":
+        panel_title = "压缩失败"
     elif sec.state == "cancelled":
         panel_title = "压缩已取消"
     else:
@@ -152,7 +156,7 @@ _BUDGET_GROUP_BODY = 300
 
 def _render_process(sec: AnswerSection, mode: str) -> list[str]:
     """grouped / summary:过程组折叠块;失败的调用单独一行(✗ 前缀已在行内),不折叠。"""
-    alive = sec.state in ("streaming", "detached")
+    alive = sec.state == "streaming"
     view = build_view(sec, mode, alive=alive)
     parts: list[str] = []
     for b in view.blocks:
@@ -321,7 +325,7 @@ def _render_expand_tools(
 # ---------------------------------------------------------------------------
 
 
-def _kb_row(row: ButtonRow, *, ph_run_id: str | None) -> list[dict]:
+def _kb_row(row: ButtonRow, *, run_id: str | None) -> list[dict]:
     out: list[dict] = []
     for b in row.buttons:
         item: dict = {"text": b.text}
@@ -330,13 +334,13 @@ def _kb_row(row: ButtonRow, *, ph_run_id: str | None) -> list[dict]:
         elif b.action == "load_tools":
             item["callback_data"] = f"__load_tools__:{b.action_arg or ''}"[
                 :_TG_CALLBACK_DATA_LIMIT]
-        elif b.action == "detach":
-            arg = b.action_arg or ph_run_id or ""
-            item["callback_data"] = f"__detach__:{arg}"[
-                :_TG_CALLBACK_DATA_LIMIT]
+        elif b.action in {"cancel", "compact_cancel", "steer"}:
+            # Hash is a lookup key; adapters resolve it against the original card.
+            from hashlib import sha256
+            token = sha256((b.action_arg or run_id or "").encode()).hexdigest()[:24]
+            item["callback_data"] = f"__{b.action}__:{token}"
         else:
-            item["callback_data"] = f"__detach__:{ph_run_id or ''}"[
-                :_TG_CALLBACK_DATA_LIMIT]
+            raise ValueError(f"unsupported card action: {b.action}")
         out.append(item)
     return out
 
@@ -384,9 +388,9 @@ def render(state: UnifiedCardState) -> tuple[str, list[list[dict]]]:
 
     kb: list[list[dict]] = []
     for row in state.top_buttons:
-        kb.append(_kb_row(row, ph_run_id=state.ph_run_id))
+        kb.append(_kb_row(row, run_id=state.run_id))
     kb.extend(extra_kb)
     if not state.linkify_commands:
         for row in state.bottom_buttons:
-            kb.append(_kb_row(row, ph_run_id=state.ph_run_id))
+            kb.append(_kb_row(row, run_id=state.run_id))
     return text, kb

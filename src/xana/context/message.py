@@ -1,16 +1,17 @@
 """SDK 缓冲里的消息类型(§1.9)。
 
-私有元数据(run_id / ph_id / call_id)放在 ``_internal`` 里,不进模型可见内容(I18)。
-发给模型的形态由 harness 生成:SDK 缓冲 → memory._message_bridge → harness_sdk.ph_expand → 拼提示词
-→ provider;这里只保留模型可见文本的唯一定义(regular_placeholder_text、CompactSummary.render)。
+工具调用身份放在 ``_internal`` 里,不混入模型可见文本。
+发给模型的形态由 harness 生成:SDK 缓冲 → memory._message_bridge → 拼提示词
+→ provider;这里只保留模型可见文本的唯一定义(CompactSummary.render)。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from xana.multimodal.contracts import MediaInput
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from xana.context._internal import _PlaceholderInternal, _ToolCallInternal
+    from xana.context._internal import _ToolCallInternal
 
 
 class Message:
@@ -20,6 +21,8 @@ class Message:
 @dataclass(frozen=True)
 class UserMessage(Message):
     text: str
+    media: tuple[MediaInput, ...] = ()
+    input_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -40,29 +43,20 @@ class ToolResultMessage(Message):
     # 不进 prompt。
     tool_name: str = ""
     revealed_tools: tuple[str, ...] = ()
+    media: tuple[MediaInput, ...] = ()
 
 
-def regular_placeholder_text(label: str) -> str:
-    """普通 PH 的模型可见文本(docs/design/session-and-card-state.md §1.3,逐字);唯一定义,
-    SDK 序列化与 harness 拼提示词共用。"""
-    return f"正在后台回答你的问题{label}，请勿重试此请求。"
 
 
-@dataclass(frozen=True)
-class RegularPlaceholder(Message):
-    label: str  # public: original user question
-    _internal: "_PlaceholderInternal"  # private: run_id / ph_id
 
 
-@dataclass(frozen=True)
-class CompactPlaceholder(Message):
-    _internal: "_PlaceholderInternal"
 
 
 @dataclass(frozen=True)
 class CompactSummary(Message):
     summary: str
-    _internal: "_PlaceholderInternal"
+    run_id: str
+    transcript_path: str = ""
     # 压缩前已揭示的按需工具:压缩后工具结果没了,靠它保住揭示状态(CC preCompactDiscoveredTools)
     revealed_tools: tuple[str, ...] = ()
 
@@ -93,7 +87,7 @@ class CompactSummary(Message):
     def _render(self) -> str:
         return self.POST_COMPACT_TEMPLATE.format(
             summary=self.summary,
-            transcript=self._internal.transcript_path,
+            transcript=self.transcript_path,
         )
 
 
@@ -110,22 +104,25 @@ class ContextNote(Message):
     key: str = ""
     paths: tuple[str, ...] = ()
     size: int = 0
+    input_id: str = ""
 
     @staticmethod
     def wrap(text: str) -> str:
         return f"<system-reminder>\n{text}\n</system-reminder>"
 
-    def legacy_metadata(self) -> dict:
-        """legacy MemoryMessage 形态的 metadata(content 为 ``wrap(text)``)。"""
+    def to_metadata(self) -> dict:
+        """当前 MemoryMessage 形态的 metadata(content 为 ``wrap(text)``)。"""
         return {
             "note_kind": self.kind, "note_text": self.text, "note_key": self.key,
             "note_paths": list(self.paths), "note_size": self.size,
+            **({"input_id": self.input_id} if self.input_id else {}),
         }
 
     @classmethod
-    def from_legacy_metadata(cls, md: dict) -> "ContextNote":
+    def from_metadata(cls, md: dict) -> "ContextNote":
         return cls(
             kind=str(md["note_kind"]), text=str(md.get("note_text", "")),
             key=str(md.get("note_key", "")), paths=tuple(md.get("note_paths", ())),
             size=int(md.get("note_size", 0)),
+            input_id=str(md.get("input_id", "")),
         )
