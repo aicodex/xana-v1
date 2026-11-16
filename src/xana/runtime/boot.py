@@ -96,6 +96,8 @@ from xana.state.todos import TodoStore
 from xana.state.contracts import TodoItem
 from xana.memory.recall import ProjectMemoryInjector
 from xana.memory.store import ProjectMemoryStore
+from xana.mcp.config import McpConfigStore
+from xana.mcp.manager import McpManager
 from xana.runtime.memory_extract import ModelMemoryExtractor
 from xana.runtime.memory_selector import ModelMemorySelector
 from xana.runtime.scheduler import FileSchedulerService, ScheduledTaskDispatcher
@@ -190,6 +192,7 @@ class BootResult:
     goals: GoalService | None = None
     process_logs: ProcessLogs | None = None
     media_uploads: MediaUploads | None = None
+    mcp: McpManager | None = None    # serve 拥有 start()/close();boot 只构造,不连接
 
 
 class _CompositeStateRepository(StateRepository):
@@ -399,6 +402,16 @@ async def boot(
     await _register(MemoryWriteTool(store=memory_store, tree=tree))
     await _register(ReadTool())
     media_store = FileMediaStore((Path(history_root) if history_root else project_home() / "sessions") / "media")
+    # MCP(docs/superpowers/specs/2026-11-13-mcp-design.md §6):boot 只构造 manager 并挂进
+    # BootResult;连接/热加载/关闭由 serve 经 start()/close() 显式拥有,daemon 两路 app
+    # 共享这同一个实例。store 指向 cp 的用户/项目配置路径,与 serve 写路径一致;
+    # workspace 是 stdio server 未写 cwd 时的生效回落(§5.1:用项目 workspace)。
+    mcp = McpManager(
+        store=McpConfigStore(cp.system_config_path, cp.project_config_path,
+                             workspace=project_root),
+        registry=tools,
+        media_store=media_store,
+    )
     await _register(ReadMediaTool(media_store, "image"))
     await _register(ReadMediaTool(media_store, "video"))
     # 写保护:记忆目录 memory/ 只能经 memory_write 写,两级 agent 文档目录只能经 agent_define 写;
@@ -723,6 +736,7 @@ async def boot(
         process_logs=process_logs,
         media_uploads=MediaUploads(store=media_store, configs=session_config_store, models=model_registry,
             provider=provider, default_model=agents[default_agent].spec().model or model),
+        mcp=mcp,
     )
 
 

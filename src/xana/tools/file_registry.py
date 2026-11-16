@@ -53,6 +53,10 @@ class FileToolRegistry(ToolRegistry):
     async def register(self, tool: Tool) -> None:
         self._registered[tool.spec().component.name] = tool
 
+    async def unregister(self, name: str) -> Tool | None:
+        """只注销 programmatic 登记的工具;TOOL.md 派生工具与未知名返回 None(不删文件)。"""
+        return self._registered.pop(name, None)
+
     async def get(self, name: str) -> Tool | None:
         await self.refresh()
         return self._registered.get(name) or self._files.get(name)

@@ -19,7 +19,7 @@ from typing import Literal, Optional
 from xana.multimodal.contracts import InputModality
 from xana.config.contracts import DEFAULT_CACHE_TTL_SECONDS
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ModelEntry(BaseModel):
@@ -116,14 +116,59 @@ class AgentDefaults(BaseModel):
 
 
 class McpServer(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    """单个 MCP server 定义(docs/superpowers/specs/2026-11-13-mcp-design.md §5.1)。
+    transport 决定必填/互斥字段;未知字段报错,避免拼写错误造成错误连接。
+    frozen=True:配置模型构造后不再可变,配合 ConfiguredServer 的嵌套冻结构成不可变快照。"""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     name: str
-    transport: str = "stdio"
+    transport: Literal["stdio", "http", "sse"] = "stdio"
+    enabled: bool = True
+    deferred: bool = True                # 工具默认 deferred,复用 tool_search 披露
+    startup_timeout_s: float = 15
+    tool_timeout_s: float = 60
+    # stdio 专用
+    command: str = ""
+    args: list[str] = []
+    env: dict[str, str] = {}
+    cwd: str | None = None               # 未写时用项目 workspace
+    # http / sse 专用
+    url: str = ""
+    headers: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _validate_transport_fields(self) -> "McpServer":
+        if self.transport == "stdio":
+            if not self.command:
+                raise ValueError(f"mcp server {self.name!r}: stdio transport 需要 command")
+            if self.url or self.headers:
+                raise ValueError(f"mcp server {self.name!r}: stdio transport 不能使用 url/headers")
+        else:
+            if not self.url:
+                raise ValueError(f"mcp server {self.name!r}: {self.transport} transport 需要 url")
+            if self.command or self.args or self.env:
+                raise ValueError(f"mcp server {self.name!r}: {self.transport} transport 不能使用 command/args/env")
+        return self
+
+
+class McpServerOverride(BaseModel):
+    """项目/用户对 server 可用性的覆盖;只影响启停与工具选择,不改连接定义。
+    enabled_tools=None 表示全部,[] 表示全不选;disabled_tools 随后再减。"""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: Optional[bool] = None
+    enabled_tools: Optional[list[str]] = None
+    disabled_tools: Optional[list[str]] = None
+    deferred: Optional[bool] = None
 
 
 class Mcp(BaseModel):
     model_config = ConfigDict(extra="forbid")
     servers: list[McpServer] = []
+    overrides: dict[str, McpServerOverride] = {}
+    reconnect_initial_s: float = 2
+    reconnect_max_s: float = 60
+    watch_interval_s: float = 2
 
     def server(self, name: str) -> Optional[McpServer]:
         return next((s for s in self.servers if s.name == name), None)

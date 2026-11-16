@@ -168,14 +168,14 @@ async def _start_daemon(boot_result, daemon_cfg) -> tuple[DaemonBridgeAdapter, l
                                conversations=boot_result.conversations, permissions=boot_result.permissions,
                                todos=boot_result.todos, goals=boot_result.goals, control=boot_result.gateway.control,
                                background=boot_result.background, process_logs=boot_result.process_logs,
-                               media_uploads=boot_result.media_uploads)
+                               media_uploads=boot_result.media_uploads, mcp=boot_result.mcp)
     tasks.append(asyncio.create_task(run_unix_socket(unix_app, str(unix_path))))
     print(f"[daemon] unix socket {unix_path}")
     tcp_app = build_daemon_app(bridge=daemon_bridge, token=daemon_cfg.token, on_action=on_daemon_action,
                               conversations=boot_result.conversations, permissions=boot_result.permissions,
                               todos=boot_result.todos, goals=boot_result.goals, control=boot_result.gateway.control,
                               background=boot_result.background, process_logs=boot_result.process_logs,
-                              media_uploads=boot_result.media_uploads)
+                              media_uploads=boot_result.media_uploads, mcp=boot_result.mcp)
     tasks.append(asyncio.create_task(run_tcp(tcp_app, daemon_cfg.bind, daemon_cfg.port)))
     print(f"[daemon] tcp {daemon_cfg.bind}:{daemon_cfg.port}")
     return daemon_bridge, tasks
@@ -238,6 +238,13 @@ async def _run_inner(argv: argparse.Namespace) -> int:
             f" — another serve is already running ({e})"
         ) from None
     _preflight.close()
+
+    # MCP(docs/superpowers/specs/2026-11-13-mcp-design.md §6):serve 显式拥有 manager
+    # 生命周期——先 start(并发首次连接,受各 server startup_timeout 限制),daemon 两路
+    # app 与主对话共享 BootResult.mcp;关闭时在下方 finally 先停接收新操作再 close。
+    if boot_result.mcp is not None:
+        await boot_result.mcp.start()
+        print("[xana serve] mcp manager started")
 
     daemon_bridge, daemon_tasks = await _start_daemon(boot_result, daemon_cfg)
     if daemon_cfg.bind == "0.0.0.0":
@@ -348,6 +355,10 @@ async def _run_inner(argv: argparse.Namespace) -> int:
         await daemon_bridge.stop()
         for adapter in adapters:
             await adapter.stop()
+        if boot_result.mcp is not None:
+            # 新操作已随 daemon/adapter 停止而不再受理:取消 watch/retry 并逐个关闭
+            # SDK session/子进程,旧 generation 回调不再发布。
+            await boot_result.mcp.close()
     return 0
 
 

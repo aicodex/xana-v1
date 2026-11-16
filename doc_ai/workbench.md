@@ -18,6 +18,7 @@ status: active
 - `harness_sdk/goal.py`：目标文件、状态、预算用量与幂等计量。create/get/update_goal 取代 report_goal 和独立模型评估请求。
 - `state/process_logs.py`：完整命令输出；按 execution_id 隔离，provider call_id 可重复。offset 为 JSONL 物理字节边界；分页、tail 与纯文本下载共用记录。
 - `workbench/media.py`：浏览器上传句柄与会话归属；现有 FileMediaStore 负责格式、大小与快照。客户端不能传任意服务端 file_path。模型能力从现有 model client 的配置化 capabilities 读取，图片 10 MiB，视频 100 MiB。
+- MCP 面板：`web/src/McpPanel.vue` 经 `WorkbenchClient` 的 `/mcp*` API 管理 MCP server（状态/审核 finding/启用 checkbox/重连/注册/删除）；GET 投影是唯一权威视图，浏览器不维护第二份配置。详见 [mcp](mcp.md)。
 - `web/src`：Vue 3/TypeScript 的页面与可重建投影，fetch SSE 传 Bearer。构建产物在 `workbench/static`，Python 包携带，无 Node 运行时依赖。
 
 模型上下文仍由 ContextSDK 管理。展示历史读取每个 run 的持久 JSONL，而不是被压缩替换的主历史。RunJsonlWriter 按 row_id 幂等写入、fsync；主历史写入保留 run_id，启动时对账补齐被中断的 audit append。旧记录无 run_id 时不猜测归属；缺失或损坏记录通过 history_complete/issues 显示。
@@ -44,4 +45,4 @@ Goal 沿同一 run 的原模型/工具循环续跑，以 steps 计量；Kimi 的
 
 ## 验证
 
-`tests/test_workbench_conversations.py`覆盖回放/快照/持久历史；`test_workbench_permissions.py`覆盖权限、父子继承、审批和取消；`test_workbench_goals.py`覆盖目标恢复、旧请求、预算和用户停止；`test_workbench_process_logs.py`覆盖真实命令、重复 call_id 取消隔离、UTF-8、完整输出和磁盘失败收尾；`test_workbench_media.py`覆盖浏览器媒体边界；`test_input_queue.py`覆盖队列 FIFO、选择性提升、断开观察、恢复、真实 Bash、任务等待与聊天按钮作用域。`web/tests/workbench.spec.ts` 在 Chromium 中连接隔离的真实 harness/HTTP/存储，显式脚本模型测试审批、插话、目标、清单、子会话、日志、媒体与 XSS 过滤。验收数量与真实模型结果见实施计划。
+`tests/test_workbench_conversations.py`覆盖回放/快照/持久历史；`test_workbench_permissions.py`覆盖权限、父子继承、审批和取消；`test_workbench_goals.py`覆盖目标恢复、旧请求、预算和用户停止；`test_workbench_process_logs.py`覆盖真实命令、重复 call_id 取消隔离、UTF-8、完整输出和磁盘失败收尾；`test_workbench_media.py`覆盖浏览器媒体边界；`test_input_queue.py`覆盖队列 FIFO、选择性提升、断开观察、恢复、真实 Bash、任务等待与聊天按钮作用域。`web/tests/workbench.spec.ts` 在 Chromium 中连接隔离的真实 harness/HTTP/存储，显式脚本模型测试审批、插话、目标、清单、子会话、日志、媒体与 XSS 过滤，MCP 面板用真实本地 stdio demo server 测试状态/审核 finding/启用持久化/注册/删除/秘密不回显（http/sse 注册表单有契约断言但无真实远程连接）。验收数量与真实模型结果见实施计划。

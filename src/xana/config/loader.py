@@ -103,6 +103,12 @@ class DefaultConfigProvider(ConfigProvider):
     def project_config_path(self) -> Path:
         return self._project_config if self._project_config is not None else project_config_path()
 
+    @property
+    def system_config_path(self) -> Path:
+        """用户级 system.json 路径;boot 用它构造 McpConfigStore。"""
+        assert self._source.path is not None
+        return self._source.path
+
     async def load(self, project_root: Path) -> RuntimeConfig:
         assert self._source.path is not None
         ensure_user_system_json(self._source.path)

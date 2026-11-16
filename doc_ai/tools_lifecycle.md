@@ -60,6 +60,10 @@ resume 使用当前历史启动新 run，未配对的工具结果标为未知，
 
 tools 模块不再拆分各阶段的独立策略 ABC，编排直接走 `Tool` 方法。
 
+## MCP 调用语义
+
+MCP 工具实现同一 `Tool` ABC，生命周期各阶段无特殊分支：结果转换（文本合并、`structuredContent`、图片经 `FileMediaStore` 落盘、resource link 不抓取、音频等明确未支持）发生在 `execute` 返回前；MCP `isError=true` 映射 `failure_kind="execution"`；传输层 `McpTransportError` 映射 `unsupported + retryable` 并触发所属 server 失效/退避重试（摘除与重审由 [mcp](mcp.md) 状态机负责），调用本身不自动重放。验证：`tests/test_mcp_tools.py`、`tests/test_mcp_stdio.py`。
+
 ## 子进程超时边界
 
 `ProcessRunner` 用同一个单调时钟截止时间约束输出管道读取与进程退出，

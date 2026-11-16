@@ -19,6 +19,7 @@ from typing import TextIO
 
 from xana.cli.commands import agents as agents_cmd
 from xana.cli.commands import login as login_cmd
+from xana.cli.commands import mcp as mcp_cmd
 from xana.cli.commands import pair as pair_cmd
 from xana.cli.commands import project as project_cmd
 from xana.cli.commands import setup as setup_cmd
@@ -74,6 +75,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "logout", help="remove stored kimi credentials"
     )
     logout_parser.set_defaults(func=login_cmd.run_logout)
+
+    mcp_parser = subparsers.add_parser(
+        "mcp", help="manage MCP servers of the running serve (list/reload)"
+    )
+    mcp_cmd.add_arguments(mcp_parser)
+    mcp_parser.set_defaults(func=mcp_cmd.run)
 
     return parser
 

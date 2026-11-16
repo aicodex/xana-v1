@@ -8,7 +8,8 @@ status: active
 
 | Module | Primary Input | Primary Output | Owns | Must Not Own |
 | --- | --- | --- | --- | --- |
-| config | project root, `~/.xana/config/system.json` + `projects/<id>/config.json` | `RuntimeConfig` / `SystemConfig`、路径解析（`config/paths.py`） | config merge（用户级 < 项目级，项目只能改 `PROJECT_KEYS`） | runtime state |
+| config | project root, `~/.xana/config/system.json` + `projects/<id>/config.json` | `RuntimeConfig` / `SystemConfig`、路径解析（`config/paths.py`） | config merge（用户级 < 项目级，项目只能改 `PROJECT_KEYS`，mcp 段按 name 索引的专门合并见 [mcp](mcp.md)） | runtime state |
+| mcp | MCP server 配置（用户/项目两层 + override）、官方 SDK 连接、`os.environ` 凭据展开 | 已审核并发布的 MCP 工具（共享 `FileToolRegistry`）、脱敏 `ServerView`/`ToolView`、`mcp/audit.jsonl` | 连接/退避/重审状态机、工具审核与发布、`/mcp*` 管理 API | 工具执行编排、权限决策、配置模型定义 |
 | runtime | project root, `ConfigProvider`, `extension_registry` | `BootResult`、daemon HTTP（`/healthz`） | process lifecycle；项目注册 / 查询 / 启停（`runtime/projects.py`） | agent/tool behavior |
 | harness_sdk | `HarnessRequest` | `HarnessEvent` stream | turn lifecycle | protocol rendering |
 | agents | `AgentRequest` | `AgentEvent` stream | agent behavior wrapper、subagent 派发（`GatewaySubagentDispatcher`） | turn loop |

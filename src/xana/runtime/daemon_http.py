@@ -23,7 +23,9 @@ from xana.state.todos import TodoStore
 from xana.harness_sdk.goal import GoalService
 from xana.harness_sdk.turn_control import TurnCoordinator
 from xana.runtime.goal_http import register_goal_routes
+from xana.runtime.mcp_http import register_mcp_routes
 from xana.runtime.web_assets import register_web_assets
+from xana.mcp.manager import McpManager
 from xana.harness_sdk.background import BackgroundTasks
 from xana.state.process_logs import ProcessLogs
 from xana.runtime.process_log_http import register_process_log_routes
@@ -50,12 +52,16 @@ def build_daemon_app(
     background: BackgroundTasks | None = None,
     process_logs: ProcessLogs | None = None,
     media_uploads: MediaUploads | None = None,
+    mcp: McpManager | None = None,
 ) -> web.Application:
     """Build the aiohttp app for the xana daemon.
 
     on_action(sid, action, payload) is invoked for cancel/button
     POSTs; the host (serve.py) wires this to gateway.cancel /
     Card.dispatch as appropriate. None -> 202 with no side effect.
+    mcp is the serve-owned McpManager (BootResult.mcp); when given, the
+    /mcp* admin routes are registered against the same manager instance
+    in both the unix-socket and TCP apps.
     """
     app = web.Application()
 
@@ -217,6 +223,8 @@ def build_daemon_app(
             register_goal_routes(app, goals, conversations, bridge, control)
         if process_logs is not None:
             register_process_log_routes(app, process_logs, conversations)
+    if mcp is not None:
+        register_mcp_routes(app, mcp)
     register_web_assets(app)
 
     async def _start_idle(app):

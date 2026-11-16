@@ -12,7 +12,7 @@ status: active
 
 ## 入口
 
-- `xana`（`src/xana/cli/xana.py`）— argparse 顶层分发器，子命令 `setup` / `sync` / `serve` / `pair` / `project` / `login` / `logout`，全部是"机器管理"性质的非交互或一次性命令。`serve --project <id>` 以某个项目运行（缺省 `default`，一个项目一个 serve，见 [project-design](../docs/design/project-design.md)）。
+- `xana`（`src/xana/cli/xana.py`）— argparse 顶层分发器，子命令 `setup` / `sync` / `serve` / `pair` / `project` / `login` / `logout` / `mcp`，全部是"机器管理"性质的非交互或一次性命令。`serve --project <id>` 以某个项目运行（缺省 `default`，一个项目一个 serve，见 [project-design](../docs/design/project-design.md)）。`xana mcp list/reload` 是运行中 serve 的 MCP 管理客户端（见 [mcp](mcp.md)）。
 - `xanac`（`src/xana/cli/xanac.py`）— 交互聊天客户端，HTTP+SSE 瘦客户端，连本机某个项目的 `xana serve` daemon（`--project <id>`，缺省 default）；不是独立 runtime。
 - `xana project create <id> [--root <目录>] [--port N]` / `xana project list`（`src/xana/cli/commands/project.py`）：注册新项目（缺省目录 `~/.xana/projects/<id>/workspace`，端口缺省自动分配空闲端口）/ 列出项目、运行状态、端口、飞书机器人、目录；实际逻辑在 `runtime/projects.py`（与聊天里的 `project_manage` 共用）。同文件的 `ensure_default_project()` 创建默认项目并一次性迁移旧布局（由 `xana sync` 调用，见 [cli_setup](cli_setup.md)）。
 
