@@ -9,6 +9,10 @@ status: active
 当前完整契约见 [会话、插话与取消](../docs/design/session-and-card-state.md)。
 
 serve 获取每项目实例锁 → boot → 渠道与 daemon → 调度轮询 → 恢复后台结果和待处理输入。
+daemon 起之前先 `await mcp.start()`（boot 构造的 `BootResult.mcp`，首次连接各 MCP server），
+退出 finally 中先停 daemon/adapter、再 `await mcp.close()`（取消 watch/retry 并关闭 SDK
+session/stdio 子进程）。MCP 配置变更热加载，运行中不需要重启；代码升级仍需 `xana sync`
++ 重启 serve。详见 [mcp](mcp.md)。
 每个渠道 pump 独立接收入站消息；每条输入单独提交，使忙碌会话能立即接收插话。
 后台任务登记表在 boot 构造时先加载；渠道就绪后启动通知恢复和重试任务，退出时取消该任务。
 结果通知的接收与后续渠道渲染分开，均走现有 gateway/control，见[后台任务](harness_background_tasks.md)。

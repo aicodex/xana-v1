@@ -13,3 +13,29 @@
 @media(max-width:640px){.workbench,.workbench.with-detail{grid-template-columns:1fr}.sidebar{display:none}.topbar{padding:0 16px}.conversation{padding:20px 16px}.composer{margin:7px 10px 0;padding:10px}.composer-hint{font-size:8px}.detail-pane{inset:0}.task-dock,.approval-list{margin:0 12px;padding:0}.approval-card .button-row{gap:4px}.approval-card button{font-size:10px;padding:6px}.message{font-size:13px}.goal-strip .muted{display:none}}
 
 .media-input{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:#667085;padding:6px 0}.media-input input{max-width:200px;font-size:10px}.media-input button{font-size:10px}
+
+.text-button.selected{color:var(--accent);font-weight:600}
+.mcp-panel{display:flex;flex-direction:column;flex:1;min-height:0;background:#fff}
+.mcp-body{flex:1;overflow-y:auto;padding:20px max(24px,calc((100% - 780px)/2));display:flex;flex-direction:column;gap:14px}
+.mcp-server{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:#fbfbfa;display:flex;flex-direction:column;gap:8px;font-size:12px}
+.mcp-server>header{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.mcp-server>header strong{font-size:13px}
+.mcp-server>header .button-row{margin-left:auto}
+.mcp-server p{margin:0}
+.mcp-delete{color:#b84646;border-color:#e5c9c9}
+.mcp-connected{background:#e8f4ec;color:#3d7a58}
+.mcp-failed,.mcp-removed{background:#faeaea;color:#b84646}
+.mcp-retry_waiting,.mcp-connecting{background:#fdf3e0;color:#9c692e}
+.mcp-disabled{background:#eef0f2;color:#6d7480}
+.mcp-tools{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.mcp-tools>li{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;border-top:1px solid #efefed;padding-top:6px}
+.mcp-tools label{display:flex;align-items:center;gap:7px}
+.mcp-findings{list-style:none;margin:0;padding:0;width:100%;font-size:11px}
+.mcp-form{border:1px solid var(--line);border-radius:12px;padding:18px;background:#fff;display:flex;flex-direction:column;gap:11px;font-size:12px}
+.mcp-form label{display:flex;align-items:center;gap:12px;color:#5e6774}
+.mcp-form label>input,.mcp-form label>textarea,.mcp-form label>select{flex:1;min-width:0;padding:8px}
+.mcp-kv{border:1px solid #ecedeb;border-radius:9px;padding:11px;display:flex;flex-direction:column;gap:8px}
+.mcp-kv legend{font-size:11px;color:#8b929d;padding:0 5px}
+.mcp-kv-row{display:flex;gap:8px;align-items:center}
+.mcp-kv-row input{flex:1;min-width:0;padding:7px}
+.mcp-form-actions{justify-content:flex-end}

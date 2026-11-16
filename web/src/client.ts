@@ -15,6 +15,14 @@ export class WorkbenchClient {
     return this.request<T>(path, { method: 'POST', body: JSON.stringify(data) })
   }
 
+  put<T>(path: string, data: unknown = {}): Promise<T> {
+    return this.request<T>(path, { method: 'PUT', body: JSON.stringify(data) })
+  }
+
+  remove<T>(path: string): Promise<T> {
+    return this.request<T>(path, { method: 'DELETE' })
+  }
+
   async upload<T>(path: string, file: File): Promise<T> {
     const response = await fetch(path, { method: 'POST', headers: { Authorization: `Bearer ${this.token}` }, body: file })
     if (!response.ok) throw new Error(await response.text())

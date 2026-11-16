@@ -44,3 +44,17 @@ export interface StreamFrame { id: string; event: string; data: unknown }
 export interface ProcessLogPage {
   records: { stream: string; text: string }[]; start_offset: number; next_offset: number; has_more: boolean; complete: boolean; issue: string
 }
+export interface McpAuditFinding { rule: string; path: string; message: string }
+export interface McpToolView {
+  name: string; raw_name: string
+  status: 'enabled' | 'disabled_user' | 'quarantined' | 'unavailable'
+  fingerprint: string; findings: McpAuditFinding[]
+}
+export interface McpServerView {
+  name: string; origin: 'user' | 'project'; transport: 'stdio' | 'http' | 'sse'
+  enabled: boolean
+  status: 'connecting' | 'connected' | 'retry_waiting' | 'disabled' | 'failed' | 'removed'
+  config_error: string | null; error: string | null; retry_in_s: number | null
+  tools: McpToolView[]
+}
+export interface McpServersPayload { servers: McpServerView[]; load_error: string | null }

@@ -14,6 +14,9 @@ class InMemoryToolRegistry(ToolRegistry):
         name = tool.spec().component.name
         self._tools[name] = tool
 
+    async def unregister(self, name: str) -> Tool | None:
+        return self._tools.pop(name, None)
+
     async def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 

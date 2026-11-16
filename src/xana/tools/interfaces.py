@@ -47,6 +47,9 @@ class ToolRegistry(ABC):
     async def register(self, tool: Tool) -> None: ...
 
     @abstractmethod
+    async def unregister(self, name: str) -> Tool | None: ...
+
+    @abstractmethod
     async def get(self, name: str) -> Tool | None: ...
 
     @abstractmethod

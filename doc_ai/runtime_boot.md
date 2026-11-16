@@ -15,6 +15,10 @@ boot() 是唯一注册与组合入口。创建单一 ContextSDK、ActiveContextS
 boot 组装模型、工具、技能、extensions、AgentRunner、BackgroundTasks 与 SchedulerService。
 缺少真实模型配置时明确失败；fake 仅可显式配置。模型预算公式与缓存 TTL 保持唯一配置推导。
 
+boot 还构造 `McpManager`（`BootResult.mcp`，只构造不连接）：注入 `McpConfigStore`、
+共享 `FileToolRegistry` 与 `FileMediaStore`；unix/TCP 两个 daemon app、主对话与 CLI 经 HTTP
+共用同一实例，生命周期归 serve（见 [runtime_lifecycle](runtime_lifecycle.md)、[mcp](mcp.md)）。
+
 启动扫描仅标记未完成 run 可恢复。serve 在渠道就绪后恢复后台登记表和未消费输入。
 记忆提取和独立调度任务仍保留，不因删除旧会话执行机制而被一起删除。
 

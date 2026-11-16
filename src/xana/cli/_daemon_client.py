@@ -101,6 +101,21 @@ class DaemonClient:
         r = await self._client.post(f"/sessions/{sid}/button", json=payload)
         r.raise_for_status()
 
+    # ---- MCP 管理(设计 §10;与浏览器共用同一 daemon 端点) ----
+
+    async def mcp_servers(self) -> dict:
+        r = await self._client.get("/mcp/servers")
+        r.raise_for_status()
+        return r.json()
+
+    async def mcp_reload(self, server: str | None = None) -> dict:
+        if server is None:
+            r = await self._client.post("/mcp/reload")
+        else:
+            r = await self._client.post(f"/mcp/servers/{server}/reload")
+        r.raise_for_status()
+        return r.json()
+
 
 async def _iter_sse(resp: httpx.Response) -> AsyncIterator[DaemonEvent]:
     """Parse SSE id/event/data frames. Comment lines (':...') ignored."""

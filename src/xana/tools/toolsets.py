@@ -30,6 +30,7 @@ BUILTIN_TOOLSETS: tuple[Toolset, ...] = (
     # 只给用户聊天 agent 用:不在默认组合里,由内置 chat 显式选中;子 agent 永远拿不到。
     Toolset("media", "把 workspace 内的图片/视频发到当前聊天:send_media(飞书 / Telegram)", default=False),
     Toolset("derived", "本项目派生工具(TOOL.md 声明的命令工具,见 tool_define catalog)", default=True),
+    Toolset("mcp", "MCP 服务器提供的工具(经配置与审核后注册)", default=True),
     Toolset("eval", "回看运行记录(trace_view),供迭代与排查;不在 default 内", default=False),
 )
 

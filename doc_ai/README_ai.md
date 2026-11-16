@@ -19,6 +19,7 @@ status: active
 ## 核心模块
 
 - [config](config.md) — 配置加载、用户级 system.json + 项目级 config.json 分层；路径解析（`config/paths.py`）与项目配置（`config/project_config.py`）。
+- [mcp](mcp.md) — 外部 MCP server 配置、SDK 连接、工具审核（audit.jsonl）、热加载与工具发布状态机（`src/xana/mcp/`、`runtime/mcp_http.py`）。
 - [runtime](runtime.md) — 进程生命周期、启动顺序、调度外壳；项目管理（`runtime/projects.py`）。
 - [harness_sdk](harness_sdk.md) — turn loop、暂停/恢复/取消、事件流和 usage 快照。
 - [harness_background_tasks](harness_background_tasks.md) — 独立后台任务、事件等待、持久结果交付与完成唤醒。
@@ -26,7 +27,7 @@ status: active
 - [tools](tools.md) — 工具校验、权限、沙箱、执行边界和输出 schema。
 - [skills](skills.md) — 技能元数据、激活规则、上下文/提示注入。
 - [agent_adapter](agent_adapter.md) — CLI/TG/Feishu/HTTP 等外部协议翻译。
-- [cli](cli.md) — 命令分发：`xana` 管理命令（setup/sync/serve/pair/project/login/logout）与 `xanac` 交互客户端。
+- [cli](cli.md) — 命令分发：`xana` 管理命令（setup/sync/serve/pair/project/login/logout/mcp）与 `xanac` 交互客户端。
 - [llm_driver](llm_driver.md) — 模型请求、流式响应、tool call 解析、usage 提取。
 - [memory](memory.md) — active context 权威、history mirror、treemem/search/injection。
 - [SAG2 memory 接入](memory_sag2.md) — 算法、项目索引、评分契约和 JEV 协议已实现；[设计与验证](../docs/design/memory-sag2-design.md)记录迁移边界。status: implementing，评分指令来源待确认，尚未替换运行时。

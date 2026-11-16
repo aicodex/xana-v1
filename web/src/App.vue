@@ -3,6 +3,7 @@ import { computed, onMounted, ref, shallowRef, watch } from 'vue'
 import { WorkbenchClient } from './client'
 import { useConversation } from './useConversation'
 import ConversationView from './ConversationView.vue'
+import McpPanel from './McpPanel.vue'
 import type { BackgroundTask, PermissionMode, ProcessLogPage, SessionView } from './contracts'
 
 const fragment = new URLSearchParams(location.hash.slice(1))
@@ -14,7 +15,7 @@ const workspace = ref('工作区'), permission = ref<PermissionMode>('yolo'), ta
 const main = useConversation(api, sid), child = useConversation(api, childSid)
 const showGoal = ref(false), objective = ref(''), criterion = ref(''), tokenBudget = ref('')
 const logTarget = ref<{ sid: string; run: string; execution: string } | null>(null), logText = ref(''), logStatus = ref('')
-const navigationOpen = ref(false), draftId = ref('')
+const navigationOpen = ref(false), draftId = ref(''), showMcp = ref(false)
 const logBefore = ref<number | null>(null), logEarlier = ref(false), logLoading = ref(false)
 const logView = ref<'tail' | 'page'>('tail'), logRevision = ref(0)
 let permissionRevision = 0
@@ -47,7 +48,7 @@ async function login() {
   } catch (failure) { error.value = String(failure); api.value = null }
   finally { connecting.value = false }
 }
-function logout() { api.value = null; sid.value = ''; childSid.value = ''; sessionStorage.removeItem('xana.token') }
+function logout() { api.value = null; sid.value = ''; childSid.value = ''; logTarget.value = null; showMcp.value = false; sessionStorage.removeItem('xana.token') }
 async function newSession() {
   try {
     const result = await api.value!.post<{ session_id: string }>('/sessions')
@@ -228,20 +229,22 @@ onMounted(() => { if (token.value) void login() })
   </div>
   <div v-else class="workbench" :class="{ 'with-detail': childSid || logTarget, 'navigation-open': navigationOpen }">
     <aside class="sidebar">
-      <div class="sidebar-top"><span class="brand">xana<span class="brand-dot">.</span></span><button class="icon-button" title="新建会话" @click="newSession">＋</button></div>
+      <div class="sidebar-top"><span class="brand">xana<span class="brand-dot">.</span></span><div class="button-row"><button class="text-button" :class="{ selected: showMcp }" title="MCP 服务器" @click="showMcp = !showMcp">MCP</button><button class="icon-button" title="新建会话" @click="showMcp = false; newSession()">＋</button></div></div>
       <div class="workspace-label">工作区<span>{{ workspace }}</span></div>
-      <button class="new-chat" @click="newSession">＋ 新建会话</button>
+      <button class="new-chat" @click="showMcp = false; newSession()">＋ 新建会话</button>
       <div class="section-label">最近会话 <button class="text-button" title="刷新会话" @click="refreshSessions">↻</button></div>
       <nav aria-label="会话列表">
-        <button v-for="session in roots" :key="session.session_id" :class="{ selected: session.session_id === sid }" @click="sid = session.session_id; navigationOpen = false">
+        <button v-for="session in roots" :key="session.session_id" :class="{ selected: session.session_id === sid }" @click="sid = session.session_id; navigationOpen = false; showMcp = false">
           <span class="session-title">{{ session.title || '新会话' }}</span><span v-if="session.running" class="live-dot" />
         </button>
       </nav>
       <div class="sidebar-bottom"><span>长期运行 · 持续迭代</span><button class="text-button" @click="logout">断开连接</button></div>
     </aside>
     <main class="main-pane">
-      <header class="topbar"><button class="icon-button mobile-menu" aria-label="切换会话" @click="navigationOpen = !navigationOpen">☰</button><span class="session-title">{{ title }}</span><span class="connection"><i :class="{ online: main.connection.value === '已连接' }" />{{ main.connection.value }}</span></header>
+      <header class="topbar"><button class="icon-button mobile-menu" aria-label="切换会话" @click="navigationOpen = !navigationOpen">☰</button><span class="session-title">{{ showMcp ? 'MCP 服务器' : title }}</span><span class="connection"><i :class="{ online: main.connection.value === '已连接' }" />{{ main.connection.value }}</span></header>
       <div v-if="error || main.error.value" class="notice" role="alert">{{ error || main.error.value }}<button class="text-button" @click="error = ''; main.error.value = ''">关闭</button></div>
+      <McpPanel v-if="showMcp" :client="api" @close="showMcp = false" />
+      <template v-else>
       <ConversationView :conversation="main" @steer="steer" @log="(id, run) => openLog(id, run, sid)" />
       <section v-if="main.approvals.value.length" class="approval-list" aria-label="待审批操作">
         <article v-for="approval in main.approvals.value" :key="approval.id" class="approval-card">
@@ -277,6 +280,7 @@ onMounted(() => { if (token.value) void login() })
         <footer><div class="composer-controls"><select v-model="permission" aria-label="本会话权限" @change="setPermission"><option value="manual">始终询问</option><option value="yolo">必要时询问</option><option value="auto">全自动</option></select><button v-if="!main.goal.value || main.goal.value.status === 'complete'" type="button" class="text-button" @click="showGoal = !showGoal">＋ 目标</button></div><div class="button-row"><button v-if="main.running.value" type="button" class="stop-button" @click="cancel">■ 停止回答</button><button class="primary send-button" :disabled="(!text.trim() && !attachments.length) || sending || uploading">{{ sending ? '发送中' : main.running.value ? '排队 ↑' : '发送 ↑' }}</button></div></footer>
       </form>
       <p class="composer-hint">Enter 发送 · Shift + Enter 换行 · 关闭页面后任务继续运行</p>
+      </template>
     </main>
     <aside v-if="childSid || logTarget" class="detail-pane">
       <header class="topbar"><strong>{{ logTarget ? '命令日志' : '子 agent 会话' }}</strong><button class="icon-button" title="关闭详情" @click="childSid = ''; logTarget = null">×</button></header>

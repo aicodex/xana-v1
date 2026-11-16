@@ -15,7 +15,7 @@ from typing import Any
 from xana.config.paths import project_home, xana_home
 from xana.config.system_model import DaemonConfig, SystemConfig
 
-PROJECT_KEYS = ("channels", "daemon", "sessions", "tools", "agent_defaults")
+PROJECT_KEYS = ("channels", "daemon", "sessions", "tools", "agent_defaults", "mcp")
 USER_AND_PROJECT_KEYS = ("tools",)   # 用户级也可以有(全局禁用),项目再覆盖
 PROJECT_ONLY_KEYS = tuple(k for k in PROJECT_KEYS if k not in USER_AND_PROJECT_KEYS)
 PROJECT_CONFIG_NAME = "config.json"
@@ -48,12 +48,43 @@ def read_project_config(path: Path) -> dict[str, Any]:
     return data
 
 
+def merge_mcp_configs(user: dict[str, Any], project: dict[str, Any]) -> dict[str, Any]:
+    """mcp 段分层合并(docs/superpowers/specs/2026-11-13-mcp-design.md §5.2),boot 加载与运行期
+    热重载共用。servers 按 name 索引:项目同名 server 整体替换用户连接定义,新 name 追加;
+    overrides 按 name、再按字段合并,项目优先。override 无对应 server 时保留在配置中,不隐式
+    创建空连接。重连/轮询等标量键项目优先,缺省由 Mcp 模型填默认值。"""
+    merged: dict[str, Any] = {
+        **user,
+        **{k: v for k, v in project.items() if k not in ("servers", "overrides")},
+    }
+    servers: dict[str, Any] = {}
+    for layer in (user, project):
+        for server in layer.get("servers") or []:
+            if not isinstance(server, dict) or not server.get("name"):
+                raise ValueError(f"mcp servers 条目缺少 name:{server!r}")
+    for server in user.get("servers") or []:
+        servers[server["name"]] = server
+    for server in project.get("servers") or []:
+        servers[server["name"]] = server
+    overrides: dict[str, Any] = {}
+    for name, ov in (user.get("overrides") or {}).items():
+        overrides[name] = dict(ov)
+    for name, ov in (project.get("overrides") or {}).items():
+        overrides[name] = {**(overrides.get(name) or {}), **ov}
+    merged["servers"] = list(servers.values())
+    merged["overrides"] = overrides
+    return merged
+
+
 def merge_system_config(user: dict[str, Any], project: dict[str, Any]) -> SystemConfig:
-    """项目键覆盖用户键;例外是 tools.disabled 取并集——用户级禁用是全局的,项目只能再多禁,不能放开。"""
+    """项目键覆盖用户键;例外是 tools.disabled 取并集——用户级禁用是全局的,项目只能再多禁,不能放开。
+    mcp 段走 merge_mcp_configs 的分层规则,而不是整体替换。"""
     merged = {**user, **project}
     if "tools" in user and "tools" in project:
         disabled = [*(user["tools"].get("disabled") or []), *(project["tools"].get("disabled") or [])]
         merged["tools"] = {**user["tools"], **project["tools"], "disabled": list(dict.fromkeys(disabled))}
+    if "mcp" in user or "mcp" in project:
+        merged["mcp"] = merge_mcp_configs(user.get("mcp") or {}, project.get("mcp") or {})
     return SystemConfig(**merged)
 
 

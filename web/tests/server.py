@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 from dataclasses import replace
@@ -60,6 +62,21 @@ async def main():
     with tempfile.TemporaryDirectory(prefix="xana-browser-") as directory:
         root = Path(directory)
         os.environ["XANA_HOME"] = str(root / "home")
+        # 用户级 demo MCP server(真实本地 stdio fixture,Task 6 浏览器面板用);
+        # 恶意静态定义 evil_static 供审核 finding 展示。
+        demo_server = Path(__file__).resolve().parents[2] / "tests" / "mcp_demo_server.py"
+        system_path = root / "home" / "config" / "system.json"
+        system_path.parent.mkdir(parents=True, exist_ok=True)
+        system_path.write_text(json.dumps({
+            "mcp": {
+                "servers": [{
+                    "name": "demo", "transport": "stdio",
+                    "command": sys.executable, "args": [str(demo_server), str(root / "demo-control.json")],
+                    "startup_timeout_s": 20, "tool_timeout_s": 20,
+                }],
+                "reconnect_initial_s": 0.2, "reconnect_max_s": 1.0, "watch_interval_s": 0.1,
+            },
+        }), encoding="utf-8")
         select_fake_model()
         runtime = await boot(project_root=root, history_root=root / "sessions")
         await runtime.model_registry.register(runtime.provider, BrowserModel())
@@ -68,11 +85,13 @@ async def main():
         app = build_daemon_app(bridge=bridge, token="browser-test-token", conversations=runtime.conversations,
             permissions=runtime.permissions, todos=runtime.todos, goals=runtime.goals,
             control=runtime.gateway.control, background=runtime.background, process_logs=runtime.process_logs,
-            media_uploads=runtime.media_uploads,
+            media_uploads=runtime.media_uploads, mcp=runtime.mcp,
             on_action=_make_daemon_on_action(runtime.gateway))
         runner = web.AppRunner(app, shutdown_timeout=.1)
         await runner.setup()
         await web.TCPSite(runner, "127.0.0.1", 18899).start()
+        if runtime.mcp is not None:
+            await runtime.mcp.start()
         pump = asyncio.create_task(_run_inbound_pump(bridge, runtime.gateway))
         print("browser fixture ready", flush=True)
         try:
@@ -81,6 +100,8 @@ async def main():
             pump.cancel()
             await runtime.gateway.cancel_all()
             await asyncio.gather(pump, return_exceptions=True)
+            if runtime.mcp is not None:
+                await runtime.mcp.close()
             await runner.cleanup()
 
 
