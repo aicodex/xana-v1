@@ -31,12 +31,11 @@ status: active
 - [agent_adapter](doc_ai/agent_adapter.md) — CLI/TG/Feishu/HTTP 等外部协议翻译。
 - [llm_driver](doc_ai/llm_driver.md) — 模型请求、流式响应、tool call 解析、usage 提取。
 - [memory](doc_ai/memory.md) — active context 权威、history mirror、treemem/search/injection。
-- [observability](doc_ai/observability.md) — health、trace、debug snapshot、诊断视图。
 
 ## 支撑模块
 
+- [protocol](doc_ai/protocol.md) — 零业务依赖的基础数据原语、Tape 与 Eval 协议。
 - [component](doc_ai/component.md) — 共享组件元数据、加载、校验、override、registry 合约。
-- [hooks](doc_ai/hooks.md) — 生命周期 hook 合约。
 - [policy](doc_ai/policy.md) — 权限、沙箱、approval 策略合约。
 - [state](doc_ai/state.md) — session、run、checkpoint、resume、usage 状态合约。
 
