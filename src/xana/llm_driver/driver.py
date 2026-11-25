@@ -30,8 +30,11 @@ from xana.llm_driver.tape_recorder import (
 )
 from xana.llm_driver.transports.anthropic_messages import AnthropicMessagesTransport
 from xana.llm_driver.transports.openai_chat import OpenAIChatTransport
+from xana.protocol.diag import DiagLogger
 
 __all__ = ["InMemoryModelRegistry", "ModelDriver", "build_driver", "complete"]
+
+_DIAG = DiagLogger("llm")
 
 
 async def _sleep_or_cancel(
@@ -400,6 +403,19 @@ class ModelDriver(ModelClient):
                     )
                     self._recorder.record_response(call_span_id=call_span_id, req=current_req, outcome=outcome)
                     response_recorded = True
+                    _DIAG.perf(
+                        "call.done",
+                        latency_ms=outcome.latency_ms,
+                        slow_ms=15000.0,
+                        provider=outcome.provider,
+                        model=outcome.model,
+                        attempts=outcome.attempts,
+                        ttft_ms=outcome.ttft_ms,
+                        stop=outcome.stop_reason,
+                        in_tok=outcome.usage.input_tokens,
+                        out_tok=outcome.usage.output_tokens,
+                        cache_read=outcome.usage.cache_read_tokens,
+                    )
                     yield done_ev
                     return
 
@@ -417,6 +433,17 @@ class ModelDriver(ModelClient):
                 attempt_open = False
                 wasted_usage = wasted_usage.add(acc.usage)
                 wasted_retry_ms += elapsed_ms
+                _DIAG.anomaly(
+                    "attempt.error",
+                    provider=self._profile.name,
+                    model=current_req.model,
+                    attempt=attempt,
+                    reason=err.reason,
+                    status=err.raw_status,
+                    retryable=err.retryable,
+                    elapsed_ms=elapsed_ms,
+                    partial_bytes=acc.partial_bytes,
+                )
 
                 if err.reason != "cancelled":
                     action = await self._decide_failure(
