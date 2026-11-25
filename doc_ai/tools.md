@@ -28,6 +28,8 @@ status: active
 
 ## 全局合约
 
+- [README_ai](README_ai.md) — L0 + 7 层架构总览
+- [modular_interfaces](modular_interfaces.md#4-stage-3tools--观测管理srcxanatools) — L3 全部 ABC 签名与契约速查
 - [module_io_map](module_io_map.md) — 模块输入/输出/所有权总表
 - [replacement_rule](replacement_rule.md) — 替换规则
 
@@ -81,9 +83,9 @@ status: active
 
 `ReadImage` / `ReadVideo` 由 `read_media.py` 的同一个实现提供，按模型配置分别开放，详见 [模型多模态输入](llm_provider_contract.md#多模态输入)。
 
-辅助文件（非工具）：`_path.py`（相对 cwd 路径解析）、`_reindex.py`（写后 markdown 增量 reindex）、`state/todos.py`（`TodoStore` 磁盘持久化）、`_media.py`（出站图片/视频的路径、magic bytes、大小校验与 ffprobe/ffmpeg 探测）。
+辅助文件（非工具）：`_path.py`（相对 cwd 路径解析）、`_process.py`（子进程管理与输出裁剪）、`_grep_worker.py`（子进程正则检索）、`state/todos.py`（`TodoStore` 磁盘持久化）、`_media.py`（出站图片/视频的路径、magic bytes、大小校验与 ffprobe/ffmpeg 探测）。
 
-**memory_write（项目记忆写入）** 详见 [memory_rules_gate](memory_rules_gate.md)：`memory/*.md` 的唯一写入口（Write / Edit 写 `memory/` 被拒），create 时与已有记忆的名称 + 描述相似度 ≥0.6 即拒绝并提示 update；写后增量更新 memory_search 索引。
+**memory_write（项目记忆写入）** 详见 [memory_rules_gate](memory_rules_gate.md)：`memory/*.md` 的唯一写入口（Write / Edit 写 `memory/` 被拒），create 时与已有记忆的名称 + 描述相似度 ≥0.6 即拒绝并提示 update；SAG2 检索在查询时按内容哈希自动重建索引。
 
 ## 关键工具行为
 

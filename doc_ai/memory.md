@@ -23,6 +23,8 @@ status: active
 
 ## 全局合约
 
+- [README_ai](README_ai.md) — L0 + 7 层架构总览
+- [modular_interfaces](modular_interfaces.md#6-stage-5memory--sag2srcxanamemory) — L5 全部 ABC 签名与契约速查
 - [module_io_map](module_io_map.md) — 模块输入/输出/所有权总表
 - [replacement_rule](replacement_rule.md) — 替换规则
 

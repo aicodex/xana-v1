@@ -19,6 +19,7 @@ status: active
 ## 入口与独立运行
 
 - 包导出：`xana.protocol`（17 个公开 wire dataclass 受 `tests/golden/protocol_contract_v1.json` 锁定）。
+- 统一接口总览：[modular_interfaces](modular_interfaces.md#1-stage-0协议与观测底座srcxanaprotocol) ｜ [架构导航](README_ai.md)
 - 独立调试 CLI（零业务依赖）：
   ```bash
   uv run python -m xana.protocol tape inspect <bundle_dir>

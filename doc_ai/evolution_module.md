@@ -11,17 +11,19 @@ status: active
 
 ## 代码锚点
 
-- [contracts.py](../src/xana/evolution/contracts.py) — 数据合约（纯 dataclass / Literal / 常量）
+- [modular_interfaces](modular_interfaces.md#8-stage-7eval--evolutionsrcxanaevolution) — L7 全部 ABC 签名与契约速查
+- [interfaces.py](../src/xana/evolution/interfaces.py) — `IterationLedgerStore`、`PromotionGate`、`BenchmarkRunner` 抽象接口
+- [contracts.py](../src/xana/evolution/contracts.py) — 数据合约（纯 dataclass / Literal / 常量，受 `tests/golden/evolution_contract_v1.json` 锁定）
+- [promotion.py](../src/xana/evolution/promotion.py) — `StatisticalPromotionGate`（配对 train/keep/heldout 防过拟合门禁）
 - [ledger.py](../src/xana/evolution/ledger.py) — `Ledger` append-only 进化账本
-- [changes.py](../src/xana/evolution/changes.py) — `ChangeWriter` 变更单写入口
-- [episode.py](../src/xana/evolution/episode.py) — `EpisodeRunner` 状态机 + `EpisodeGatedSpawner` 门禁 + `EpisodeGateError`
-- [meta.py](../src/xana/evolution/meta.py) — `MetaEvolutionService` 元 agent 定时唤醒
+- [evals.py](../src/xana/evolution/evals.py) — `EvalRunner`、`compare_batches`、`plan_for_version`、`verdict`、`batch_to_benchmark_snapshot`
+- [episode.py](../src/xana/evolution/episode.py) — `EpisodeRunner` 状态机 + `EpisodeGateError`
+- [tape_recorder.py](../src/xana/evolution/tape_recorder.py) — `EvolutionTapeRecorder`（Stage 0 Tape 录制）
 - [boot.py](../src/xana/runtime/boot.py) — 组装点（`boot()` 是唯一组合点）
-- [scheduler.py](../src/xana/runtime/scheduler.py) — `ScheduledTaskDispatcher` marker 任务消费
 
 ## 模块定位
 
-进化的可靠性由工程机制兜底，不靠模型自觉。本模块提供四块：数据合约、append-only 账本、episode 状态机（迭代生命周期 + 预算阈值 + 门禁）、元 agent 服务（定时唤醒 + prompt 组装 + 提案闭环）。全部是 concrete helper，**不抽 ABC**（checker 规则：contracts 只放纯数据，`EpisodeGateError` 这类 Exception 留在 episode.py）。
+进化的可靠性由工程机制兜底，不靠模型自觉。本模块提供数据合约、正式 ABC（`IterationLedgerStore` / `PromotionGate` / `BenchmarkRunner`）、append-only 账本、配对防过拟合晋升门禁、评测执行器与 episode 状态机（`EpisodeRunner` 保持 concrete helper；`EpisodeGateError` 留在 `episode.py`）。详见 [README_ai](README_ai.md) 与 [modular_interfaces](modular_interfaces.md)。
 
 ## contracts.py — 数据合约
 

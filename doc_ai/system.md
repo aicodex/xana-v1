@@ -8,10 +8,12 @@ status: active
 
 ## 相关入口
 
+- [README_ai](README_ai.md) — L0 + 7 层模块化架构总览与目录索引
+- [modular_interfaces](modular_interfaces.md) — 全部 ABC 签名、可替换策略槽与独立 CLI 速查
 - [module_io_map](module_io_map.md) — 模块输入/输出/所有权总表
-- [runtime](runtime.md) — 启动和生命周期
-- [harness_sdk](harness_sdk.md) — turn lifecycle
-- [memory](memory.md) — active context 和 history mirror
+- [runtime](runtime.md) — 启动和生命周期（唯一组合根 `boot()`）
+- [harness_sdk](harness_sdk.md) — L6 turn lifecycle
+- [memory](memory.md) — L5 长期记忆（SAG2 + Karpo 4B）与会话上下文
 - [agent_adapter](agent_adapter.md) — 外部协议入口
 
 ## Core Idea
@@ -38,7 +40,7 @@ The system is organized around explicit contracts. Each module has:
 
 - 用户级 `~/.xana/`（`$XANA_HOME`）：`config/system.json`（模型、搜索、策略等）、`credentials/`、用户级 `agents/` `skills/`、`code/` `bin/` `mem/`。
 - 项目私有 `~/.xana/projects/<id>/`：`project.json`（`{"root": 项目目录}`）、`config.json`（channels / daemon / sessions / tools / agent_defaults）、`sessions/` `runs/` `logs/` `run/`（锁 / pid / socket）、`channels/`（配对）、`scheduled_tasks.json`、`evolution/`、`worktrees/`。
-- 项目目录（default = `~/.xana/projects/default/workspace`）：`README_ai.md` 记忆树 + 项目级 `.xana/agents/`。
+- 项目目录（default = `~/.xana/projects/default/workspace`）：`memory/*.md` 项目长期记忆（SAG2 + Karpo 4B 检索）+ 项目级 `.xana/agents/` / `.agents/skills/` / `.xana/evals/`。
 
 ## Normal Message Flow
 
