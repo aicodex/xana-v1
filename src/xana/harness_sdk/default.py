@@ -52,6 +52,7 @@ from xana.tools.contracts import DisclosureContext
 from xana.tools.disclosure import DefaultToolDisclosurePolicy
 from xana.tools.interfaces import ObservationPolicy, ToolDisclosurePolicy
 from xana.tools.observation import DefaultObservationPolicy
+from xana.tools.tape_recorder import ToolTapeRecorder
 from xana.harness_sdk.goal import GoalService, GOAL_CONTINUATION
 from xana.harness_sdk.interfaces import CompactionPolicy, Harness, StopDecisionPolicy
 from xana.harness_sdk.policies import DefaultCompactionPolicy, DefaultStopDecisionPolicy
@@ -220,7 +221,8 @@ class DefaultHarness(Harness):
                  disclosure_policy: ToolDisclosurePolicy | None = None,
                  compaction_policy: CompactionPolicy | None = None,
                  stop_policy: StopDecisionPolicy | None = None,
-                 tape_recorder: HarnessTapeRecorder | None = None) -> None:
+                 tape_recorder: HarnessTapeRecorder | None = None,
+                 tool_tape_recorder: ToolTapeRecorder | None = None) -> None:
         """today:返回本地日期 YYYY-MM-DD(缺省系统时钟;测试可替换)。
         memory_extractor:每轮完成后在后台提取漏记的记忆(docs/design/memory-dream-design.md §3.1);None = 不提取。
         tool_environment:评测 run(request.metadata["tool_env"])的工具调用经它执行(回放 / 时点 / 拒绝);
@@ -232,6 +234,7 @@ class DefaultHarness(Harness):
         self._compaction_policy: CompactionPolicy = compaction_policy or DefaultCompactionPolicy()
         self._stop_policy: StopDecisionPolicy = stop_policy or DefaultStopDecisionPolicy()
         self._tape: HarnessTapeRecorder = tape_recorder or HarnessTapeRecorder()
+        self._tool_tape: ToolTapeRecorder = tool_tape_recorder or ToolTapeRecorder()
         self._diag = DiagLogger("harness")
         self._todos = todos
         self.goals = goals if goals is not None else GoalService()
@@ -727,6 +730,7 @@ class DefaultHarness(Harness):
             model_input_modalities=context.model_input_modalities,
         )
         try:
+            _t_tool_start = time.monotonic()
             await tool.validate(invocation)
             perm = await tool.check_permission(invocation, tool_ctx)
             if perm.decision != "allow" and ext is not None and ext.approval_review:
@@ -780,6 +784,13 @@ class DefaultHarness(Harness):
             rendered = obs.model_text
             if obs.truncated != result.truncated or obs.taint is not None:
                 result = replace(result, truncated=obs.truncated, metadata=obs.metadata)
+            self._tool_tape.record_call(
+                invocation=invocation,
+                result=result,
+                observation=obs,
+                elapsed_ms=(time.monotonic() - _t_tool_start) * 1000.0,
+                obs_policy=self._observation_policy.component_version(),
+            )
         except Exception as exc:
             result = ToolResult(
                 ok=False,

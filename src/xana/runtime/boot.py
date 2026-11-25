@@ -17,6 +17,8 @@ import hashlib
 import json
 import logging
 import os
+import time
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -94,7 +96,17 @@ from xana.state.file_runs import FileRunStore, RunJsonlWriter
 from xana.state.in_memory import InMemoryStateRepository
 from xana.state.file_sessions import FileSessionStore
 from xana.policy.approvals import PermissionService
+from xana.policy.exec_env import LocalProcessEnvironment
+from xana.policy.tape_recorder import PolicyTapeRecorder
+from xana.protocol.tape import RunManifest, TapeHeader, TapeWriter
 from xana.runtime.policy_adapter import RuntimePolicyEventSink, RuntimePolicyStateAdapter
+from xana.skills.proposals import FileSkillProposalQueue, InMemorySkillProposalQueue
+from xana.skills.tape_recorder import SkillTapeRecorder
+from xana.memory.tape_recorder import MemoryTapeRecorder
+from xana.harness_sdk.tape_recorder import HarnessTapeRecorder
+from xana.tools.tape_recorder import ToolTapeRecorder
+from xana.evolution.promotion import StatisticalPromotionGate
+from xana.evolution.tape_recorder import EvolutionTapeRecorder
 from xana.state.interfaces import RunStore, SessionStore, StateRepository
 from xana.session_config.file_store import FileSessionConfigStore
 from xana.session_config.interfaces import SessionConfigStore
@@ -200,6 +212,10 @@ class BootResult:
     media_uploads: MediaUploads | None = None
     mcp: McpManager | None = None    # serve 拥有 start()/close();boot 只构造,不连接
     memory_judge_client: Any = None  # SAG2 评分 HTTP 客户端，由 serve 在退出时关闭
+    tape_writer: TapeWriter | None = None
+    exec_env: LocalProcessEnvironment | None = None
+    skill_proposals: Any = None
+    promotion_gate: StatisticalPromotionGate | None = None
 
 
 class _CompositeStateRepository(StateRepository):
@@ -239,6 +255,7 @@ async def boot(
     extension_registry: ExtensionRegistry | None = None,
     history_root: Path | None = None,
     default_agent: str = "chat",
+    tape_dir: Path | None = None,
 ) -> BootResult:
     project_root = Path(project_root).resolve()
     # Fail before starting workers or changing persisted runtime state.
@@ -300,9 +317,43 @@ async def boot(
         reserved=BUILTIN_AGENT_NAMES,
         defaults=system_cfg.agent_defaults,     # 项目给 agent 的默认配置(project-design §8)
     )
+    # Optional Stage 0 unified TapeWriter (enabled via `tape_dir` param or `XANA_TAPE_DIR` env var).
+    _resolved_tape_dir = tape_dir or (Path(os.environ["XANA_TAPE_DIR"]) if os.environ.get("XANA_TAPE_DIR") else None)
+    tape_writer: TapeWriter | None = None
+    if _resolved_tape_dir is not None:
+        _tape_id = f"boot-{uuid.uuid4().hex[:12]}"
+        _now_ms = int(time.time() * 1000)
+        _manifest = RunManifest(
+            tape_id=_tape_id,
+            run_id=_tape_id,
+            session_id="boot",
+            created_at_ms=_now_ms,
+            model=model,
+            provider=provider,
+        )
+        _header = TapeHeader(
+            tape_id=_tape_id,
+            session_id="boot",
+            run_id=_tape_id,
+            created_at_ms=_now_ms,
+        )
+        tape_writer = TapeWriter(Path(_resolved_tape_dir) / _tape_id, _header, manifest=_manifest)
+    policy_tape = PolicyTapeRecorder(tape_writer)
+    tool_tape = ToolTapeRecorder(tape_writer)
+    skill_tape = SkillTapeRecorder(tape_writer)
+    memory_tape = MemoryTapeRecorder(tape_writer)
+    harness_tape = HarnessTapeRecorder(tape_writer)
+    evolution_tape = EvolutionTapeRecorder(tape_writer)
+    skill_proposals = (
+        FileSkillProposalQueue(project_home() / "skills" / "proposals.json")
+        if history_root is not None
+        else InMemorySkillProposalQueue()
+    )
+    promotion_gate = StatisticalPromotionGate()
+
     if extension_registry is None:
         extension_registry = (ExtensionRegistryBuilder()
-                              .add(SkillsListingContributor(skills=bundled_skills))
+                              .add(SkillsListingContributor(skills=bundled_skills, recorder=skill_tape))
                               .add(AgentListingContributor(agents=agents, agent_registry=agent_registry,
                                                            tool_registry=tools))
                               .build())
@@ -331,16 +382,18 @@ async def boot(
     search_path = _search_db_path(project_root).with_name("sag2-" + _search_db_path(project_root).name)
     memory_search = ProjectMemorySearch(
         project_root=project_root, db_path=search_path,
-        judge=judge, timeout_s=recall_timeout_s)
+        judge=judge, timeout_s=recall_timeout_s, tape_recorder=memory_tape)
     await injector_registry.register(ProjectMemoryInjector(
         memory_store, mode=system_cfg.memory.recall,
-        timeout_s=recall_timeout_s, search_engine=memory_search), priority=100)
+        timeout_s=recall_timeout_s, search_engine=memory_search,
+        tape_recorder=memory_tape), priority=100)
     # 记忆的后台提取(docs/design/memory-dream-design.md §3.1):每轮结束后把漏记的写进记忆;0 = 关闭
     _fast = system_cfg.model(system_cfg.model_tiers.fast) if system_cfg.model_tiers.fast else None
     _memory_model = _fast.name if _fast is not None and _fast.type == provider else model
     memory_extractor = (ModelMemoryExtractor(
         model_registry=model_registry, provider=provider, model=_memory_model,
-        store=memory_store, every=system_cfg.memory.extract_every) if system_cfg.memory.extract_every > 0 else None)
+        store=memory_store, every=system_cfg.memory.extract_every,
+        tape_recorder=memory_tape) if system_cfg.memory.extract_every > 0 else None)
 
     # 扩展注册表须在构造 harness 之前组装完毕(harness 构造时即持有它)。
     # harness 提前构造:/clear 时经 on_clear 丢弃它记下的 prompt 占用
@@ -379,7 +432,9 @@ async def boot(
     permissions = PermissionService(
         state=RuntimePolicyStateAdapter(configs=session_config_store, sessions=state.sessions()),
         events=RuntimePolicyEventSink(run_events),
+        recorder=policy_tape,
     )
+    exec_env = LocalProcessEnvironment(recorder=policy_tape)
     _harness = DefaultHarness(
         extension_registry=extension_registry, memory_extractor=memory_extractor,
         tool_environment=TapeToolEnvironment(runs_dir=Path(history_root) / "runs") if history_root is not None else None,
@@ -387,6 +442,8 @@ async def boot(
         permissions=permissions,
         todos=todo_store,
         goals=goals,
+        tape_recorder=harness_tape,
+        tool_tape_recorder=tool_tape,
         control=TurnCoordinator(Path(history_root).parent / "run" / "inputs.json" if history_root is not None else None,
                                 events=run_events),
         # 模型调用被限流且 Kimi 额度确已用完:原地等重置后重发同一请求(不让一次 run 因额度报错结束)
@@ -420,7 +477,7 @@ async def boot(
             return
         await tools.register(tool)
     await _register(MemorySearchTool(memory_search))
-    await _register(MemoryWriteTool(store=memory_store))
+    await _register(MemoryWriteTool(store=memory_store, tape_recorder=memory_tape))
     await _register(ReadTool())
     media_store = FileMediaStore((Path(history_root) if history_root else project_home() / "sessions") / "media")
     # MCP(docs/superpowers/specs/2026-11-13-mcp-design.md §6):boot 只构造 manager 并挂进
@@ -467,7 +524,7 @@ async def boot(
     await _register(EnterPlanModeTool(session_config_store=session_config_store))
     await _register(EnterWorktreeTool(session_config_store=session_config_store, worktree_root=worktree_root))
     await _register(AgentPublishTool())
-    await _register(SkillLoadTool(skills=bundled_skills))
+    await _register(SkillLoadTool(skills=bundled_skills, recorder=skill_tape))
     await _register(SkillManageTool(management=skill_management, agents=agents, agent_registry=agent_registry))
     if project_id() == DEFAULT_PROJECT:
         await _register(ProjectManageTool(tool_registry=tools, skills=bundled_skills))
@@ -506,7 +563,7 @@ async def boot(
     # 不抽 ABC)。Ledger 落当前项目的 projects/<id>/evolution/ledger.jsonl。
     from xana.evolution.episode import EpisodeRunner
     from xana.evolution.ledger import Ledger
-    ledger = Ledger()
+    ledger = Ledger(tape_recorder=evolution_tape)
     episode_runner = EpisodeRunner(ledger=ledger, run_store=run_store)
 
     # After replay, scan unfinished traces and mark
@@ -630,7 +687,7 @@ async def boot(
     await _register(EvalCompareTool(_evals))
     await _register(EvalDescribeTool(_evals))
     await _register(EvalPlanTool(_evals))
-    await _register(EvalVerdictTool(_evals, ledger))
+    await _register(EvalVerdictTool(_evals, ledger, promotion_gate=promotion_gate, tape_recorder=evolution_tape))
     if run_store is not None and history_root is not None:
         await _register(TraceViewTool(run_store=run_store, runs_dir=history_root / "runs",
                                       hidden_runs=_evals.heldout_run_ids, blind_agents=ITERATION_TEAM))
@@ -756,6 +813,10 @@ async def boot(
             provider=provider, default_model=agents[default_agent].spec().model or model),
         mcp=mcp,
         memory_judge_client=memory_judge_client,
+        tape_writer=tape_writer,
+        exec_env=exec_env,
+        skill_proposals=skill_proposals,
+        promotion_gate=promotion_gate,
     )
 
 

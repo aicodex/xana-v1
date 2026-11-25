@@ -15,6 +15,7 @@ from pathlib import Path
 from xana.config.paths import project_home
 from xana.evolution.contracts import LedgerEntry, LintViolation
 from xana.evolution.interfaces import IterationLedgerStore
+from xana.evolution.tape_recorder import EvolutionTapeRecorder
 from xana.protocol.diag import DiagLogger
 
 _diag = DiagLogger("eval")
@@ -29,12 +30,19 @@ def default_evolution_home() -> Path:
 class Ledger(IterationLedgerStore):
     """append-only 进化账本。构造不给 path 时用 default_evolution_home()。"""
 
-    def __init__(self, *, path: Path | None = None, home: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        path: Path | None = None,
+        home: Path | None = None,
+        tape_recorder: EvolutionTapeRecorder | None = None,
+    ) -> None:
         if path is None:
             root = Path(home) if home is not None else default_evolution_home()
             path = root / "ledger.jsonl"
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._tape = tape_recorder or EvolutionTapeRecorder()
 
     @property
     def path(self) -> Path:
@@ -50,6 +58,7 @@ class Ledger(IterationLedgerStore):
             raise ValueError("账本条目必须带 episode_id")
         with self._path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry.to_json(), ensure_ascii=False) + "\n")
+        self._tape.record_ledger(entry)
         _diag.op("ledger.append", episode_id=entry.episode_id, verdict=entry.verdict)
 
     async def read_all(self) -> tuple[LedgerEntry, ...]:

@@ -33,7 +33,7 @@ class ToolTapeRecorder:
         self._writer.append(
             "tool.finished",
             actor=f"tool.{invocation.tool_name}",
-            provenance="tool",
+            provenance="tool_trusted",
             trace_id=invocation.run_id or "",
             span_id=span_id,
             latency_ms=round(elapsed_ms, 2),

@@ -11,8 +11,12 @@ import json
 
 from xana.agents.iterator import ITERATION_TEAM
 from xana.component.contracts import ComponentSource, ComponentSpec
+from xana.evolution.contracts import PromotionCriteria
 from xana.evolution.evals import EvalRunner, SuiteError, compare_batches, plan_for_version, verdict
+from xana.evolution.interfaces import IterationLedgerStore, PromotionGate
 from xana.evolution.ledger import Ledger
+from xana.evolution.promotion import StatisticalPromotionGate
+from xana.evolution.tape_recorder import EvolutionTapeRecorder
 from xana.harness_sdk.background import BackgroundTasks, TaskOutcome
 from xana.policy.contracts import PermissionResult
 from xana.tools.contracts import ToolContext, ToolDisplay, ToolInvocation, ToolResult, ToolSpec
@@ -276,9 +280,18 @@ class EvalPlanTool(Tool):
 
 
 class EvalVerdictTool(Tool):
-    def __init__(self, evals: EvalRunner, ledger: Ledger) -> None:
+    def __init__(
+        self,
+        evals: EvalRunner,
+        ledger: IterationLedgerStore,
+        *,
+        promotion_gate: PromotionGate | None = None,
+        tape_recorder: EvolutionTapeRecorder | None = None,
+    ) -> None:
         self._evals = evals
         self._ledger = ledger
+        self._gate: PromotionGate = promotion_gate or StatisticalPromotionGate()
+        self._tape = tape_recorder or EvolutionTapeRecorder()
 
     def spec(self) -> ToolSpec:
         return _VERDICT_SPEC
@@ -303,8 +316,21 @@ class EvalVerdictTool(Tool):
         except SuiteError as exc:
             return _fail("eval_verdict", str(exc))
         heldout = {c.id for c in suite.cases if c.split == "heldout"}
+        criteria = PromotionCriteria(
+            target_cases=tuple(crit["target_cases"]),
+            keep_cases=tuple(crit["keep_cases"]),
+            heldout_cases=tuple(sorted(heldout)),
+            min_gain=float(crit.get("min_gain") or 0.0),
+            gate=gate,
+        )
+        decision = self._gate.evaluate(base, cand, criteria=criteria)
+        self._tape.record_promotion(
+            episode_id=str(inp["preregistration"]),
+            decision=decision,
+            policy=self._gate.component_version(),
+        )
         result = verdict(base, cand, target=list(crit["target_cases"]), keep=list(crit["keep_cases"]),
                          min_gain=float(crit.get("min_gain") or 0.0), heldout=heldout, gate=gate)
         result["gate"] = gate
-        return ToolResult(ok=True, content={"verdict": result["verdict"]},
+        return ToolResult(ok=True, content={"verdict": decision.verdict},
                           rendered="[eval_verdict]\n" + json.dumps(result, ensure_ascii=False, indent=1))
