@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 from uuid import uuid4
 
-from xana.component.contracts import ComponentSpec
+from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionContext, PermissionDecision, SandboxPolicySpec
 
 ToolConcurrency = Literal["parallel", "serialized", "exclusive"]

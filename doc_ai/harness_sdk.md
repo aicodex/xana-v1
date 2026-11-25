@@ -57,3 +57,9 @@ turn loop、prompt 组装、工具调度、auto-compact、暂停/取消、事件
 ## Replacement Rule
 
 Any harness implementation is valid if the same request and context produce semantically equivalent events and state transitions.
+
+## Stage 6 模块化与可观测性
+
+- **可替换策略 ABC**：`src/xana/harness_sdk/interfaces.py` 定义 `CompactionPolicy` 与 `StopDecisionPolicy`；默认带版本实现位于 `src/xana/harness_sdk/policies.py`（`DefaultCompactionPolicy`、`DefaultStopDecisionPolicy`），通过 `DefaultHarness` 构造参数注入，黄金契约锁定在 `tests/golden/harness_contract_v1.json`。
+- **轨迹与诊断日志**：`HarnessTapeRecorder`（`src/xana/harness_sdk/tape_recorder.py`）写入 `harness.compaction` 与 `harness.stop_decision` 事件；`DiagLogger("harness")`（`XANA_DIAG=harness`）与 `DiagLogger("context")`（`XANA_DIAG=context`）提供压缩耗时、熔断与续跑决策诊断。
+- **独立运行入口**：`python -m xana.harness_sdk bench [--json]` 脱离宿主与在线服务，凭脚本化模型与假工具独立验证多轮工具循环、压缩决策、续跑熔断与轨迹回放。

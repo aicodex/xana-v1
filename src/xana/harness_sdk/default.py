@@ -36,12 +36,14 @@ from xana.extension_api.contracts import (
 )
 from xana.extension_api.registry import ExtensionRegistry
 from xana.harness_sdk.contracts import (
+    CompactionContext,
     HarnessContext,
     HarnessEvent,
     NOTIFY_USER_TOOL,
     HarnessRequest,
     ProgressEvent,
     PromptProfile,
+    StopContext,
     VerifyCheck,
     task_notification_id,
 )
@@ -51,7 +53,10 @@ from xana.tools.disclosure import DefaultToolDisclosurePolicy
 from xana.tools.interfaces import ObservationPolicy, ToolDisclosurePolicy
 from xana.tools.observation import DefaultObservationPolicy
 from xana.harness_sdk.goal import GoalService, GOAL_CONTINUATION
-from xana.harness_sdk.interfaces import Harness
+from xana.harness_sdk.interfaces import CompactionPolicy, Harness, StopDecisionPolicy
+from xana.harness_sdk.policies import DefaultCompactionPolicy, DefaultStopDecisionPolicy
+from xana.harness_sdk.tape_recorder import HarnessTapeRecorder
+from xana.protocol.diag import DiagLogger
 from xana.harness_sdk.context_notes import (
     background_result_note,
     input_message,
@@ -212,7 +217,10 @@ class DefaultHarness(Harness):
                  todos: TodoStore | None = None,
                  goals: GoalService | None = None,
                  observation_policy: ObservationPolicy | None = None,
-                 disclosure_policy: ToolDisclosurePolicy | None = None) -> None:
+                 disclosure_policy: ToolDisclosurePolicy | None = None,
+                 compaction_policy: CompactionPolicy | None = None,
+                 stop_policy: StopDecisionPolicy | None = None,
+                 tape_recorder: HarnessTapeRecorder | None = None) -> None:
         """today:返回本地日期 YYYY-MM-DD(缺省系统时钟;测试可替换)。
         memory_extractor:每轮完成后在后台提取漏记的记忆(docs/design/memory-dream-design.md §3.1);None = 不提取。
         tool_environment:评测 run(request.metadata["tool_env"])的工具调用经它执行(回放 / 时点 / 拒绝);
@@ -221,6 +229,10 @@ class DefaultHarness(Harness):
         self.permissions = permissions if permissions is not None else PermissionService()
         self._observation_policy: ObservationPolicy = observation_policy or DefaultObservationPolicy()
         self._disclosure_policy: ToolDisclosurePolicy = disclosure_policy or DefaultToolDisclosurePolicy()
+        self._compaction_policy: CompactionPolicy = compaction_policy or DefaultCompactionPolicy()
+        self._stop_policy: StopDecisionPolicy = stop_policy or DefaultStopDecisionPolicy()
+        self._tape: HarnessTapeRecorder = tape_recorder or HarnessTapeRecorder()
+        self._diag = DiagLogger("harness")
         self._todos = todos
         self.goals = goals if goals is not None else GoalService()
         self._memory_extractor = memory_extractor
@@ -350,12 +362,29 @@ class DefaultHarness(Harness):
 
         顺序照 Claude Code 2.1.281:只有思考无可见输出 → 推 1 次;输出被截断 → 续写
         ≤3 次;Stop hook(``on_turn_stop`` 返回理由)→ 连续拦截 ≤8 次。"""
-        if not turn_text.strip() and had_thinking and not st.thinking_nudged:
-            st.thinking_nudged = True
-            return "continuation", CONTINUE_THINKING_ONLY
-        if stop_reason == "length" and st.truncations < _MAX_TRUNCATION_CONTINUES:
-            st.truncations += 1
-            return "continuation", CONTINUE_TRUNCATED
+        # 1. Early fast-path checks (thinking-only / truncation) before invoking side-effect hooks
+        pre_decision = self._stop_policy.decide_stop(StopContext(
+            turn_text=turn_text,
+            had_thinking=had_thinking,
+            stop_reason=stop_reason,
+            thinking_nudged=st.thinking_nudged,
+            truncations=st.truncations,
+            hook_blocks=st.hook_blocks,
+        ))
+        if pre_decision.action == "continue" and (
+            pre_decision.mark_thinking_nudged or pre_decision.increment_truncations
+        ):
+            if pre_decision.mark_thinking_nudged:
+                st.thinking_nudged = True
+            if pre_decision.increment_truncations:
+                st.truncations += 1
+            self._tape.record_stop_decision(
+                session_id=session_id, run_id=run_id, decision=pre_decision,
+                policy=self._stop_policy.component_version(),
+            )
+            self._diag.op("stop.continue", session_id=session_id, reason=pre_decision.reason)
+            return pre_decision.note_kind, pre_decision.note_text
+
         reason: str | None = None
         hooks = ext.turn_lifecycle if ext is not None else ()
         if hooks:
@@ -372,12 +401,9 @@ class DefaultHarness(Harness):
                 continue
             if got and reason is None:
                 reason = got
-        if reason is not None and st.hook_blocks < _MAX_STOP_HOOK_BLOCKS:
-            st.hook_blocks += 1
-            return "stop_hook", stop_hook_text(reason)
-        if reason is not None:
-            _logger.warning("stop hook 连续 %d 次阻止本轮结束,已覆盖并结束本轮", st.hook_blocks)
-        else:
+
+        verify_failed_text: str | None = None
+        if reason is None:
             checks = _verify_checks(context) if context is not None else ()
             if checks:
                 assert context is not None
@@ -391,10 +417,7 @@ class DefaultHarness(Harness):
                     current_goal = self.goals.get(session_id)
                     if current_goal is not None and current_goal.status == "active" and current_goal.completion_requested:
                         self.goals.update(session_id, "active", reason="verification_failed")
-                    if st.hook_blocks < _MAX_STOP_HOOK_BLOCKS:
-                        st.hook_blocks += 1
-                        return "verify", failure_text(failed)
-                    _logger.warning("验证连续 %d 次未通过,已结束本轮等人查看", st.hook_blocks)
+                    verify_failed_text = failure_text(failed)
                 else:
                     st.verify_status = "passed"
                     if self.goals.get(session_id) is not None:
@@ -403,15 +426,38 @@ class DefaultHarness(Harness):
                         if note is not None:
                             await self._append_note(context, session_id, agent_name, run_id, note,
                                                     f"verification:{uuid.uuid4().hex}")
-            goal = self.goals.get(session_id)
-            if goal is not None and goal.status == "active" and st.verify_status != "failed":
-                if goal.completion_requested:
-                    self.goals.update(session_id, "complete")
-                    return None
-                return "goal", GOAL_CONTINUATION
+
         goal = self.goals.get(session_id)
-        if goal is not None and goal.status == "active":
-            self.goals.update(session_id, "paused", reason="stop_hook_or_verification_limit")
+        decision = self._stop_policy.decide_stop(StopContext(
+            turn_text=turn_text,
+            had_thinking=had_thinking,
+            stop_reason=stop_reason,
+            thinking_nudged=True,
+            truncations=max(st.truncations, _MAX_TRUNCATION_CONTINUES),
+            hook_blocks=st.hook_blocks,
+            hook_block_reason=reason,
+            verify_failed_text=verify_failed_text,
+            goal_active=bool(goal is not None and goal.status == "active"),
+            goal_completion_requested=bool(goal is not None and goal.completion_requested),
+        ))
+        self._tape.record_stop_decision(
+            session_id=session_id, run_id=run_id, decision=decision,
+            policy=self._stop_policy.component_version(),
+        )
+        if decision.action == "continue":
+            if decision.increment_hook_blocks:
+                st.hook_blocks += 1
+            self._diag.op("stop.continue", session_id=session_id, reason=decision.reason)
+            return decision.note_kind, decision.note_text
+        if reason is not None and decision.reason == "stop_hook_limit_reached":
+            _logger.warning("stop hook 连续 %d 次阻止本轮结束,已覆盖并结束本轮", st.hook_blocks)
+        elif verify_failed_text is not None and decision.reason == "verify_limit_reached":
+            _logger.warning("验证连续 %d 次未通过,已结束本轮等人查看", st.hook_blocks)
+        if decision.complete_goal:
+            self.goals.update(session_id, "complete")
+            return None
+        if decision.pause_goal_reason and goal is not None and goal.status == "active":
+            self.goals.update(session_id, "paused", reason=decision.pause_goal_reason)
         # 本轮就此结束,on_turn_stop 已以 final 调用过,收尾时不再重复触发
         st.stop_hooks_fired = bool(hooks)
         return None
@@ -1255,26 +1301,47 @@ class DefaultHarness(Harness):
             force_at = context.config_snapshot.get("force_compact")
             blocking_limit = context.config_snapshot.get("blocking_limit")
             if ctx_win and force_at is not None and history_msgs:
-                estimated = estimate_tokens(history_msgs)
-                tokens = estimated
-                if prompt_token_baseline is not None:
-                    exact, baseline = prompt_token_baseline
-                    tokens = max(1, exact + estimated - baseline)
-                while tokens >= int(force_at) and not compaction_blocked:
+                while True:
+                    estimated = estimate_tokens(history_msgs)
+                    exact_tok = prompt_token_baseline[0] if prompt_token_baseline is not None else None
+                    base_tok = prompt_token_baseline[1] if prompt_token_baseline is not None else None
+                    c_ctx = CompactionContext(
+                        estimated_tokens=estimated,
+                        exact_input_tokens=exact_tok,
+                        baseline_tokens=base_tok,
+                        context_window=int(ctx_win),
+                        force_compact=int(force_at),
+                        blocking_limit=int(blocking_limit) if blocking_limit is not None else None,
+                        history_len=len(history_msgs),
+                        compaction_blocked=compaction_blocked,
+                    )
+                    c_dec = self._compaction_policy.evaluate(c_ctx)
+                    if c_dec.action != "compact":
+                        if c_dec.action == "block":
+                            self._tape.record_compaction(
+                                session_id=session_id, run_id=run_id, ctx=c_ctx, decision=c_dec,
+                                policy=self._compaction_policy.component_version(),
+                            )
+                            self._diag.anomaly("compact.blocked", session_id=session_id, tokens=c_dec.effective_tokens)
+                        break
                     await self._report_compact(context, session_id, run_id, "start")
                     try:
                         changed = await self._compact_context(context)
                     except Exception:
                         _logger.exception("auto-compact failed")
                         changed = False
+                    self._tape.record_compaction(
+                        session_id=session_id, run_id=run_id, ctx=c_ctx, decision=c_dec,
+                        changed=changed, policy=self._compaction_policy.component_version(),
+                    )
                     compaction_blocked = not changed
                     if changed:
                         prompt_token_baseline = None
                     await self._report_compact(context, session_id, run_id, "done" if changed else "failed")
                     snapshot = await context.active_context_store.get(session_id, agent_name)
                     history_msgs = snapshot.messages if snapshot is not None else ()
-                    tokens = estimate_tokens(history_msgs) if changed else tokens
-                    if tokens < int(blocking_limit):
+                    tokens_after = estimate_tokens(history_msgs) if changed else c_dec.effective_tokens
+                    if blocking_limit is not None and tokens_after < int(blocking_limit):
                         break
                 if context.abort.aborted:
                     await self._fire_turn_end(
@@ -1284,7 +1351,18 @@ class DefaultHarness(Harness):
                     yield HarnessEvent(kind="cancelled", session_id=session_id, run_id=run_id,
                                        payload={"reason": context.abort.reason or "cancelled"})
                     return
-                if tokens >= int(blocking_limit):
+                final_est = estimate_tokens(history_msgs)
+                final_c_dec = self._compaction_policy.evaluate(CompactionContext(
+                    estimated_tokens=final_est,
+                    exact_input_tokens=prompt_token_baseline[0] if prompt_token_baseline is not None else None,
+                    baseline_tokens=prompt_token_baseline[1] if prompt_token_baseline is not None else None,
+                    context_window=int(ctx_win),
+                    force_compact=int(force_at),
+                    blocking_limit=int(blocking_limit) if blocking_limit is not None else None,
+                    history_len=len(history_msgs),
+                    compaction_blocked=True,
+                ))
+                if final_c_dec.action == "block":
                     await self._fire_turn_end(
                         ext, session_id=session_id, agent_name=agent_name, run_id=run_id,
                         thread_store=thread_store, turn_store=turn_store, status="error")
@@ -1721,13 +1799,16 @@ class DefaultHarness(Harness):
                     )
             # 长时间无进度:连续 5 次模型调用没有对用户输出 → 在工具结果后追加提醒,
             # 同一静默期最多 3 次;子 agent 不注入(照 CC)
-            if (stop_state.silent_calls >= _SILENT_CALLS_BEFORE_REMINDER
-                    and stop_state.silent_reminders < _MAX_SILENT_REMINDERS
-                    and not request.metadata.get("parent_run_id")):
+            silent_reminder_text = self._stop_policy.decide_silent_reminder(
+                silent_calls=stop_state.silent_calls,
+                silent_reminders=stop_state.silent_reminders,
+                is_child_run=bool(request.metadata.get("parent_run_id")),
+            )
+            if silent_reminder_text is not None:
                 stop_state.silent_calls = 0
                 stop_state.silent_reminders += 1
                 await self._append_note(context, session_id, agent_name, run_id,
-                                        continuation_note("no_progress", NO_PROGRESS_REMINDER),
+                                        continuation_note("no_progress", silent_reminder_text),
                                         f"{turn_index}:no_progress")
         else:
             await self._fire_turn_end(

@@ -189,7 +189,7 @@ date: 2026-11-23
 - **落地记录**：完成 `src/xana/memory/{contracts,interfaces,store,recall,project_search,tape_recorder,testing,__main__}.py` 与 `runtime/{memory_judge,memory_extract}.py`、`tools/builtin/memory_write.py` 改造；新增 `MemoryStore`/`MemoryRetrievalPolicy`/`MemoryExtractionPolicy` ABC、`ProjectMemoryStore` 快照/分叉/回滚、`DefaultMemoryRetrievalPolicy`、`MemoryTapeRecorder`、`FakeEvidenceJudge`、`DiagLogger("memory")` 与 `python -m xana.memory bench`；锁定 `tests/golden/memory_contract_v1.json`；全量单测、`merge_gate` 与真实 `xanac --project demo`（SAG2 + Karpo 4B）端到端验收通过。会话上下文（`ActiveContextStore`/`HistoryMirror`）保留在 `memory` 至 Stage 6 收口时统一迁移，避免新增遗留边。
 
 ### Stage 6：Harness 收口
-**状态**：待启动
+**状态**：已完成
 
 - **任务**：
   - 基于各阶段宿主需求账本，定型扩展规约：注入点与拼装规则、生命周期钩子、子会话隔离（防止内部辅助任务递归触发）、配置切片、压缩前后钩子等，以账本实际需要为准。
@@ -199,7 +199,7 @@ date: 2026-11-23
   - 内核与组合根（`boot()`）分离。
 - **必须保留**：单会话单循环（queue/steer/cancel/重启恢复）、提示词前缀逐字节稳定、原子压缩与 TODO 恢复、goal 与 verify 续跑、子 agent 权限上限、后台任务可靠交付。
 - **准出**：内核仅凭脚本化模型和假工具跑完多轮压缩、续跑熔断、隔离、验证测试；增删 Skills 或替换 Memory 无需修改 harness；真实渠道端到端：通过飞书/Web/`xanac` 完成至少一次真实多轮对话（含工具调用及打断/取消或压缩场景），观察日志/轨迹确认收口后的 Harness 主循环、扩展组装与策略槽被实际调用。
-- **落地记录**：待填写
+- **落地记录**：完成 `src/xana/harness_sdk/{contracts,interfaces,policies,tape_recorder,default,__main__}.py` 与 `src/xana/context/sdk.py` 改造；新增 `CompactionPolicy`/`StopDecisionPolicy` ABC 及默认带版本实现 `DefaultCompactionPolicy`/`DefaultStopDecisionPolicy`、`HarnessTapeRecorder`、`DiagLogger("harness")` 与 `DiagLogger("context")`、独立运行入口 `python -m xana.harness_sdk bench`（脱离宿主用脚本化模型与假工具跑通多轮工具循环、压缩决策、续跑熔断与轨迹回放）；锁定 `tests/golden/harness_contract_v1.json`；全量单测、`merge_gate` 与真实 `xanac --project demo` 多轮工具调用端到端验收通过。
 
 ### Stage 7：评测与迭代闭环
 **状态**：待启动

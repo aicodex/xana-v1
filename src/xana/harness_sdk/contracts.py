@@ -22,12 +22,12 @@ if TYPE_CHECKING:
         HistoryMirror,
         MemoryInjectorRegistry,
         MemorySearchEngine,
-        MemoryTree,
     )
     from xana.state.interfaces import StateRepository
     from xana.tools.interfaces import ToolRegistry
 
 HarnessEventKind = Literal["turn_started", "input_accepted", "input_promoted", "model_delta", "tool_started", "tool_progress", "tool_finished", "paused", "cancelled", "continuation", "progress_update", "final", "error", "row_committed", "run_closed", "approval_requested", "approval_resolved", "permission_changed", "checklist_changed", "goal_changed"]
+HARNESS_SCHEMA_VERSION = 1
 
 
 def task_notification_id(task_id: str) -> str:
@@ -163,7 +163,6 @@ class HarnessContext:
     state_repository: "StateRepository | None" = None
     active_context_store: "ActiveContextStore | None" = None
     history_mirror: "HistoryMirror | None" = None
-    memory_tree: "MemoryTree | None" = None
     memory_search_engine: "MemorySearchEngine | None" = None
     memory_injector_registry: "MemoryInjectorRegistry | None" = None
     tool_registry: "ToolRegistry | None" = None
@@ -184,3 +183,68 @@ class HarnessEvent:
     run_id: str
     payload: dict[str, Any] = field(default_factory=dict)
     usage: UsageSnapshot | None = None
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 RSI & standalone policy contracts (frozen, JSON-serializable).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CompactionContext:
+    """Inputs evaluated by CompactionPolicy before a model call."""
+
+    estimated_tokens: int
+    exact_input_tokens: int | None = None
+    baseline_tokens: int | None = None
+    context_window: int | None = None
+    force_compact: int | None = None
+    blocking_limit: int | None = None
+    history_len: int = 0
+    compaction_blocked: bool = False
+    schema_version: int = HARNESS_SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class CompactionDecision:
+    """Decision returned by CompactionPolicy."""
+
+    action: Literal["none", "compact", "block"]
+    effective_tokens: int = 0
+    reason: str = ""
+    overflow_ratios: tuple[float, ...] = (0.7, 0.5, 0.35)
+    max_retries: int = 3
+    schema_version: int = HARNESS_SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class StopContext:
+    """Inputs evaluated by StopDecisionPolicy when the model produces text."""
+
+    turn_text: str
+    had_thinking: bool
+    stop_reason: str
+    thinking_nudged: bool = False
+    truncations: int = 0
+    hook_blocks: int = 0
+    hook_block_reason: str | None = None
+    verify_failed_text: str | None = None
+    goal_active: bool = False
+    goal_completion_requested: bool = False
+    schema_version: int = HARNESS_SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class StopDecision:
+    """Decision returned by StopDecisionPolicy."""
+
+    action: Literal["stop", "continue"]
+    note_kind: str = ""
+    note_text: str = ""
+    mark_thinking_nudged: bool = False
+    increment_truncations: bool = False
+    increment_hook_blocks: bool = False
+    complete_goal: bool = False
+    pause_goal_reason: str | None = None
+    reason: str = ""
+    schema_version: int = HARNESS_SCHEMA_VERSION

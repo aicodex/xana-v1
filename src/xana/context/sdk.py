@@ -16,6 +16,9 @@ from xana.context.message import CompactSummary, Message
 from xana.memory._message_bridge import memory_message_to_sdk, messages_to_memory, sdk_to_memory
 from xana.memory.contracts import HistoryRow, MemoryMessage, ReplayResult
 from xana.memory.interfaces import HistoryMirror
+from xana.protocol.diag import DiagLogger
+
+_diag = DiagLogger("context")
 
 SummaryGenerator = Callable[[tuple[MemoryMessage, ...], int], Awaitable[str | None]]
 
@@ -112,6 +115,7 @@ class ContextSDK:
         Concurrent appends are retained. Replacement/clear invalidates the commit.
         """
         async with self.maintenance(session_id):
+            t0 = time.monotonic()
             prefix = await self.snapshot(session_id, agent_name)
             messages = messages_to_memory(prefix)
             if not messages or (len(messages) == 1 and messages[0].role == "compact"):
@@ -126,6 +130,7 @@ class ContextSDK:
             if text is None:
                 return None
             if not text.strip() or estimate_tokens((MemoryMessage("compact", text),)) >= limit:
+                _diag.anomaly("compact.no_reduction", session_id=session_id, limit=limit)
                 raise ValueError("summary does not reduce the active context")
             revealed = tuple(sorted(revealed_tools_from_messages(messages)))
             summary = self.summary(compact_id, text, str(path), revealed)
@@ -133,6 +138,7 @@ class ContextSDK:
                 async with self._writes[session_id]:
                     current = self._buffers[session_id, agent_name]
                     if tuple(current[:len(prefix)]) != prefix:
+                        _diag.anomaly("compact.prefix_changed", session_id=session_id)
                         raise ValueError("conversation prefix changed before compaction commit")
                     self._archive(path, messages)
                     try:
@@ -146,6 +152,14 @@ class ContextSDK:
                         raise
                     current[:len(prefix)] = [summary]
             await self._finish_commit(publish())
+            _diag.perf(
+                "context.compact",
+                latency_ms=(time.monotonic() - t0) * 1000.0,
+                slow_ms=5000.0,
+                session_id=session_id,
+                prefix_msgs=len(prefix),
+                revealed=len(revealed),
+            )
             return summary
 
     @staticmethod

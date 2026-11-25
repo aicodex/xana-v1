@@ -9,8 +9,18 @@ from typing import AsyncGenerator, AsyncIterator, Awaitable, Callable
 
 from xana.context.message import CompactSummary
 
-from xana.harness_sdk.contracts import HarnessContext, HarnessEvent, HarnessRequest, ProgressEvent
+from xana.harness_sdk.contracts import (
+    CompactionContext,
+    CompactionDecision,
+    HarnessContext,
+    HarnessEvent,
+    HarnessRequest,
+    ProgressEvent,
+    StopContext,
+    StopDecision,
+)
 from xana.llm_driver.contracts import ModelEvent, ModelMessage
+from xana.protocol.primitives import ComponentVersion
 from xana.state.contracts import UsageSnapshot
 
 
@@ -50,3 +60,32 @@ class Harness(ABC):
 
     @abstractmethod
     def invoke(self, request: HarnessRequest, context: HarnessContext) -> AsyncGenerator[HarnessEvent, None]: ...
+
+
+class CompactionPolicy(ABC):
+    """Evolvable compaction trigger and blocking policy."""
+
+    @abstractmethod
+    def component_version(self) -> ComponentVersion: ...
+
+    @abstractmethod
+    def evaluate(self, ctx: CompactionContext) -> CompactionDecision: ...
+
+
+class StopDecisionPolicy(ABC):
+    """Evolvable turn-stop, continuation, and silent-progress reminder policy."""
+
+    @abstractmethod
+    def component_version(self) -> ComponentVersion: ...
+
+    @abstractmethod
+    def decide_stop(self, ctx: StopContext) -> StopDecision: ...
+
+    @abstractmethod
+    def decide_silent_reminder(
+        self,
+        *,
+        silent_calls: int,
+        silent_reminders: int,
+        is_child_run: bool,
+    ) -> str | None: ...
