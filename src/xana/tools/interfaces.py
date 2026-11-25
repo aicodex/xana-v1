@@ -2,10 +2,21 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 
 from xana.policy.contracts import PermissionResult
-from xana.tools.contracts import ToolContext, ToolInvocation, ToolResult, ToolSpec, Toolset, ToolTemporal
+from xana.protocol.primitives import ComponentVersion
+from xana.tools.contracts import (
+    DisclosureContext,
+    DisclosurePlan,
+    ToolContext,
+    ToolInvocation,
+    ToolObservation,
+    ToolResult,
+    ToolSpec,
+    Toolset,
+    ToolTemporal,
+)
 
 
 class Tool(ABC):
@@ -71,3 +82,36 @@ class ToolEnvironment(ABC):
     async def execute(self, invocation: ToolInvocation, tool: Tool, context: ToolContext,
                       run: Callable[[], Awaitable[ToolResult]]) -> ToolResult:
         """run() 是真实执行(pre_tool_use → execute → post_tool_use)。"""
+
+
+class ObservationPolicy(ABC):
+    """Evolvable observation normalizer: central truncation, taint tagging, model vs UI split."""
+
+    @abstractmethod
+    def component_version(self) -> ComponentVersion: ...
+
+    @abstractmethod
+    def normalize(
+        self,
+        invocation: ToolInvocation,
+        spec: ToolSpec,
+        result: ToolResult,
+        *,
+        rendered: str,
+    ) -> ToolObservation: ...
+
+
+class ToolDisclosurePolicy(ABC):
+    """Evolvable tool disclosure policy: deferred catalog, tool_search, native capability yielding."""
+
+    @abstractmethod
+    def component_version(self) -> ComponentVersion: ...
+
+    @abstractmethod
+    def plan(
+        self,
+        specs: Sequence[ToolSpec],
+        ctx: DisclosureContext,
+        *,
+        ext_specs: Sequence[ToolSpec] = (),
+    ) -> DisclosurePlan: ...

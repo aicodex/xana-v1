@@ -1,9 +1,8 @@
-"""同一轮多个工具调用的并行执行(照 Claude Code:连续的并发安全调用成批并行,其余独占;默认上限 10)。
+"""Parallel tool-call batching (contiguous concurrency='parallel' calls batched, up to MAX_PARALLEL_TOOLS).
 
-- 是否可并行由工具声明的 ``ToolSpec.concurrency == "parallel"`` 决定。
-- 执行中的进度(report_progress / report_activity)边执行边转发。
-- **完成事件按模型发出调用的顺序交付**:后发的调用即使先完成,也等前面的都完成再交付。
-  调用方据此按原顺序写回历史(前缀缓存稳定、tool_use/tool_result 顺序与模型发出时一致)。
+- Progress updates stream immediately as tools execute.
+- Done events are yielded strictly in model-emit order to preserve prompt-cache stability.
+- Closing the async generator cancels all unfinished tasks immediately.
 """
 from __future__ import annotations
 
@@ -12,15 +11,17 @@ import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, Sequence
 
+from xana.protocol.diag import DiagLogger
 from xana.tools.contracts import ToolActivity
 
 MAX_PARALLEL_TOOLS = 10
+_DIAG = DiagLogger("tools")
 
 Dispatch = Callable[[dict[str, Any], Callable[[str | ToolActivity], None]], Awaitable[tuple[Any, str]]]
 
 
 def partition(parallel: Sequence[bool]) -> list[list[int]]:
-    """把调用下标分批:连续的可并行调用合成一批,不可并行的单独一批(保持原顺序)。"""
+    """Partition call indices into contiguous parallel batches and singleton serialized batches."""
     batches: list[list[int]] = []
     for i, ok in enumerate(parallel):
         if ok and batches and len(batches[-1]) and parallel[batches[-1][-1]]:
@@ -33,7 +34,7 @@ def partition(parallel: Sequence[bool]) -> list[list[int]]:
 @dataclass(frozen=True)
 class Progress:
     index: int
-    update: str | ToolActivity        # 一行进度(report_progress)或结构化活动(report_activity)
+    update: str | ToolActivity
 
 
 @dataclass(frozen=True)
@@ -44,9 +45,14 @@ class Done:
     elapsed_ms: int
 
 
-async def run_batch(calls: Sequence[dict[str, Any]], dispatch: Dispatch, *,
-                    limit: int = MAX_PARALLEL_TOOLS) -> AsyncIterator[Progress | Done]:
-    """并发执行一批调用;产出进度事件(随时)与完成事件(按原顺序)。生成器被关闭时取消未完成的调用。"""
+async def run_batch(
+    calls: Sequence[dict[str, Any]],
+    dispatch: Dispatch,
+    *,
+    limit: int = MAX_PARALLEL_TOOLS,
+) -> AsyncIterator[Progress | Done]:
+    """Execute a batch concurrently; stream Progress immediately and Done in original order."""
+    batch_t0 = time.monotonic()
     sem = asyncio.Semaphore(max(1, limit))
     queue: asyncio.Queue[Progress] = asyncio.Queue()
 
@@ -77,7 +83,14 @@ async def run_batch(calls: Sequence[dict[str, Any]], dispatch: Dispatch, *,
             while next_out in finished:
                 yield finished[next_out]
                 next_out += 1
+        _DIAG.perf(
+            "batch.done",
+            latency_ms=(time.monotonic() - batch_t0) * 1000.0,
+            slow_ms=10_000.0,
+            size=len(calls),
+            limit=limit,
+        )
     finally:
         for t in tasks:
-            if not t.done():  # 事件流被上游关闭:未完成的调用一并取消,不留后台执行
+            if not t.done():
                 t.cancel()

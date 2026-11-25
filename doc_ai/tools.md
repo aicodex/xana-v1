@@ -8,7 +8,15 @@ status: active
 
 ## 定位
 
-工具声明（spec）、输入校验、权限/沙箱接缝、执行边界、取消语义与结构化结果。执行编排由 harness 负责（见 [harness_tool_dispatch](harness_tool_dispatch.md)），本模块只定义 Tool 合约和内置实现。
+工具声明（spec）、输入校验、权限/沙箱接缝、并行批调度、观察管理（统一截断与污染标记）、延迟披露与结构化结果。
+
+- `contracts.py`：冻结工具与观察契约（Stage 3 新增 `ToolObservation` / `DisclosureContext` / `DisclosurePlan` 受 `tests/golden/tools_contract_v1.json` 锁定）。
+- `interfaces.py`：`Tool` / `ToolRegistry` / `ToolEnvironment` + 可进化策略 ABC `ObservationPolicy` / `ToolDisclosurePolicy`。
+- `batches.py`：同轮并发安全工具分批并行与按序交付（原 `harness_sdk/tool_batches.py` 已迁入并删除旧路径）。
+- `observation.py`：`DefaultObservationPolicy` 统一执行 `ToolSpec.max_result_chars` 首尾截断、UI/模型文本分离与 `open_world` 外部污染标记。
+- `disclosure.py`：`DefaultToolDisclosurePolicy` 统一管理延迟工具目录、`tool_search` 揭示、`notify_user` 无人值守门禁与原生能力让位（`yields_to_native`）。
+- `tape_recorder.py`：`ToolTapeRecorder` 直写 Stage 0 `TapeWriter`（大输出自动外置 CAS blob）；内置可开关诊断日志 `DiagLogger("tools")`。
+- `__main__.py`：独立 CLI `python -m xana.tools bench`。
 
 ## 详细设计
 

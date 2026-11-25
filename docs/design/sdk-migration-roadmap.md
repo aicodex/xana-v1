@@ -152,13 +152,17 @@ date: 2026-11-23
   - **真实妥协与后续注意**：① `tools/builtin/_process.py::ProcessRunner` 保留流式 `on_output` 回调供工作台实时进程日志消费，同时接入 `DiagLogger("env")`，待 Stage 3 统一工具执行管线时评估合并流式接口；② `PolicyTapeRecorder` 默认 no-op，待 Stage 6 统一注入 run 级 `TapeWriter`。
 
 ### Stage 3：工具与观察管理
-**状态**：待启动
+**状态**：已完成（2026-11-25）
 
 - **为什么把观察管理放在这里**：工具输出如何过滤、截断、落盘、提取报错并转成模型可读内容，直接影响 token 效率和多步成功率，也是常被迭代的部分；它与工具执行高度内聚。
 - **起点线索**：32+ 内置工具、10 类失败归因、只读即停与写操作宽限、并发批次、延迟披露 `tool_search`、MCP 审核/热加载/generation 状态机、派生工具、显示配置、`ToolEnvironment` 回放与时点截断。
 - **调研重点**：声明式资源访问与并发冲突；模型、UI 进度、程序/评测三种输出分离；可由模型自纠的错误与必须中止的错误；外部数据污染标记；观察策略、工具披露策略、调用前校验等可替换策略；live/record/replay/simulate 环境模式。
 - **准出**：任意工具和整条执行管线可通过独立入口喂入用例或轨迹切片运行和评测，不依赖 harness 或 memory；真实渠道端到端：通过飞书/Web/`xanac` 发起至少一次触发真实工具调用（含大输出裁剪或 `tool_search`/MCP 工具）的请求，观察日志/轨迹确认新工具执行管线与观察管理模块被实际调用。
-- **落地记录**：待填写
+- **落地记录**：
+  - **入口与事实文档**：`src/xana/tools/{contracts,interfaces,batches,observation,disclosure,tape_recorder,__main__}.py`（新增纯 JSON 契约 `ToolObservation` / `DisclosureContext` / `DisclosurePlan` 受 `tests/golden/tools_contract_v1.json` 锁定；新增 2 个可进化策略 ABC `ObservationPolicy` / `ToolDisclosurePolicy`）；独立 CLI `python -m xana.tools bench`；已删除 `src/xana/harness_sdk/tool_batches.py` 并封禁于 `RETIRED_MODULES`；`DefaultHarness` 原位切入 `batches` / `DefaultObservationPolicy` / `DefaultToolDisclosurePolicy`；内置可开关诊断日志 `DiagLogger("tools")`（覆盖批次耗时、截断/失败异常）。
+  - **测试基线**：Stage 3 专项 + 架构/并行/延迟披露/工具测试全绿；`python -m xana.tools bench` 4/4 pass（`pass_rate=1.0`）；全量回归与 `merge_gate` 全绿。
+  - **宿主需求账本**：① `DefaultHarness` 向 `ToolDisclosurePolicy.plan()` 提供 `DisclosureContext`（含 `revealed_tools`、`available_tools`、`unattended`、`search_provider`）；② `DefaultHarness` 在 `tool.render_result` 后调用 `ObservationPolicy.normalize()` 统一执行输出截断与污染标记。
+  - **真实妥协与后续注意**：① 32+ 内置工具到宿主服务（`skills`/`memory`/`agents`/`evolution`）的既有边留待 Stage 4–7 对应子系统独立时一并收敛；② `ToolTapeRecorder` 默认 no-op，待 Stage 6 统一注入 run 级 `TapeWriter`。
 
 ### Stage 4：Skills
 **状态**：待启动

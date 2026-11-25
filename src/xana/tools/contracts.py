@@ -220,3 +220,40 @@ class ToolResult:
     media: tuple[MediaInput, ...] = ()
     # Finished background result; harness confirms delivery only after history commit.
     background_task_id: str | None = None
+
+
+TOOLS_SCHEMA_VERSION: int = 1
+TOOL_SEARCH_TOOL_NAME: str = "tool_search"
+NOTIFY_USER_TOOL: str = "notify_user"
+
+
+@dataclass(frozen=True)
+class ToolObservation:
+    """Normalized observation produced by an ObservationPolicy (model vs UI separation)."""
+
+    model_text: str
+    ui_text: str
+    truncated: bool = False
+    omitted_chars: int = 0
+    taint: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DisclosureContext:
+    """Inputs to ToolDisclosurePolicy.plan() (pure JSON-serializable)."""
+
+    provider: str
+    available_tools: tuple[str, ...] | None = None
+    revealed_tools: tuple[str, ...] = ()
+    unattended: bool = False
+    search_provider: str | None = None
+
+
+@dataclass(frozen=True)
+class DisclosurePlan:
+    """Resolved model-visible tool schemas, deferred catalog, and native capability flags."""
+
+    schemas: tuple[dict[str, Any], ...]
+    deferred: tuple[tuple[str, str], ...]
+    web_search_native: bool = False

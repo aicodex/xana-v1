@@ -45,7 +45,11 @@ from xana.harness_sdk.contracts import (
     VerifyCheck,
     task_notification_id,
 )
-from xana.harness_sdk.tool_batches import Progress, partition, run_batch
+from xana.tools.batches import Progress, partition, run_batch
+from xana.tools.contracts import DisclosureContext
+from xana.tools.disclosure import DefaultToolDisclosurePolicy
+from xana.tools.interfaces import ObservationPolicy, ToolDisclosurePolicy
+from xana.tools.observation import DefaultObservationPolicy
 from xana.harness_sdk.goal import GoalService, GOAL_CONTINUATION
 from xana.harness_sdk.interfaces import Harness
 from xana.harness_sdk.context_notes import (
@@ -206,13 +210,17 @@ class DefaultHarness(Harness):
                  control: TurnCoordinator | None = None,
                  permissions: PermissionService | None = None,
                  todos: TodoStore | None = None,
-                 goals: GoalService | None = None) -> None:
+                 goals: GoalService | None = None,
+                 observation_policy: ObservationPolicy | None = None,
+                 disclosure_policy: ToolDisclosurePolicy | None = None) -> None:
         """today:返回本地日期 YYYY-MM-DD(缺省系统时钟;测试可替换)。
         memory_extractor:每轮完成后在后台提取漏记的记忆(docs/design/memory-dream-design.md §3.1);None = 不提取。
         tool_environment:评测 run(request.metadata["tool_env"])的工具调用经它执行(回放 / 时点 / 拒绝);
         None = 只注入时点,工具原样执行。"""
         self.control = control if control is not None else TurnCoordinator()
         self.permissions = permissions if permissions is not None else PermissionService()
+        self._observation_policy: ObservationPolicy = observation_policy or DefaultObservationPolicy()
+        self._disclosure_policy: ToolDisclosurePolicy = disclosure_policy or DefaultToolDisclosurePolicy()
         self._todos = todos
         self.goals = goals if goals is not None else GoalService()
         self._memory_extractor = memory_extractor
@@ -722,6 +730,10 @@ class DefaultHarness(Harness):
                 else:
                     result = await _real()
             rendered = await tool.render_result(result)
+            obs = self._observation_policy.normalize(invocation, tool_spec, result, rendered=rendered)
+            rendered = obs.model_text
+            if obs.truncated != result.truncated or obs.taint is not None:
+                result = replace(result, truncated=obs.truncated, metadata=obs.metadata)
         except Exception as exc:
             result = ToolResult(
                 ok=False,
@@ -861,35 +873,19 @@ class DefaultHarness(Harness):
         provider = context.config_snapshot["provider"]
         profile = _profile(context)
         revealed = revealed_tools_from_messages(history_msgs)  # 揭示状态存在历史里(CC 同款)
-        if not _can_use(available, TOOL_SEARCH_TOOL_NAME):
-            revealed = {sp.component.name for sp in specs}  # 没有 tool_search 就不隐藏任何工具
-        schemas, deferred_names = _split_tool_schemas(specs, revealed)
-        if profile.mode != "unattended":  # notify_user 只在无人值守会话中出现
-            schemas = [sc for sc in schemas if sc["name"] != NOTIFY_USER_TOOL]
-            deferred_names = [d for d in deferred_names if d[0] != NOTIFY_USER_TOOL]
-        if ext_tools:
-            # extension 工具不参与 defer:永远全量 schema,且覆盖同名内置工具
-            ext_tool_names = set(ext_tools)
-            schemas = (
-                [s for s in schemas if s["name"] not in ext_tool_names]
-                + [_to_anthropic_tool_schema(t.spec()) for t in ext_tools.values()]
-            )
-            deferred_names = [d for d in deferred_names if d[0] not in ext_tool_names]
-        # agent 的工具范围(AgentSpec.tools / disallowed_tools 解析结果)
-        schemas = [sc for sc in schemas if _can_use(available, sc["name"])]
-        deferred_names = [d for d in deferred_names if _can_use(available, d[0])]
-        # 原生联网搜索互斥(同构 yuxu _maybe_inject_web_search):search_provider 为 native(或未设)且
-        # provider 为 deepseek 系时,声明 yields_to_native 的搜索工具让位给模型端 server tool,
-        # 从 schema 与 deferred 名单剔除,并经 metadata 通知 provider 注入。只在该工具仍在本 agent
-        # 可用范围内时触发:白名单外的 agent 不会因此获得联网能力。
+        disc_plan = self._disclosure_policy.plan(
+            specs,
+            DisclosureContext(
+                provider=provider,
+                available_tools=tuple(sorted(available)) if available is not None else None,
+                revealed_tools=tuple(sorted(revealed)),
+                unattended=(profile.mode == "unattended"),
+                search_provider=context.config_snapshot.get("search_provider"),
+            ),
+            ext_specs=tuple(t.spec() for t in ext_tools.values()),
+        )
         request_metadata: dict[str, Any] = {}
-        yielding = {sp.component.name for sp in specs if sp.yields_to_native}
-        if (yielding and context.config_snapshot.get("search_provider") in (None, "", "native")
-                and provider.startswith("deepseek")
-                and (any(sc["name"] in yielding for sc in schemas)
-                     or any(d[0] in yielding for d in deferred_names))):
-            schemas = [sc for sc in schemas if sc["name"] not in yielding]
-            deferred_names = [d for d in deferred_names if d[0] not in yielding]
+        if disc_plan.web_search_native:
             request_metadata["web_search_native"] = True
         # 前缀缓存路由键:同会话请求落到同一缓存(kimi prompt_cache_key)。
         request_metadata["prompt_cache_key"] = context.session_id
@@ -898,11 +894,11 @@ class DefaultHarness(Harness):
             request_metadata.setdefault(
                 "thinking",
                 "enabled" if context.config_snapshot.get("thinking") else "disabled")
-        tools_schema: tuple[dict, ...] = tuple(schemas)
+        tools_schema: tuple[dict, ...] = disc_plan.schemas
         system_content, loop_notes = self._session_system(
             context, context.session_id, context.agent_name, extension_system_text, history_msgs, memory=has_memory,
             memory_saving=has_memory and _profile(context).mode == "interactive")
-        deferred_note = deferred_tools_note(tuple(deferred_names), history_msgs)
+        deferred_note = deferred_tools_note(disc_plan.deferred, history_msgs)
         if deferred_note is not None:
             loop_notes.append(deferred_note)
         return ModelRequest(provider=provider, model=context.model, effort=context.effort,
@@ -1836,34 +1832,6 @@ def _save_system_prompt(context: HarnessContext, text: str) -> str | None:
 
 def _sessions_root_from(context: HarnessContext) -> Path:
     return context.run_writer.sessions_root if context.run_writer is not None else project_home() / "sessions"
-
-
-def _to_anthropic_tool_schema(spec) -> dict:
-    """Pack a ToolSpec into the {name, description, input_schema} shape the
-    Anthropic /v1/messages `tools` array expects."""
-    return {
-        "name": spec.component.name,
-        "description": spec.component.description or "",
-        "input_schema": dict(spec.input_schema),
-    }
-
-
-def _split_tool_schemas(
-    specs, revealed: set[str],
-) -> tuple[list[dict], list[tuple[str, str]]]:
-    """defer 且未揭示 → 只给 (名字, 描述);其余给完整 schema。"""
-    schemas: list[dict] = []
-    deferred: list[tuple[str, str]] = []
-    for s in specs:
-        if s.defer and s.component.name not in revealed:
-            deferred.append((s.component.name, s.component.description or ""))
-        else:
-            schemas.append(_to_anthropic_tool_schema(s))
-    return schemas, deferred
-
-
-
-
 
 
 class _RunJsonlMirror(HistoryMirror):
