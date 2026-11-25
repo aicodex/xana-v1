@@ -14,7 +14,10 @@ from pathlib import Path
 
 from xana.config.paths import project_home
 from xana.evolution.contracts import LedgerEntry, LintViolation
+from xana.evolution.interfaces import IterationLedgerStore
+from xana.protocol.diag import DiagLogger
 
+_diag = DiagLogger("eval")
 _VERDICTS = ("kept", "rolled_back", "abandoned", "preregistered")   # preregistered:实验前的登记(§9.1 I1)
 
 
@@ -23,7 +26,7 @@ def default_evolution_home() -> Path:
     return project_home() / "evolution"
 
 
-class Ledger:
+class Ledger(IterationLedgerStore):
     """append-only 进化账本。构造不给 path 时用 default_evolution_home()。"""
 
     def __init__(self, *, path: Path | None = None, home: Path | None = None) -> None:
@@ -47,6 +50,7 @@ class Ledger:
             raise ValueError("账本条目必须带 episode_id")
         with self._path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry.to_json(), ensure_ascii=False) + "\n")
+        _diag.op("ledger.append", episode_id=entry.episode_id, verdict=entry.verdict)
 
     async def read_all(self) -> tuple[LedgerEntry, ...]:
         out: list[LedgerEntry] = []

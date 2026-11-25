@@ -98,6 +98,12 @@ verdict 规则：canary 失败，或 Δ ≤ 0（有评估时）→ `rolled_back`
 
 - **幂等 install_cron**：默认 cron `0 */6 * * *`（每 6 小时唤醒），任务 prompt 是 marker 字符串 `"[xana-evolution-meta]"`，`session_id` 覆写为 `"evolution-meta"`（FileSchedulerService.session_id 是公有可变属性，cron 工具同款手法，用完恢复）。已存在同 marker 任务 → 返回 None 不重复建。无 scheduler → 返回 None。
 - `owns(text)`：dispatch 回调用 marker 前缀识别任务是否归本服务。
+
+## Stage 7 模块化与可观测性
+
+- **正式接口 ABC**：`src/xana/evolution/interfaces.py` 定义 `IterationLedgerStore`、`PromotionGate`、`BenchmarkRunner`，分别由 `Ledger`、`StatisticalPromotionGate`（`promotion.py`）、`EvalRunner` 实现；黄金契约锁定在 `tests/golden/evolution_contract_v1.json`。
+- **Stage 0 评测与拼装对接**：`batch_to_benchmark_snapshot()` 将批次 `per_case` 转为 Stage 0 `EvalTrialRecord`/`BenchmarkSnapshot`；`VersionAssembly` 与 `LedgerEntry.manifest_hash`/`snapshot_id` 支持跨模块多版本拼装追溯；`EvolutionTapeRecorder`（`tape_recorder.py`）写入 `eval.promotion` 与 `eval.ledger` 事件。
+- **诊断日志与独立运行入口**：`DiagLogger("eval")`（`XANA_DIAG=eval`）提供门禁决策、泄漏告警与账本写入诊断；`python -m xana.evolution bench [--json]` 可脱离宿主独立跑通单模块晋升/防过拟合回滚与多版本拼装账本闭环。
 - **assemble_prompt()** 固定四段 + 收尾指令：
   1. L3 当前计划（`TodoStore.load("evolution-meta")`，带状态图标渲染）；
   2. 账本近期 N 条（默认 `recent_n=10`，episode_id / verdict / delta / closure_tokens）；

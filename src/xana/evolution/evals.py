@@ -26,10 +26,21 @@ from typing import Any
 
 import yaml
 
+from xana.evolution.interfaces import BenchmarkRunner
 from xana.extension_api.capabilities import AgentRunner
+from xana.protocol.diag import DiagLogger
+from xana.protocol.eval import (
+    BenchmarkSnapshot,
+    EvalTrialRecord,
+    MetricDefinition,
+    RunSummary,
+    build_benchmark_snapshot,
+)
 from xana.state.budget import day_usage
 from xana.state.interfaces import RunStore
 from xana.tools.contracts import ToolEnvConfig
+
+_diag = DiagLogger("eval")
 
 SPLITS = ("train", "heldout", "live")
 SCORE_CACHE_S = 6 * 3600.0     # 打分结果的复用期限(无 pending 样本时)
@@ -135,7 +146,7 @@ class RunRow:
     model_calls: int = 0
 
 
-class EvalRunner:
+class EvalRunner(BenchmarkRunner):
     """按套件跑样本:每个样本一个独立会话,工具环境 = 样本的 as_of + 套件策略;结果写进批次目录。"""
 
     def __init__(self, *, runner: AgentRunner, run_store: RunStore | None, evals_root: Path,
@@ -487,3 +498,53 @@ def verdict(base: list[dict], cand: list[dict], *, target: list[str], keep: list
             "heldout": {"cases": len(h_rows), "mean_diff": round(h_mean, 4) if h_mean is not None else None,
                         "improved": sum(r["verdict"] == "improved" for r in h_rows),
                         "worse": sum(r["verdict"] == "worse" for r in h_rows)}}
+
+
+def batch_to_benchmark_snapshot(
+    *,
+    suite_name: str,
+    batch_id: str,
+    per_case: list[dict[str, Any]],
+    pass_threshold: float = 0.5,
+    manifest_hash: str = "",
+    git_sha: str = "local",
+) -> BenchmarkSnapshot:
+    """Convert evolution per_case scorer output into a Stage 0 BenchmarkSnapshot."""
+    trials: list[EvalTrialRecord] = []
+    for idx, row in enumerate(per_case):
+        case_id = str(row.get("case_id") or f"case-{idx}")
+        rep = int(row.get("rep") or 0)
+        raw_status = str(row.get("status") or "invalid")
+        score = row.get("score")
+        if raw_status == "scored" and isinstance(score, (int, float)):
+            status = "pass" if float(score) >= pass_threshold else "fail"
+            score_val: float | None = float(score)
+        elif raw_status == "pending":
+            status = "skipped"
+            score_val = None
+        else:
+            status = "error"
+            score_val = None
+        trials.append(
+            EvalTrialRecord(
+                trial_id=str(row.get("run_id") or f"{batch_id}:{case_id}:{rep}"),
+                benchmark=suite_name,
+                task_id=case_id,
+                split=str(row.get("split") or "train"),
+                repeat_index=rep,
+                status=status,
+                score=score_val,
+                duration_ms=float(row.get("duration_ms") or 0.0),
+                manifest_hash=manifest_hash,
+                run_summary=RunSummary(step_count=1),
+            )
+        )
+    return build_benchmark_snapshot(
+        snapshot_id=f"{suite_name}:{batch_id}",
+        benchmark=suite_name,
+        created_at_ms=int(time.time() * 1000),
+        git_sha=git_sha,
+        manifest_hash=manifest_hash,
+        metric_definitions=(MetricDefinition(key="pass_rate", label="Pass Rate", format="percent"),),
+        trials=tuple(trials),
+    )

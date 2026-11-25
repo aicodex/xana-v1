@@ -202,12 +202,12 @@ date: 2026-11-23
 - **落地记录**：完成 `src/xana/harness_sdk/{contracts,interfaces,policies,tape_recorder,default,__main__}.py` 与 `src/xana/context/sdk.py` 改造；新增 `CompactionPolicy`/`StopDecisionPolicy` ABC 及默认带版本实现 `DefaultCompactionPolicy`/`DefaultStopDecisionPolicy`、`HarnessTapeRecorder`、`DiagLogger("harness")` 与 `DiagLogger("context")`、独立运行入口 `python -m xana.harness_sdk bench`（脱离宿主用脚本化模型与假工具跑通多轮工具循环、压缩决策、续跑熔断与轨迹回放）；锁定 `tests/golden/harness_contract_v1.json`；全量单测、`merge_gate` 与真实 `xanac --project demo` 多轮工具调用端到端验收通过。
 
 ### Stage 7：评测与迭代闭环
-**状态**：待启动
+**状态**：已完成
 
 - **起点线索**：EvalSuite（train/heldout/live、指纹复用、确定性 scorer）、EpisodeRunner 状态机与预算收尾、Ledger、Harbor/τ² 适配、ToolEnvironment。
 - **调研重点**：通过组装清单拼装任意模块版本，在固定条件下做配对对照；防过拟合（heldout 门禁、金丝雀、复杂度约束、自动回滚）；用历史轨迹切片低成本预筛候选；迭代账本（目标模块、故障聚类、假设、diff、评测条件、预期与实测、裁决），支持换基座模型时区分模型专属改动与通用改动。
 - **准出**：至少一个单模块迭代闭环和一个多版本拼装回归闭环跑通，产物可追溯、可回滚；真实渠道端到端：通过飞书/Web/`xanac` 或生产同源入口触发至少一次真实任务与评测/迭代记录，观察日志/轨迹确认新评测、打分与账本/回滚链路被实际调用。
-- **落地记录**：待填写
+- **落地记录**：完成 `src/xana/evolution/{contracts,interfaces,promotion,tape_recorder,ledger,evals,__main__}.py` 改造；新增 `IterationLedgerStore`/`PromotionGate`/`BenchmarkRunner` ABC、`StatisticalPromotionGate`（配对 train/keep/heldout 防过拟合门禁）、`VersionAssembly`、`batch_to_benchmark_snapshot`（对接 Stage 0 `EvalTrialRecord`/`BenchmarkSnapshot`/`RunManifest`）、`EvolutionTapeRecorder`、`DiagLogger("eval")` 及独立运行入口 `python -m xana.evolution bench`；锁定 `tests/golden/evolution_contract_v1.json`；全量单测、`merge_gate` 与真实 `xanac --project demo` 端到端验收通过。
 
 ### 迁移收尾（全部阶段完成后）
 **状态**：待启动

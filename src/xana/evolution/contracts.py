@@ -17,6 +17,7 @@ ChangeVerdict = Literal["pending", "accepted", "rejected"]
 
 # closing 两阶段的落地动作类型(landing 期拒绝新动作的理由)
 GATE_REASONS = ("episode_landing", "episode_closing", "episode_closed")
+EVOLUTION_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -39,9 +40,11 @@ class LedgerEntry:
     change: str = ""
     attribution: str = ""
     evidence: dict = field(default_factory=dict)
+    manifest_hash: str = ""
+    snapshot_id: str = ""
 
     def to_json(self) -> "dict[str, Any]":
-        return {
+        out = {
             "episode_id": self.episode_id,
             "goal": self.goal,
             "started_at": self.started_at,
@@ -58,6 +61,11 @@ class LedgerEntry:
             "attribution": self.attribution,
             "evidence": dict(self.evidence),
         }
+        if self.manifest_hash:
+            out["manifest_hash"] = self.manifest_hash
+        if self.snapshot_id:
+            out["snapshot_id"] = self.snapshot_id
+        return out
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> "LedgerEntry":
@@ -77,6 +85,8 @@ class LedgerEntry:
             change=str(raw.get("change") or ""),
             attribution=str(raw.get("attribution") or ""),
             evidence=dict(raw.get("evidence") or {}),
+            manifest_hash=str(raw.get("manifest_hash") or ""),
+            snapshot_id=str(raw.get("snapshot_id") or ""),
         )
 
 
@@ -86,3 +96,44 @@ class LintViolation:
 
     line_no: int
     reason: str
+
+
+# ---------------------------------------------------------------------------
+# Stage 7 RSI promotion & assembly contracts (frozen, JSON-serializable).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PromotionCriteria:
+    """Pre-registered criteria for evaluating a candidate module version."""
+
+    target_cases: tuple[str, ...] = ()
+    keep_cases: tuple[str, ...] = ()
+    heldout_cases: tuple[str, ...] = ()
+    min_gain: float = 0.05
+    gate: float = 0.05
+    schema_version: int = EVOLUTION_SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class PromotionDecision:
+    """Structured verdict from a PromotionGate."""
+
+    verdict: Literal["pass", "fail", "invalid"]
+    reasons: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    target_mean_diff: float = 0.0
+    heldout_mean_diff: float | None = None
+    keep_worse: tuple[str, ...] = ()
+    target_worse: tuple[str, ...] = ()
+    schema_version: int = EVOLUTION_SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class VersionAssembly:
+    """Multi-module version assembly manifest for paired regression runs."""
+
+    assembly_id: str
+    components: tuple[tuple[str, str, str], ...] = ()
+    manifest_hash: str = ""
+    schema_version: int = EVOLUTION_SCHEMA_VERSION
