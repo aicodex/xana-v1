@@ -4,70 +4,61 @@ type: doc
 status: active
 ---
 
-# doc_ai
+# Xana 架构导航（`doc_ai`）
 
-`doc_ai` contains target-state architecture. It is the stable source of truth for what the system is supposed to be.
+`doc_ai` 是 Xana 当前实现的架构真相。Xana 按 **底座（L0）+ 7 个独立可进化核心层（L1–L7）** 组织，每层按目录隔离、可独立运行离线 `bench`、有黄金契约锁（`tests/golden/*_contract_v1.json`）、支持 `XANA_DIAG` 按标签开关诊断日志，并统一在唯一组合根 [runtime/boot.py](../src/xana/runtime/boot.py) 装配。
 
-## 系统入口
+> 接口签名速查：[modular_interfaces.md](modular_interfaces.md) ｜ 输入输出总表：[module_io_map.md](module_io_map.md) ｜ 系统数据流：[system.md](system.md) ｜ 架构依赖门禁：[test_arch_layers.py](../tests/test_arch_layers.py)
 
-- [system](system.md) — 全局数据流、状态权威、恢复流程
-- [module_io_map](module_io_map.md) — 模块输入/输出/所有权总表
-- [modular_interfaces](modular_interfaces.md) — **Stage 0–7 模块化接口总览**（全部 ABC 签名、可替换策略槽、黄金锁、Tape 事件、`XANA_DIAG` 标签与独立 CLI 入口）
-- [replacement_rule](replacement_rule.md) — 实现替换规则
-- [io_contract_template](io_contract_template.md) — 新合约模板
-- 项目（project）— 一个项目 = 一套记忆 + 自己作用域的 agents / 工具默认配置 + 一个 serve 进程；数据布局、配置分层、命令与迁移见 [project-design](../docs/design/project-design.md)。路径唯一解析点 `src/xana/config/paths.py`，项目配置分层 `src/xana/config/project_config.py`，注册 / 查询 / 启停 `src/xana/runtime/projects.py`。
+---
 
-## 核心模块
+## 一、核心 7 层（+ L0 观测与协议底座）
 
-- [config](config.md) — 配置加载、用户级 system.json + 项目级 config.json 分层；路径解析（`config/paths.py`）与项目配置（`config/project_config.py`）。
-- [mcp](mcp.md) — 外部 MCP server 配置、SDK 连接、工具审核（audit.jsonl）、热加载与工具发布状态机（`src/xana/mcp/`、`runtime/mcp_http.py`）。
-- [runtime](runtime.md) — 进程生命周期、启动顺序、调度外壳；项目管理（`runtime/projects.py`）。
-- [harness_sdk](harness_sdk.md) — turn loop、暂停/恢复/取消、事件流和 usage 快照。
-- [harness_background_tasks](harness_background_tasks.md) — 独立后台任务、事件等待、持久结果交付与完成唤醒。
-- [agents](agents.md) — agent spec、outer API、会话侧行为包装。
-- [tools](tools.md) — 工具校验、权限、沙箱、执行边界和输出 schema。
-- [skills](skills.md) — 技能元数据、激活规则、上下文/提示注入。
-- [agent_adapter](agent_adapter.md) — CLI/TG/Feishu/HTTP 等外部协议翻译。
-- [cli](cli.md) — 命令分发：`xana` 管理命令（setup/sync/serve/pair/project/login/logout/mcp）与 `xanac` 交互客户端。
-- [llm_driver](llm_driver.md) — 模型请求、流式响应、tool call 解析、usage 提取。
-- [memory](memory.md) — active context 权威、history mirror、treemem/search/injection。
-- [SAG2 memory 基线](memory_sag2.md) — `ProjectMemorySearch` + 本地 Karpo 4B 已作为唯一记忆检索与召回引擎上线，旧知识树/FTS/选择器已删除；[设计与验证](../docs/design/memory-sag2-design.md)。
-- [context](context.md) — active context 的运行时载体：`ContextSDK` facade、有序消息与前缀压缩。
+| 层级 | 目录 | 职责 | 如何接入（契约 / 装配 / 独立入口） | 详细文档 |
+|---|---|---|---|---|
+| **L0 协议与观测底座** | `src/xana/protocol/` | 零业务依赖纯 stdlib 原语、双版本序列化、Append-Only `TapeWriter`（含 CAS Blob）、统一 `EvalTrialRecord`/`BenchmarkSnapshot`、可开关诊断日志 `DiagLogger` | 所有上层包均可单向依赖；`XANA_DIAG=<tag>` 开诊断日志；`XANA_TAPE_DIR=<dir>` 在 `boot()` 开启全链路 Tape 落盘；独立 CLI：`python -m xana.protocol tape ...` | [protocol.md](protocol.md) |
+| **L1 模型驱动** | `src/xana/llm_driver/` | 多 Provider 线协议传输（OpenAI Chat / Anthropic Messages / Kimi OAuth）、错误分类、流式事件归一化、重试/恢复/改写/路由策略 | 经 `ModelClient`/`ModelRegistry` + 4 个策略 ABC 接入，由 `boot()` 构造并注入 `DefaultHarness`；标签 `XANA_DIAG=llm`；独立 CLI：`python -m xana.llm_driver bench` | [llm_driver.md](llm_driver.md) |
+| **L2 权限与执行环境** | `src/xana/policy/` | 会话权限模式（manual/yolo/auto）、Plan Mode、审批流、命令风险分级、路径写保护门禁、进程组隔离执行环境 | 通过 `PolicyStatePort`/`PolicyEventSink` 适配宿主（[runtime/policy_adapter.py](../src/xana/runtime/policy_adapter.py)），由 `boot()` 装配 `PermissionService` 与 `LocalProcessEnvironment`；标签 `XANA_DIAG=policy`；独立 CLI：`python -m xana.policy bench` | [policy.md](policy.md) |
+| **L3 工具与观测管理** | `src/xana/tools/` | 工具校验→权限→执行生命周期、批处理调度（`batches.py`）、工具输出归一化/截断/污染标记（`ObservationPolicy`）、按需揭示（`ToolDisclosurePolicy`）、内置与派生工具 | 实现 `Tool` ABC 注册到 `FileToolRegistry`，策略槽与 `ToolTapeRecorder` 构造注入 `DefaultHarness`；标签 `XANA_DIAG=tools`；独立 CLI：`python -m xana.tools bench` | [tools.md](tools.md) |
+| **L4 技能** | `src/xana/skills/` | 技能包发现/加载/管理、目录渲染与预算裁剪（`SkillCatalogPolicy`）、候选技能提案队列（`SkillProposalQueue`） | 经 `SkillsListingContributor`（`extension_api/builtin/`）注入提示词、经 `SkillLoadTool` 按需加载；提案队列挂在 `BootResult.skill_proposals`；标签 `XANA_DIAG=skills`；独立 CLI：`python -m xana.skills bench` | [skills.md](skills.md) |
+| **L5 长期记忆（SAG2）** | `src/xana/memory/` | 项目权威 Markdown 记忆（`memory/*.md`，支持 `snapshot`/`fork`/`rollback`）、**SAG2 + 本地 Karpo 4B** 证据评分检索与召回（`MemoryRetrievalPolicy`）、后台记忆提取（`MemoryExtractionPolicy`） | 经 `MemoryStore`/`MemorySearchEngine`/`MemoryInjector` 接入；L1 自动召回与 L2 `memory_search` 共用同一 `ProjectMemorySearch` 实例，`memory_write` 为唯一写入口；标签 `XANA_DIAG=memory`；独立 CLI：`python -m xana.memory bench` | [memory.md](memory.md)、[memory_sag2.md](memory_sag2.md)、[memory_extract.md](memory_extract.md) |
+| **L6 Harness 与上下文** | `src/xana/harness_sdk/`<br>`src/xana/context/` | 单会话单循环（queue/steer/cancel）、固定前缀 Prompt 组装、原子前缀压缩（`ContextSDK` + `CompactionPolicy`）、回合收尾与续跑熔断（`StopDecisionPolicy`）、Goal/TODO/后台任务 | `DefaultHarness` 接收所有策略槽与 `ExtensionRegistry`，对外暴露 `Harness.invoke/compact/cancel` 有序事件流；标签 `XANA_DIAG=harness,context`；独立 CLI：`python -m xana.harness_sdk bench` | [harness_sdk.md](harness_sdk.md)、[context.md](context.md)、[harness_background_tasks.md](harness_background_tasks.md) |
+| **L7 评测与自进化** | `src/xana/evolution/` | 评测套件执行与确定性打分（`BenchmarkRunner`）、配对 train/keep/heldout 防过拟合晋升门禁（`PromotionGate`）、Append-Only 迭代账本（`IterationLedgerStore`）、Episode 预算状态机与回滚 | 经 `EvalRunner`/`Ledger`/`StatisticalPromotionGate` 在 `boot()` 装配，通过 `eval_*` 与 `ledger` 工具暴露给迭代 Agent；标签 `XANA_DIAG=eval`；独立 CLI：`python -m xana.evolution bench` | [evolution_module.md](evolution_module.md) |
 
-## 支撑模块
+---
 
-- [protocol](protocol.md) — 零业务依赖的基础数据原语、版本与序列化、append-only Tape（含 CAS Blob 外置与独立 CLI）及 Eval 快照协议（`src/xana/protocol/`）。
-- [component](component.md) — 共享组件元数据合约（`ComponentSpec` / `ComponentSource`）。
-- [policy](policy.md) — 会话权限、审批服务与沙箱合约。
-- [state](state.md) — session、run、checkpoint、resume、usage 状态合约。
-- extension_api — extension 合约（`src/xana/extension_api/`），尚无模块文档。
-  - 8 种 Contributor ABC（`interfaces.py`）：`ContextContributor`（system prompt 片段）、`TurnInputContributor`（per-turn 上下文注入）、`ToolContributor`（声明工具）、`ToolLifecycleContributor`（on_tool_start/finish）、`TurnLifecycleContributor`（on_turn_start/stop/abort）、`ThreadLifecycleContributor`（on_thread_start/stop）、`ConfigContributor`（on_config_changed）、`ApprovalReviewContributor`（权限覆盖复核，approval 实际走这里）。
-  - Runtime Service ABC（`capabilities.py`，构造注入给 extension）：`SchedulerService`（有实现 `runtime.scheduler.FileSchedulerService`）、`AgentRunner`（同步跑子 agent 取回最终文本，实现 `agent_adapter.agent_runner.GatewayAgentRunner`，deep_research 用）。
-  - 组装：`ExtensionRegistryBuilder().add(ext).build()` → frozen `ExtensionRegistry`，由 `boot(extension_registry=...)` 注入 `DefaultHarness`；`None` 由 boot 统一组装默认扩展，不另走旧执行路径。
-- [evolution_module](evolution_module.md) — 自进化迭代实现：`src/xana/evolution/`（账本 / 变更单 / episode 状态机 / 元 agent 服务）。
-- [官方 benchmark](benchmarks.md) — Terminal-Bench / Harbor 与 τ²-bench 的独立运行器适配、模型配置、隔离和验证。
-- session_config — per-session 运行时旋钮（model/effort/streaming 等）持久化边界（`src/xana/session_config/`），尚无模块文档。
+## 二、其他目录说明（宿主装配、渠道、状态与支撑）
 
-## 设计方向
+### 1. 宿主装配与扩展边界
+- `src/xana/runtime/` — **唯一组合根** `boot()`、进程生命周期、项目管理（`runtime/projects.py`）、定时调度与结果投递、daemon HTTP、SAG2 评分/提取宿主实现（`memory_judge.py`、`memory_extract.py`）、策略宿主适配（`policy_adapter.py`）。见 [runtime.md](runtime.md)。
+- `src/xana/extension_api/` — 冻结扩展规约：8 种 Contributor ABC（`interfaces.py`）、Runtime Service ABC（`SchedulerService` / `AgentRunner` in `capabilities.py`）、`ExtensionRegistryBuilder` 组装。
+- `src/xana/agents/` — Agent 规约（`AGENT.md`）、外层 `ChatAgent` 包装、子 Agent 委派组合、版本快照与内置迭代者（`iterator`）。见 [agents.md](agents.md)。
 
-- [组件化、独立评测与长期迭代主目标](componentization_iteration.md) — 后续主目标：模块边界、稳定接口与策略注入点、独立测试、tape/评分/问题分析及长期迭代闭环；具体接口仍须逐项审批。
-- [workbench](workbench.md) — 已实现的主/子会话分页查询、活动事件、浏览器同源认证与断线恢复；Web 页面等仍按实施计划推进。
+### 2. 渠道、CLI 与前端工作台
+- `src/xana/agent_adapter/` — 外部渠道协议翻译层：CLI/daemon 桥接、飞书（WebSocket 长连接 + 卡片）、Telegram、统一卡片状态机、`DefaultAgentGateway` 与命令路由。见 [agent_adapter.md](agent_adapter.md)。
+- `src/xana/cli/` — 命令行入口：`xana`（`setup`/`sync`/`serve`/`pair`/`project`/`login`/`logout`/`mcp`）与 `xanac` 交互客户端。见 [cli.md](cli.md)。
+- `src/xana/workbench/` — Web 工作台只读会话/Run 投影、活动事件流与媒体上传服务。见 [workbench.md](workbench.md)。
 
-- [evolution](evolution.md) — 24h 自进化迭代框架设计共识（status: active；四个阶段已全部落地，机制真相见 [evolution_module](evolution_module.md)，本文只保留远期方向）。
-- [project 主 agent 与可复用能力](../docs/design/project-capability-design.md) — 已记录 Web 为主、聊天为辅的用户方向，以及独立工作区、可发布运行核、特殊迭代 skills 和压缩来源边界；迁移接口与实现仍是 proposed，现有服务契约继续有效。
-- [Kimi Web 源码核查与首版范围](../docs/design/project-capability-design.md#kimi-code-web-源码核查2026-11-09) — 三档会话权限、持久 goal/checklist、运行中子会话查看、日志与打断；排除 swarm/tower，含固定源码版本与依据。
-- [Web 工作台实施计划](../docs/design/web-workbench-implementation-plan.md) — 分阶段契约、数据迁移、旧路径删除与验收；新建会话默认必要时询问；源码实施与隔离验收进行中，尚未上线。
-- [Codex 插话机制源码审阅](../exp_ai/context_codex_steering.md) — 后续实现参照：单一活动循环、插话队列、等待与任务取消分离、已完成工作保留及迁移验收；含源码版本与测试证据；当前实现边界见单循环迁移契约。
-- [后台任务机制源码调研](../exp_ai/harness_background_task_review.md) — Codex、Claude Code、Kimi Code 的等待、完成通知与空闲唤醒机制，及 Xana 后续完善建议；status: reference，尚未实施。
-- [单循环对话与取消迁移](../docs/archive/single-loop-migration/single-loop-conversation-migration.md) — 已完成迁移归档。
-- [单循环迁移验收](../docs/archive/single-loop-migration/single-loop-conversation-acceptance.md) — 已完成验收归档。
+### 3. 外部协议、配置、状态与共享契约
+- `src/xana/mcp/` — 外部 MCP Server 配置、官方 SDK 连接、工具审核（`audit.jsonl`）、热加载与发布状态机。见 [mcp.md](mcp.md)。
+- `src/xana/config/` — 两层配置加载（用户级 `~/.xana/config/system.json` < 项目级 `projects/<id>/config.json`）与唯一路径解析点（`paths.py`）。见 [config.md](config.md)。
+- `src/xana/state/` — 会话（`SessionStore`）、运行（`RunStore` / `RunJsonlWriter`）、预算、TODO、进程日志持久化与启动孤儿扫描。见 [state.md](state.md)。
+- `src/xana/session_config/` — Per-session 运行时旋钮（model / effort / streaming / permission mode）持久化边界。
+- `src/xana/component/` — 共享组件元数据契约（`ComponentSpec`、`ComponentSource`、`LoadError`）。见 [component.md](component.md)。
+- `src/xana/multimodal/` — 多模态媒体输入契约（`MediaInput`、`InputModality`）与内容寻址媒体存储。
 
-## 命名规则
+### 4. 外部基准与打包发布
+- `src/xana/benchmarks/` — 官方外部基准（Terminal-Bench / Harbor、τ²-bench）的独立运行器与隔离工作区。见 [benchmarks.md](benchmarks.md)。
+- `src/xana/publishing/` — Agent 目录打包、依赖校验、独立安装与启动器生成。
 
-- `module.md`：模块设计，说明职责、输入输出、边界。
-- `module_topic.md`：细节设计，按子模块/类职责拆分，例如 `memory_sag2.md`、`memory_extract.md`。
-- `exp_ai/*.md`：经验和迁移记录，可以挂到某个模块或 detail 上。
+---
 
-## TODO 关系
+## 三、测试与文档约定
 
-- [todo_ai](../todo_ai/README_ai.md) — 特殊记忆树，只维护待办；设计变更必须先更新 `doc_ai`。
+- **测试目录（`tests/`，独立仓库）**：按 7 层各自建子目录（`tests/{protocol,llm_driver,policy,tools,skills,memory,harness_sdk,evolution}/`），黄金契约锁在 `tests/golden/*_contract_v1.json`，跨包架构门禁在 `tests/test_arch_layers.py`，真机/卡片门禁在 `tests/e2e_real/`（`-m merge_gate`）。
+- **设计参考与规范**：
+  - [replacement_rule.md](replacement_rule.md) — 实现替换规则
+  - [io_contract_template.md](io_contract_template.md) — 新合约文档模板
+  - [sdk-migration-roadmap.md](../docs/design/sdk-migration-roadmap.md) — Stage 0–7 模块化迁移落地记录（已完成）
+  - [project-design.md](../docs/design/project-design.md) — 项目隔离与数据目录布局
+  - [todo_ai](../todo_ai/README_ai.md) — 待办记忆树（设计变更须先更新 `doc_ai`）
