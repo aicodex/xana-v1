@@ -22,7 +22,7 @@ status: active
 | skills | `SkillActivation` | `SkillContribution` | context/prompt contribution、技能包发现与管理 | tool execution |
 | agent_adapter | external message | `InboundMessage` / rendered reply | protocol translation（CLI/TG/Feishu/DaemonBridge）与卡片渲染 | agent logic |
 | llm_driver | `ModelRequest` + `ProviderProfile` + `CredentialResolver` + `PolicyBundle` | `ModelEvent` stream / `ModelOutcome` + `llm.*` Tape 事件 | 线协议传输（OpenAI Chat / Anthropic Messages）、错误分类、重试/恢复/改写/路由策略、回放与故障注入（`python -m xana.llm_driver`） | tool dispatch、会话状态、config 路径解析 |
-| memory | context/history rows、项目记忆读写与检索请求 | `ActiveContext` / replay result / `InjectedBlock` / 检索命中 | durable conversation log + 项目记忆存储、知识树与 SAG2/selector 召回 | agent decisions |
+| memory | context/history rows、项目记忆读写与检索请求 | `ActiveContext` / replay result / `InjectedBlock` / `MemorySnapshot` / `RetrievalPlan` | durable conversation log + 项目记忆存储（支持快照/分叉/回滚）与 SAG2 + Karpo 4B 检索召回（`python -m xana.memory`） | agent decisions |
 | context | append/replace/snapshot 请求（sid, agent） | Message buffer / 序列化消息 | active context 运行时载体（ContextSDK） | 持久化、检索索引 |
 | extension_api | extension 对象 | contributor 调用点（prompt/turn input/tools/lifecycle/config/approval review）+ runtime service（`SchedulerService` / `AgentRunner`） | extension 合约与 frozen registry | 具体 agent/tool 行为 |
 | session_config | slash-command 变更 | `SessionConfig` 持久化（get/save/delete） | per-session 运行时旋钮持久化边界 | mid-turn 配置变更 |

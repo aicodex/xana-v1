@@ -14,6 +14,7 @@ status: active
 2. **最小共享值原语**（`primitives.py`）：`TokenUsage`（幺半群 `.add()`）、`ProtocolError`、`BlobRef`、`ComponentVersion`、`ContentPart`、`Provenance`。
 3. **Append-Only 运行磁带**（`tape.py`、`__main__.py`）：`RunManifest`、`TapeHeader` / `TapeEvent` / `TapeClosed`（显式嵌套 `payload`）、`TapeWriter`（Write-Before-Reference CAS `blobs/<sha256>` 外置、截断标记、`lifecycle_reserve` 尾预算保底、防覆盖已有磁带）、`read_tape` / `read_blob`（按 `b"\n"` 切行防 Unicode 行分隔符破坏、防路径穿越与符号链接、坏行/坏 Blob 显式报 `corrupted`）、`slice_tape` / `redact_tape_events` / `diff_tapes`。
 4. **适配器无关 Eval 记录**（`eval.py`）：`MetricDefinition`、`ToolRunCounts`、幺半群 `RunSummary` / `RunCoverage`、`EvalTrialRecord`、`BenchmarkSnapshot`（已决样本统计不变式）及 `write_benchmark_snapshot` / `read_benchmark_snapshot`。
+5. **可开关标签诊断日志**（`diag.py`）：`DiagLogger(tag)`（`.op()` / `.perf()` / `.anomaly()` / `.detail()` / `.span()`），由 `XANA_DIAG` 环境变量按模块标签开关（如 `XANA_DIAG=llm,memory`、`all`、`all:debug`），统一 `[xana:<tag>:<kind>]` 格式并自动对密钥/token 脱敏。
 
 ## 入口与独立运行
 

@@ -12,6 +12,7 @@ status: active
 
 - [system](system.md) — 全局数据流、状态权威、恢复流程
 - [module_io_map](module_io_map.md) — 模块输入/输出/所有权总表
+- [modular_interfaces](modular_interfaces.md) — **Stage 0–7 模块化接口总览**（全部 ABC 签名、可替换策略槽、黄金锁、Tape 事件、`XANA_DIAG` 标签与独立 CLI 入口）
 - [replacement_rule](replacement_rule.md) — 实现替换规则
 - [io_contract_template](io_contract_template.md) — 新合约模板
 - 项目（project）— 一个项目 = 一套记忆 + 自己作用域的 agents / 工具默认配置 + 一个 serve 进程；数据布局、配置分层、命令与迁移见 [project-design](../docs/design/project-design.md)。路径唯一解析点 `src/xana/config/paths.py`，项目配置分层 `src/xana/config/project_config.py`，注册 / 查询 / 启停 `src/xana/runtime/projects.py`。
@@ -30,11 +31,12 @@ status: active
 - [cli](cli.md) — 命令分发：`xana` 管理命令（setup/sync/serve/pair/project/login/logout/mcp）与 `xanac` 交互客户端。
 - [llm_driver](llm_driver.md) — 模型请求、流式响应、tool call 解析、usage 提取。
 - [memory](memory.md) — active context 权威、history mirror、treemem/search/injection。
-- [SAG2 memory 接入](memory_sag2.md) — 算法、项目索引、评分契约和 JEV 协议已实现；[设计与验证](../docs/design/memory-sag2-design.md)记录迁移边界。status: implementing，评分指令来源待确认，尚未替换运行时。
+- [SAG2 memory 基线](memory_sag2.md) — `ProjectMemorySearch` + 本地 Karpo 4B 已作为唯一记忆检索与召回引擎上线，旧知识树/FTS/选择器已删除；[设计与验证](../docs/design/memory-sag2-design.md)。
 - [context](context.md) — active context 的运行时载体：`ContextSDK` facade、有序消息与前缀压缩。
 
 ## 支撑模块
 
+- [protocol](protocol.md) — 零业务依赖的基础数据原语、版本与序列化、append-only Tape（含 CAS Blob 外置与独立 CLI）及 Eval 快照协议（`src/xana/protocol/`）。
 - [component](component.md) — 共享组件元数据合约（`ComponentSpec` / `ComponentSource`）。
 - [policy](policy.md) — 会话权限、审批服务与沙箱合约。
 - [state](state.md) — session、run、checkpoint、resume、usage 状态合约。
@@ -43,10 +45,12 @@ status: active
   - Runtime Service ABC（`capabilities.py`，构造注入给 extension）：`SchedulerService`（有实现 `runtime.scheduler.FileSchedulerService`）、`AgentRunner`（同步跑子 agent 取回最终文本，实现 `agent_adapter.agent_runner.GatewayAgentRunner`，deep_research 用）。
   - 组装：`ExtensionRegistryBuilder().add(ext).build()` → frozen `ExtensionRegistry`，由 `boot(extension_registry=...)` 注入 `DefaultHarness`；`None` 由 boot 统一组装默认扩展，不另走旧执行路径。
 - [evolution_module](evolution_module.md) — 自进化迭代实现：`src/xana/evolution/`（账本 / 变更单 / episode 状态机 / 元 agent 服务）。
+- [官方 benchmark](benchmarks.md) — Terminal-Bench / Harbor 与 τ²-bench 的独立运行器适配、模型配置、隔离和验证。
 - session_config — per-session 运行时旋钮（model/effort/streaming 等）持久化边界（`src/xana/session_config/`），尚无模块文档。
 
 ## 设计方向
 
+- [组件化、独立评测与长期迭代主目标](componentization_iteration.md) — 后续主目标：模块边界、稳定接口与策略注入点、独立测试、tape/评分/问题分析及长期迭代闭环；具体接口仍须逐项审批。
 - [workbench](workbench.md) — 已实现的主/子会话分页查询、活动事件、浏览器同源认证与断线恢复；Web 页面等仍按实施计划推进。
 
 - [evolution](evolution.md) — 24h 自进化迭代框架设计共识（status: active；四个阶段已全部落地，机制真相见 [evolution_module](evolution_module.md)，本文只保留远期方向）。
@@ -55,13 +59,13 @@ status: active
 - [Web 工作台实施计划](../docs/design/web-workbench-implementation-plan.md) — 分阶段契约、数据迁移、旧路径删除与验收；新建会话默认必要时询问；源码实施与隔离验收进行中，尚未上线。
 - [Codex 插话机制源码审阅](../exp_ai/context_codex_steering.md) — 后续实现参照：单一活动循环、插话队列、等待与任务取消分离、已完成工作保留及迁移验收；含源码版本与测试证据；当前实现边界见单循环迁移契约。
 - [后台任务机制源码调研](../exp_ai/harness_background_task_review.md) — Codex、Claude Code、Kimi Code 的等待、完成通知与空闲唤醒机制，及 Xana 后续完善建议；status: reference，尚未实施。
-- [单循环对话与取消迁移](../docs/design/single-loop-conversation-migration.md) — 单循环实现、离线数据迁移与验收路径。
-- [单循环迁移验收](../docs/design/single-loop-conversation-acceptance.md) — 测试、真实数据副本验证、生产切换及回滚备份。
+- [单循环对话与取消迁移](../docs/archive/single-loop-migration/single-loop-conversation-migration.md) — 已完成迁移归档。
+- [单循环迁移验收](../docs/archive/single-loop-migration/single-loop-conversation-acceptance.md) — 已完成验收归档。
 
 ## 命名规则
 
 - `module.md`：模块设计，说明职责、输入输出、边界。
-- `module_topic.md`：细节设计，按子模块/类职责拆分，例如 `memory_tree.md`、`memory_search_engine.md`。
+- `module_topic.md`：细节设计，按子模块/类职责拆分，例如 `memory_sag2.md`、`memory_extract.md`。
 - `exp_ai/*.md`：经验和迁移记录，可以挂到某个模块或 detail 上。
 
 ## TODO 关系
