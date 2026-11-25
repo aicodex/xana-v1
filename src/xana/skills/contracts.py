@@ -90,3 +90,61 @@ class SkillContribution:
     prompt_blocks: tuple[str, ...] = ()
     context: SkillContext = field(default_factory=SkillContext)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+SKILLS_SCHEMA_VERSION: int = 1
+ProposalStatus = Literal["pending", "approved", "rejected", "expired"]
+
+
+@dataclass(frozen=True)
+class CatalogContext:
+    """Inputs to SkillCatalogPolicy.plan() (pure JSON-serializable)."""
+
+    session_id: str
+    agent_name: str
+    run_id: str = ""
+    available_tools: tuple[str, ...] | None = None
+    visible_skills: tuple[str, ...] | None = None
+    max_entries: int | None = None
+    max_chars: int | None = None
+
+
+@dataclass(frozen=True)
+class CatalogEntry:
+    name: str
+    description: str
+    when_to_use: str = ""
+    trust_level: TrustLevel = "local"
+    source_type: str = "builtin"
+    char_count: int = 0
+
+
+@dataclass(frozen=True)
+class CatalogPlan:
+    entries: tuple[CatalogEntry, ...] = ()
+    rendered: str = ""
+    total_chars: int = 0
+    estimated_tokens: int = 0
+    omitted_count: int = 0
+    catalog_hash: str = ""
+
+
+@dataclass(frozen=True)
+class SkillProposal:
+    """Candidate procedural skill proposed by Memory/Evolution for explicit approval."""
+
+    proposal_id: str
+    skill_name: str
+    description: str
+    body: str
+    when_to_use: str = ""
+    source: str = "memory"
+    evidence: tuple[str, ...] = ()
+    target_agents: tuple[str, ...] = ()
+    trust_level: TrustLevel = "local"
+    status: ProposalStatus = "pending"
+    created_at_ms: int = 0
+    expires_at_ms: int | None = None
+    decided_at_ms: int | None = None
+    decision_reason: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)

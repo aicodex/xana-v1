@@ -8,7 +8,14 @@ status: active
 
 ## 定位
 
-技能（skill）的元数据、注册发现与激活合约，以及「列表注入 + 按需加载」的两阶段提示注入模式。技能本体是 prompt 指令包，不是可执行代码——执行永远经由工具。
+独立技能子系统（仅依赖 `xana.protocol` 与 `xana.component`）：技能元数据、注册发现、目录渲染策略（前缀稳定与 token 预算）、按需加载与候选技能提案队列。技能本体是 prompt 指令包，不是可执行代码——执行永远经由工具。
+
+- `contracts.py`：冻结技能契约（Stage 4 新增 `CatalogContext`/`CatalogEntry`/`CatalogPlan`/`SkillProposal` 受 `tests/golden/skills_contract_v1.json` 锁定）。
+- `interfaces.py`：`SkillManifestParser`/`Skill`/`SkillLoader`/`SkillRegistry` + 新增 `SkillCatalogPolicy`/`SkillProposalQueue` ABC。
+- `catalog.py`：`DefaultSkillCatalogPolicy` 渲染 `# 可用技能` 目录并计算 `estimated_tokens` / `catalog_hash`。
+- `proposals.py`：`InMemorySkillProposalQueue` 与原子持久化 `FileSkillProposalQueue`（接收 Memory/Evolution 提案，须显式审批、支持过期清理，绝不自动激活）。
+- `tape_recorder.py`：`SkillTapeRecorder` 直写 Stage 0 `TapeWriter`；内置可开关诊断日志 `DiagLogger("skills")`。
+- `__main__.py`：独立 CLI `python -m xana.skills bench`。
 
 ## 详细设计
 

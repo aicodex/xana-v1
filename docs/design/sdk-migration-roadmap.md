@@ -165,13 +165,17 @@ date: 2026-11-23
   - **真实妥协与后续注意**：① 32+ 内置工具到宿主服务（`skills`/`memory`/`agents`/`evolution`）的既有边留待 Stage 4–7 对应子系统独立时一并收敛；② `ToolTapeRecorder` 默认 no-op，待 Stage 6 统一注入 run 级 `TapeWriter`。
 
 ### Stage 4：Skills
-**状态**：待启动
+**状态**：已完成（2026-11-25）
 
 - **为什么在 Memory 之前**：Skills 结构轻、状态少，适合先跑通"业务模块只通过标准工具和增量上下文块挂到宿主"的方式；后续 Memory 产出的流程经验需要投递为技能提案，接收端先立住。
 - **起点线索**：两阶段加载、项目级覆盖、热加载、`skill_bindings`、内置技能、安装与启用分离；TodoStore、GoalService 与内核的耦合。
 - **调研重点**：多源发现与信任分级；技能目录摘要的 token 成本与前缀稳定；提案队列（来源、证据、审批、过期）；激活准确率与上下文开销的独立评测；Todo/Goal 是否同样作为扩展从内核剥离。
 - **准出**：skills 不依赖 harness 和 memory；可独立评测匹配召回、注入格式和提案生命周期；真实渠道端到端：通过飞书/Web/`xanac` 发起至少一次命中技能目录并触发 `skill_load` 的真实请求，观察日志/轨迹确认新 Skills 模块被实际调用并注入上下文。
-- **落地记录**：待填写
+- **落地记录**：
+  - **入口与事实文档**：`src/xana/skills/{contracts,interfaces,catalog,proposals,tape_recorder,__main__}.py`（新增纯 JSON 契约 `CatalogContext`/`CatalogEntry`/`CatalogPlan`/`SkillProposal` 受 `tests/golden/skills_contract_v1.json` 锁定；新增 2 个 ABC `SkillCatalogPolicy`/`SkillProposalQueue`；`InMemorySkillProposalQueue` + 原子持久 `FileSkillProposalQueue`）；独立 CLI `python -m xana.skills bench`；`SkillsListingContributor` 原位切入 `DefaultSkillCatalogPolicy`；`SkillLoadTool` 接入 `SkillTapeRecorder` 与可开关诊断日志 `DiagLogger("skills")`；零新增跨包边（`skills` 仅依赖 `protocol` 与 `component`）。
+  - **测试基线**：Stage 4 专项 + 架构/技能测试全绿；`python -m xana.skills bench` 3/3 pass（`pass_rate=1.0`）；全量回归与 `merge_gate` 全绿。
+  - **宿主需求账本**：① `SkillsListingContributor` 通过 `TurnInputContributor` 注入 `CatalogPlan.rendered`（保持 system 前缀逐字节稳定）；② Stage 5（Memory）产出的流程经验通过 `SkillProposalQueue.submit()` 投递，须经显式审批不自动激活。
+  - **真实妥协与后续注意**：`TodoStore` / `GoalService` 的内核剥离归入 Stage 6（Harness 收口）统一处理，不打断 Stage 4 叶子边界。
 
 ### Stage 5：长期记忆
 **状态**：待启动

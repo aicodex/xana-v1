@@ -6,14 +6,19 @@ CC 同款思路:每轮 prompt 只注入「# 可用技能」名字+描述列表
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.policy.contracts import PermissionResult
+from xana.protocol.diag import DiagLogger
 from xana.skills.contracts import SkillActivation
 from xana.skills.interfaces import SkillRegistry
+from xana.skills.tape_recorder import SkillTapeRecorder
 from xana.tools.contracts import ToolDisplay, ToolContext, ToolInvocation, ToolResult, ToolSpec
 from xana.tools.interfaces import Tool
+
+_DIAG = DiagLogger("skills")
 
 _SPEC = ToolSpec(
     temporal="static",
@@ -41,8 +46,9 @@ _SPEC = ToolSpec(
 
 
 class SkillLoadTool(Tool):
-    def __init__(self, *, skills: SkillRegistry) -> None:
+    def __init__(self, *, skills: SkillRegistry, recorder: SkillTapeRecorder | None = None) -> None:
         self.skills = skills
+        self._recorder = recorder or SkillTapeRecorder(None)
 
     def spec(self) -> ToolSpec:
         return _SPEC
@@ -51,6 +57,7 @@ class SkillLoadTool(Tool):
         return PermissionResult(decision="allow", reason="skill_load 只读")
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
+        t0 = time.monotonic()
         name = str(invocation.input.get("name", "")).strip()
         activation = SkillActivation(
             kind="model",
@@ -68,6 +75,12 @@ class SkillLoadTool(Tool):
                 if visible is None or n in visible
             )
             listing = ", ".join(available) or "(无)"
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            self._recorder.record_load(
+                session_id=context.session_id, agent_name=context.agent_name, run_id=context.run_id or "",
+                skill_name=name, ok=False, latency_ms=elapsed_ms,
+            )
+            _DIAG.anomaly("skill_load.not_found", skill=name, agent=context.agent_name)
             return ToolResult(
                 ok=False,
                 content=None,
@@ -80,4 +93,10 @@ class SkillLoadTool(Tool):
         root = skill.spec().package.root
         if root is not None:
             rendered = f"技能目录: {root.resolve()}（相对资源路径以此为基准）\n\n" + rendered
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        self._recorder.record_load(
+            session_id=context.session_id, agent_name=context.agent_name, run_id=context.run_id or "",
+            skill_name=name, ok=True, latency_ms=elapsed_ms, chars=len(rendered), trust_level=skill.spec().trust_level,
+        )
+        _DIAG.perf("skill_load.done", latency_ms=elapsed_ms, slow_ms=500.0, skill=name, chars=len(rendered))
         return ToolResult(ok=True, content={"name": name}, rendered=rendered)
