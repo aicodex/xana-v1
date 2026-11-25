@@ -159,7 +159,7 @@ class DefaultAgentRequestMapper(AgentRequestMapper):
         if model_config is None:
             model_config = resolve_model_config(ModelEntry(name=model, type=self.provider))
         config_snapshot: dict[str, Any] = {
-            "provider": self.provider,
+            "provider": model_config.provider,
             "context_window": model_config.context_window,
             "force_compact": model_config.force_compact,
             "blocking_limit": model_config.blocking_limit,

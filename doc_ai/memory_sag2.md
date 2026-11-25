@@ -1,18 +1,19 @@
 ---
 title: memory_sag2
-status: implementing
+status: active
 ---
 
-# 项目 SAG2 检索
+# 项目 SAG2 检索与召回基线
 
-当前是可独立验证的接入阶段，尚未由 `boot()` 启用。运行中的自动 recall 和 `memory_search` 仍使用原实现；下一阶段需原位替换并删除旧选择器，不新增兼容开关。评分指令来源例外待用户确认，依据及完整迁移方案见 [memory-sag2-design](../docs/design/memory-sag2-design.md)。
+SAG2 + 本地 Karpo 4B（`karpo-decision-4B --graphs`）已是当前唯一且默认的长期记忆检索与召回基线。旧的 `MarkdownMemoryTree`、`SQLiteMemorySearchEngine`、`ModelMemorySelector` 与 `lexical_rank` 已全部删除；后续 Stage 5 拆分长期记忆子系统直接以此为基线。设计与依据见 [memory-sag2-design](../docs/design/memory-sag2-design.md)。
 
 ## 入口与契约
 
-- `memory/contracts.py`：`EvidenceCandidate`、`EvidenceJudgment`、`EvidenceJudge` Callable、`EvidenceCriterion` 与 `SAG2Options`；没有新增 ABC。
-- `memory/project_search.py::ProjectMemorySearch`：实现既有 `MemorySearchEngine`。构造注入项目根目录、索引位置、必需评分器、查询时限和算法参数；`search(SearchQuery)` 返回 `SearchHit`。
+- `memory/contracts.py`：`EvidenceCandidate`、`EvidenceJudgment`、`EvidenceJudge` Callable、`EvidenceCriterion`、`SAG2Options`、`InjectedBlock`、`MemoryRecord`。
+- `memory/project_search.py::ProjectMemorySearch`：实现 `MemorySearchEngine`，作为 `BootResult.search_engine`、`MemorySearchTool` (`memory_search`) 与 `ProjectMemoryInjector` 的唯一共享检索引擎。
+- `memory/recall.py::ProjectMemoryInjector`：每条用户消息注入 `index`（全量索引）、`pinned`（置顶全文）及 `recall`（检索词 ≥2 且 `mode="sag2"` 时调用 `ProjectMemorySearch`，最多 5 条，每条 ≤2000 字 / 总计 ≤6000 字，超过 1 天附过时提示；`mode="off"` 只注入索引与置顶）。评分失败明确报错，不静默回退。
 - `memory/sag2/`：固定版本上游的分词、自然分段、FTS5/原生 BM25、上下文评分循环、词项扩展和多样性排序。`NOTICE.md` 记录来源和移植边界，MIT 许可随包保留。
-- `runtime/memory_judge.py::JevEvidenceJudge`：JEV Noul 协议适配；客户端、地址、模型、评分准则、并发/重试/时限均由调用方注入。评分准则没有默认值；后续只在 `boot()` 选择和组装后端。
+- `runtime/memory_judge.py::JevEvidenceJudge`：JEV/Karpo System One Noul 协议适配；客户端、地址、模型、评分准则、并发/重试/时限均由 `boot()` 构造注入（对 `127.0.0.1`/`localhost`/`::1` 自动设置 `trust_env=False` 绕过系统代理）。
 
 ## 状态和生命周期
 
@@ -37,3 +38,24 @@ JEV 适配器不拥有注入的 HTTP 客户端；调用方负责关闭。重试�
 - `tests/test_memory_judge.py`：MockTransport 协议、有界重试、错误响应、输入上限和取消。
 
 执行时使用独立测试环境和原生缓存；具体结果见设计文档。测试不连接真实评分模型。
+
+## Karpo 本地评分接入
+
+`config/system_model.py::MemoryJudgeConfig` 提供显式评分配置；`runtime/memory_judge.py::build_evidence_judge` 将 Karpo 或 JEV 配置归一到同一个 JEV Noul 适配器，不改变主聊天模型。默认端点为 `http://127.0.0.1:18440/v1/systemone`，默认模型为 `karpo-decision-4B`（推荐加 `--graphs` 预编译启动），评分明细使用 SAG-Benchmark 固定版本的原文，不改写提示词。
+
+`boot()` 始终构造 `ProjectMemorySearch` 作为唯一 `search_engine`，同时注入 `MemorySearchTool` 和 `ProjectMemoryInjector`（默认 `memory.recall="sag2"`，可设为 `"off"` 关闭自动召回）。评分失败直接报错，不回退其他检索实现。judge HTTP 客户端由 `BootResult.memory_judge_client` 持有，serve 退出时关闭。
+
+配置示例：
+
+```json
+{
+  "memory": {
+    "recall": "sag2",
+    "judge": {
+      "backend": "karpo",
+      "endpoint": "http://127.0.0.1:18440/v1/systemone",
+      "model": "karpo-decision-4B"
+    }
+  }
+}
+```

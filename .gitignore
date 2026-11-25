@@ -3,6 +3,10 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .venv/
+.venv-tb/
+.venv-tau/
+.benchmark-home/
+benchmark-results/
 .xana/
 *.db
 .DS_Store

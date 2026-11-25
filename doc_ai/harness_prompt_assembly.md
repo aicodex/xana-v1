@@ -120,7 +120,7 @@ status: active
 |---|---|
 | `date` | 与环境段同条件（`_has_env`）：会话开始给一次"今天是 YYYY-MM-DD"，跨天追加"日期已变更"（CC 同款，只给日期） |
 | `project_instructions` | 与环境段同条件：项目根目录（`context.cwd`）有 `AGENTS.md` 时，每条用户消息前读一次，内容变化才注入；空文件不注入，超过 2 万字截断并提示用 Read 看全文；措辞译自 CC 的 CLAUDE.md 注入 |
-| `memory_index` | agent 可用 memory 组工具且与环境段同条件：项目记忆（`memory/`）的索引，按类型分组每条一行；会话开始注入，记忆增删改后下一条消息重新注入，记忆被删光时注明"没有记忆"（见 [memory_injector](memory_injector.md)） |
+| `memory_index` | agent 可用 memory 组工具且与环境段同条件：项目记忆（`memory/`）的索引，按类型分组每条一行；会话开始注入，记忆增删改后下一条消息重新注入，记忆被删光时注明"没有记忆"（见 [memory_sag2](memory_sag2.md)） |
 | `memory_pinned` | 同上：置顶记忆的全文（≤2000 字），变化才注入 |
 | `memory_recall` | agent 可用 memory 组工具时，每条新用户消息之后：选择模型挑出的相关记忆**全文**（每条 ≤2000 字、本次 ≤6000 字，超过 1 天的附过时提示）。按文件路径去重，跳过模型已 Read 的文件；会话累计 60KB 后停止；检索词少于 2 个不召回 |
 | `turn_input` | 技能 prompt blocks + extension `contribute_turn_input` 片段，内容变化时。贡献者经 `TurnInputContext.available_tools` 得知本 agent 的可用工具（技能列表仅在可用 `skill_load` 时列出），经 `TurnInputContext.visible_skills`（`_visible_skills(context)` 取 `config_snapshot["skills"]`，None = 全部）得知可见技能（技能列表只列这些） |

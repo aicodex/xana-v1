@@ -5,7 +5,7 @@ Subcommands:
   sync     Refresh ~/.xana/code/ + ~/.xana/mem/ from the xana source.
   pair     Manage channel user pairing (list/approve/reject/revoke).
   project  Manage projects: create / list (one serve and one bot per project).
-  login    Kimi OAuth device-flow login (registers k3 / kimi-for-coding).
+  login    Kimi OAuth device-flow login (registers k3.1-pro / kimi-for-coding).
   logout   Remove stored Kimi credentials.
 
 xanac (chat client) is a separate entry point — this CLI is for machine
@@ -66,7 +66,7 @@ def _build_parser() -> argparse.ArgumentParser:
     project_parser.set_defaults(func=project_cmd.run)
 
     login_parser = subparsers.add_parser(
-        "login", help="kimi OAuth device-flow login (k3 / kimi-for-coding, 1M ctx)"
+        "login", help="kimi OAuth device-flow login (k3.1-pro / kimi-for-coding, 1M ctx)"
     )
     login_cmd.add_arguments(login_parser)
     login_parser.set_defaults(func=login_cmd.run)

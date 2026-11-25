@@ -359,6 +359,8 @@ async def _run_inner(argv: argparse.Namespace) -> int:
             # 新操作已随 daemon/adapter 停止而不再受理:取消 watch/retry 并逐个关闭
             # SDK session/子进程,旧 generation 回调不再发布。
             await boot_result.mcp.close()
+        if boot_result.memory_judge_client is not None:
+            await boot_result.memory_judge_client.aclose()
     return 0
 
 

@@ -1,4 +1,4 @@
-"""memory_search:检索本项目的记忆与文档(整个项目目录的 Markdown,共享 MemorySearchEngine)。"""
+"""memory_search:检索本项目 memory/ 下的记忆(共享 SAG2 MemorySearchEngine)。"""
 from __future__ import annotations
 
 from xana.component.contracts import ComponentSource, ComponentSpec

@@ -9,13 +9,13 @@ status: active
 ## 上级模块
 
 - [memory](memory.md) — memory 模块设计
-- 设计:[memory-recall-design](../docs/design/memory-recall-design.md) §3.4、§4
+- [memory_sag2](memory_sag2.md) — SAG2 检索与召回基线
 
 ## 代码锚点
 
 - [memory_write.py](../src/xana/tools/builtin/memory_write.py) — `MemoryWriteTool`
 - [store.py](../src/xana/memory/store.py) — `ProjectMemoryStore`、`migrate_legacy`
-- [boot.py](../src/xana/runtime/boot.py) — `MemoryWriteTool(store=memory_store, tree=tree)` 注册;Write / Edit 的 `protected_dir` 含 `memory/`
+- [boot.py](../src/xana/runtime/boot.py) — `MemoryWriteTool(store=memory_store)` 注册;Write / Edit 的 `protected_dir` 含 `memory/`
 - [sync.py](../src/xana/cli/commands/sync.py) — `_migrate_memories`
 
 ## 存储格式
@@ -44,7 +44,7 @@ updated: 2026-10-19
 | `update` | 只改给出的字段(name / description / type / topic / content / pinned),其余保持 |
 | `delete` | 删除文件 |
 
-写入 / 删除后 `tree.reindex_paths` 增量更新 memory_search 索引。后台提取([memory_extract](memory_extract.md))不经本工具,直接用 `ProjectMemoryStore` 的 write / append,只新建或追加。`memory/` 对 Write / Edit 受保护(policy 检查点拒绝,提示改用 memory_write),保证 frontmatter 完整。
+SAG2 检索每次查询按内容哈希快照自动重建索引,不再依赖写后增量 reindex。后台提取([memory_extract](memory_extract.md))不经本工具,直接用 `ProjectMemoryStore` 的 write / append,只新建或追加。`memory/` 对 Write / Edit 受保护(policy 检查点拒绝,提示改用 memory_write),保证 frontmatter 完整。
 
 ## 迁移(一次性)
 

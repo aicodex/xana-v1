@@ -15,7 +15,7 @@ kimi-code 同款设备码流程，全程无浏览器回调依赖：
 1. `POST /api/oauth/device_authorization`（只带 `client_id`，form-urlencoded）→ 得到 `user_code` / `device_code` / `verification_uri_complete` / `interval`。
 2. 打印授权链接和授权码，轮询 `POST /api/oauth/token`（`grant_type=urn:ietf:params:oauth:grant-type:device_code`）直到用户在网页确认。`authorization_pending` 继续等、`slow_down` 间隔 +5s、轮询期网络抖动不中断（截止 900s 内）；`expired_token` / `access_denied` / 超时 → `KimiAuthError`。
 3. token payload 经 `KimiTokenStore.save_payload()` 原子写入 `~/.xana/credentials/kimi.json`（tmp + replace，chmod 0600；损坏 JSON 静默视为未登录）。
-4. `GET /models` 拉服务端模型目录，把目录里的 **k3** 和 **kimi-for-coding** 登记进 `system.json` 的 `models[]`：entry 形如 `{"name": <id>, "type": "kimi", "api_key": "", "context_window": <服务端声明>}`，服务端未声明 `context_length` 时按 1M（1,048,576）处理；同名 entry 就地更新 type / context_window。`default_model.chat` 为空则设为 k3（无 k3 取首个已登记），`agent` 跟随。
+4. `GET /models` 拉服务端模型目录，把目录里的 **k3.1-pro** 和 **kimi-for-coding** 登记进 `system.json` 的 `models[]`：entry 形如 `{"name": <id>, "type": "kimi", "api_key": "", "context_window": <服务端声明>}`，服务端未声明 `context_length` 时按 1M（1,048,576）处理；同名 entry 就地更新 type / context_window。`default_model.chat` 为空则设为 k3.1-pro（无 k3.1-pro 取首个已登记），`agent` 跟随。
 5. 模型拉取失败不算登录失败：token 已写好，提示之后重跑 `xana login` 补登记。
 
 网络边界收敛在 `LoginFlow`（`authorize` / `poll` / `fetch_models` 三个方法），测试用假实现替换即可，不碰真实 OAuth host。
@@ -33,3 +33,7 @@ kimi-code 同款设备码流程，全程无浏览器回调依赖：
 ## token 续期
 
 token 到期刷新由 `KimiTokenStore`（llm_driver 侧）在使用时自动完成（`grant_type=refresh_token`，过期前 60s margin；access_token 约 15 分钟有效）。kimi 每次刷新都轮换 refresh_token，所以：内存缓存只在未到期时使用，到期后重新读盘（其他进程或 `xana login` 可能已刷新）；刷新在进程内 asyncio 锁 + 凭据文件旁 `.lock`（flock，跨进程）内进行，拿到锁后重读磁盘，别人已刷新就直接复用，不重复刷新。刷新失败抛 `KimiAuthError`，消息引导重新 `xana login`。
+
+## 当前 Kimi 模型（2026-11-13 核对）
+
+默认登记 `k3.1-pro`（K3.1 Pro）及 `kimi-for-coding`（K2.8 Preview），不再登记 K3。模型 ID、1,048,576 token 上下文及图片/视频输入已核对 [Kimi Code 模型文档](https://www.kimi.com/code/docs/en/kimi-code/models) 与当前账号 `GET /models`。服务端目录未声明输出上限；已有 `max_tokens=32768` 保留为请求输出预算，不代表模型最大输出能力。配置保存原始窗口，压缩预留仍由配置层计算。

@@ -35,7 +35,6 @@ from xana.memory.interfaces import (
     MemoryInjectorRegistry,
     MemoryReplayer,
     MemorySearchEngine,
-    MemoryTree,
 )
 from xana.state.interfaces import (
     RunStore,
@@ -75,7 +74,6 @@ __all__ = [
     "MemoryInjectorRegistry",
     "MemoryReplayer",
     "MemorySearchEngine",
-    "MemoryTree",
     "RunStore",
     "SessionStore",
     "StateRepository",
