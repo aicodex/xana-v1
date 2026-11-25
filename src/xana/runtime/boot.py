@@ -94,6 +94,7 @@ from xana.state.file_runs import FileRunStore, RunJsonlWriter
 from xana.state.in_memory import InMemoryStateRepository
 from xana.state.file_sessions import FileSessionStore
 from xana.policy.approvals import PermissionService
+from xana.runtime.policy_adapter import RuntimePolicyEventSink, RuntimePolicyStateAdapter
 from xana.state.interfaces import RunStore, SessionStore, StateRepository
 from xana.session_config.file_store import FileSessionConfigStore
 from xana.session_config.interfaces import SessionConfigStore
@@ -375,7 +376,10 @@ async def boot(
                                           runs=run_store)
     else:
         state = InMemoryStateRepository()
-    permissions = PermissionService(configs=session_config_store, sessions=state.sessions(), events=run_events)
+    permissions = PermissionService(
+        state=RuntimePolicyStateAdapter(configs=session_config_store, sessions=state.sessions()),
+        events=RuntimePolicyEventSink(run_events),
+    )
     _harness = DefaultHarness(
         extension_registry=extension_registry, memory_extractor=memory_extractor,
         tool_environment=TapeToolEnvironment(runs_dir=Path(history_root) / "runs") if history_root is not None else None,

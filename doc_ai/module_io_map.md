@@ -12,7 +12,7 @@ status: active
 | component | 组件源元数据 | `ComponentSpec` / `ComponentSource` / `LoadError` | 共享组件元数据合约 | 加载与注册表实现 |
 | multimodal | 媒体文件与元数据 | `MediaInput` / `InputModality` / 内容寻址媒体存储 | 媒体输入契约与资产校验存储 | 渠道发送协议 |
 | config | project root, `~/.xana/config/system.json` + `projects/<id>/config.json` | `RuntimeConfig` / `SystemConfig`、路径解析（`config/paths.py`） | config merge（用户级 < 项目级，项目只能改 `PROJECT_KEYS`，mcp 段按 name 索引的专门合并见 [mcp](mcp.md)） | runtime state |
-| policy | 工具调用上下文、权限模式、审批决策 | `PermissionResult` / `Approval` / `SandboxPolicySpec` | 会话权限（manual/yolo/auto）、plan mode、审批状态与危险命令解析 | 工具执行体 |
+| policy | `AuthorizationRequest` / `ProcessSpec` / `PathOperation` | `PermissionResult` / `Approval` / `ProcessOutcome` + `policy.*`/`env.*` Tape | 会话权限（manual/yolo/auto）、plan mode、审批、路径门禁、进程组隔离执行环境（`python -m xana.policy`） | 工具业务实现、会话/配置存储实现 |
 | state | session/run/todo/budget/process_log 写入 | `SessionRecord` / `RunRecord` / `UsageSnapshot` / 启动恢复扫描 | 会话、run、预算、TODO、进程日志持久化与孤儿扫描 | 模型调用与主循环 |
 | mcp | MCP server 配置（用户/项目两层 + override）、官方 SDK 连接、`os.environ` 凭据展开 | 已审核并发布的 MCP 工具（共享 `FileToolRegistry`）、脱敏 `ServerView`/`ToolView`、`mcp/audit.jsonl` | 连接/退避/重审状态机、工具审核与发布、`/mcp*` 管理 API | 工具执行编排、权限决策、配置模型定义 |
 | runtime | project root, `ConfigProvider`, `extension_registry` | `BootResult`、daemon HTTP（`/healthz`） | 唯一组合根 `boot()`、进程生命周期、项目管理（`runtime/projects.py`）、调度与投递 | agent/tool behavior |

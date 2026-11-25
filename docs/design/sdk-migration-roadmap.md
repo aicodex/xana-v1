@@ -138,14 +138,18 @@ date: 2026-11-23
   - **真实妥协与后续注意**：① 保留 `("llm_driver", "multimodal")` 跨包边用于 `MediaInput` 传递与 `KimiMedia` 上传，待 Stage 3/后续按需收敛；② `LlmTapeRecorder` 已在 `ModelDriver` 内打通 Stage 0 `TapeWriter`，但在主循环中默认以 no-op 运行，待 Stage 6（Harness 内核重构）统一把 run 级 `TapeWriter` 注入 `ModelDriver`；③ `RoutingStrategy` 目前在 `ModelDriver` 内支持同 profile 下的模型回退（跨 provider 路由留待 Stage 6 多客户端组合层接入）。
 
 ### Stage 2：执行环境与权限
-**状态**：待启动
+**状态**：已完成（2026-11-25）
 
 - **为什么在工具之前**：权限判断现在混在工具内部，`policy/interfaces.py` 为空。不先拆开，Stage 3 只能把权限和执行逻辑继续塞在工具或宿主里。
 - **范围约束**：只抽象现有能力。openat2、容器、远端执行等新后端属于后续功能步骤。若调研认为本阶段更适合并入 Stage 3，可以合并。
 - **起点线索**：`PermissionService` 三档模式、plan mode、子会话权限上限、审批与审批复核、Bash 进程组清理、memory/agent 文档写门禁、Grep 工作进程资源限制。
 - **调研重点**：执行环境的最小统一抽象（含测试用假环境）；不可妥协的安全边界与可进化的风险分类策略如何分层；锁/租约/目录快照是否放在这一层；权限裁决与资源消耗的轨迹记录。
 - **准出**：可脱离工具和 harness 独立运行安全测试集（放行率、高危拦截、超时与孤儿进程清理、越界防护）；真实渠道端到端：通过飞书/Web/`xanac` 发起至少一次触发权限裁决与执行边界的真实请求（如读文件、执行命令或受保护路径），观察日志/轨迹确认新执行环境与权限模块被实际调用。
-- **落地记录**：待填写
+- **落地记录**：
+  - **入口与事实文档**：`src/xana/policy/{contracts,interfaces,approvals,shell,path_policy,exec_env,tape_recorder,testing,__main__}.py`（9 个公开 dataclass 受 `tests/golden/policy_contract_v1.json` 锁定）；宿主薄适配器 `src/xana/runtime/policy_adapter.py`（于 `boot.py` 注入）；独立 CLI `python -m xana.policy <bench|check>`；事实文档 `doc_ai/policy.md`、`doc_ai/module_io_map.md`；彻底消除 `("policy", "harness_sdk")`/`("policy", "session_config")`/`("policy", "state")`/`("policy", "tools")` 全部 4 条跨包边（123 → 119）；`Write`/`Edit` 改用统一 `ProtectedDirsPathPolicy`；内置可开关诊断日志 `DiagLogger("policy")` / `DiagLogger("env")`。
+  - **测试基线**：Stage 2 专项 + 架构/权限/工具测试全绿；`python -m xana.policy bench` 5/5 pass（`pass_rate=1.0`）；全量回归与 `merge_gate` 全绿；真实运行态同步与 `xanac` 端到端验收通过。
+  - **宿主需求账本**：① 宿主通过 `PolicyStatePort` 提供会话权限模式/授权/父会话查询，通过 `PolicyEventSink` 转发审批事件；② `DefaultHarness` 在 `_dispatch_tool` 构造 `AuthorizationRequest` 交 `PermissionService.authorize`。
+  - **真实妥协与后续注意**：① `tools/builtin/_process.py::ProcessRunner` 保留流式 `on_output` 回调供工作台实时进程日志消费，同时接入 `DiagLogger("env")`，待 Stage 3 统一工具执行管线时评估合并流式接口；② `PolicyTapeRecorder` 默认 no-op，待 Stage 6 统一注入 run 级 `TapeWriter`。
 
 ### Stage 3：工具与观察管理
 **状态**：待启动

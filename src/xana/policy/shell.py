@@ -11,7 +11,10 @@ from typing import Literal
 from tree_sitter import Language, Node, Parser
 import tree_sitter_bash
 
-ShellRisk = Literal["routine", "dangerous", "unknown"]
+from xana.policy.contracts import RiskAssessment, ShellRisk
+from xana.policy.interfaces import CommandRiskClassifier
+from xana.protocol.primitives import ComponentVersion
+
 _UNSAFE = re.compile(r"[$`*?\[\]~]")
 _DANGEROUS = frozenset({"shutdown", "halt", "poweroff", "reboot", "bcdedit", "diskpart",
                        "format", "restart-computer", "stop-computer", "mkfs", "wipefs"})
@@ -155,3 +158,25 @@ def _rm(args: list[str], dropped: bool) -> ShellRisk:
             any(value == root or value.startswith(root + "/") for root in ("/tmp", "/temp")) for value in operands)
         return "routine" if safe and not dropped else "dangerous"
     return "unknown" if dropped else "routine"
+
+
+class TreeSitterShellClassifier(CommandRiskClassifier):
+    """Versioned CommandRiskClassifier backed by tree-sitter-bash AST inspection."""
+
+    POLICY_VERSION = "1.0.0"
+
+    def __init__(self) -> None:
+        self._inner = ShellClassifier()
+
+    def component_version(self) -> ComponentVersion:
+        return ComponentVersion(
+            name="tree_sitter_shell_classifier",
+            kind="policy",
+            version=self.POLICY_VERSION,
+            policy_version=self.POLICY_VERSION,
+        )
+
+    def classify(self, command: str) -> RiskAssessment:
+        risk = self._inner.classify(command)
+        reason = "matched dangerous shell pattern" if risk == "dangerous" else ""
+        return RiskAssessment(risk=risk, reason=reason, matched_rule="tree_sitter_bash")

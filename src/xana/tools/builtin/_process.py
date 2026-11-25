@@ -16,6 +16,9 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Literal
 from dataclasses import dataclass
 
+from xana.protocol.diag import DiagLogger
+
+_DIAG = DiagLogger("env")
 MAX_OUTPUT_CHARS = 50_000
 _GRACE_S = 2.0
 
@@ -75,8 +78,13 @@ class ProcessRunner:
         finally:
             self._procs.pop(key, None)
         exit_code = -1 if timed_out or proc.returncode is None else proc.returncode
+        elapsed_s = time.monotonic() - started
+        if timed_out or exit_code != 0:
+            _DIAG.anomaly("proc.abnormal", key=key, exit_code=exit_code, timed_out=timed_out, elapsed_ms=elapsed_s * 1000.0)
+        else:
+            _DIAG.perf("proc.done", latency_ms=elapsed_s * 1000.0, slow_ms=5000.0, key=key, exit_code=exit_code)
         return ExecOutcome(output="".join(combined), stderr="".join(errors), exit_code=exit_code,
-                           timed_out=timed_out, elapsed_s=time.monotonic() - started)
+                           timed_out=timed_out, elapsed_s=elapsed_s)
 
     async def cancel(self, key: str) -> None:
         """SIGTERM → 等 grace → SIGKILL(整个进程组)。子进程退出后 run 自然返回。"""

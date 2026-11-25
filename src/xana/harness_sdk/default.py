@@ -81,7 +81,7 @@ from xana.memory.contracts import (
     ExtractionRequest, HistoryRow, MemoryExtractor, MemoryMessage, ReplayResult,
 )
 from xana.memory.interfaces import ActiveContextStore, HistoryMirror
-from xana.policy.contracts import PermissionContext, PermissionResult
+from xana.policy.contracts import AuthorizationRequest, PermissionContext, PermissionResult
 from xana.state.contracts import RunRecord, SessionRecord, UsageSnapshot
 from xana.state.file_runs import RunJsonlWriter, save_prompt
 from xana.tools.contracts import (
@@ -688,7 +688,19 @@ class DefaultHarness(Harness):
                     if override is not None:
                         perm = override
                         break
-            perm = await self.permissions.authorize(invocation, tool.spec(), tool_ctx, perm, context.abort)
+            tool_spec = tool.spec()
+            auth_req = AuthorizationRequest(
+                session_id=tool_ctx.session_id,
+                run_id=tool_ctx.run_id or "",
+                call_id=invocation.call_id,
+                tool_name=tool_spec.component.name,
+                arguments=dict(invocation.input),
+                cwd=tool_ctx.cwd,
+                read_only=bool(tool_spec.read_only),
+                permission=tool_ctx.permission,
+                agent_name=tool_ctx.agent_name,
+            )
+            perm = await self.permissions.authorize(auth_req, perm, context.abort)
             if perm.decision != "allow":
                 result = _denied_result(perm)
             else:

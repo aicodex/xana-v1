@@ -8,7 +8,16 @@ status: active
 
 ## 定位
 
-会话权限和审批的统一执行边界。`contracts.py` 定义契约，`approvals.py::PermissionService` 维护模式、审批和会话授权，`shell.py` 解析危险命令。工具检查与 extension 复核后仍须经过最终会话约束；不新增 ABC。
+独立执行环境与会话权限边界（零对 `harness_sdk`/`session_config`/`state`/`tools` 依赖，仅依赖 `xana.protocol` 与 `tree_sitter`）。
+
+- `contracts.py`：冻结数据契约（受 `tests/golden/policy_contract_v1.json` 锁定），含 `AuthorizationRequest`、`RiskAssessment`、`ProcessSpec`、`ProcessOutcome`、`SessionPolicySnapshot` 等。
+- `interfaces.py`：5 个 ABC — `CommandRiskClassifier`、`PathBoundaryPolicy`、`ExecutionEnvironment`、`PolicyStatePort`、`PolicyEventSink`（另含结构化 `AbortLike` Protocol）。
+- `approvals.py`：`PermissionService` 维护三档模式（manual/yolo/auto）、plan mode、子会话权限上限与待审批流；宿主通过 `runtime/policy_adapter.py` 注入持久与事件端口。
+- `shell.py`：`TreeSitterShellClassifier`（实现 `CommandRiskClassifier`，可进化策略槽位）。
+- `path_policy.py`：`ProtectedDirsPathPolicy`（统一 `Write`/`Edit` 的受保护目录门禁与可选工作区写入边界）。
+- `exec_env.py`：`LocalProcessEnvironment`（POSIX 进程组隔离、超时/取消孤儿清理、可选 `RLIMIT_AS`）；`testing.py` 提供 `FakeExecutionEnvironment` / `InMemoryPolicyState` / `RecordingPolicyEventSink`。
+- `tape_recorder.py`：`PolicyTapeRecorder` 直写 Stage 0 `TapeWriter`（`policy.decision` / `env.exec`）；内置可开关诊断日志 `DiagLogger("policy")` / `DiagLogger("env")`。
+- `__main__.py`：独立 CLI `python -m xana.policy <bench|check>`。
 
 ## 详细设计
 
