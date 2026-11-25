@@ -210,12 +210,13 @@ date: 2026-11-23
 - **落地记录**：完成 `src/xana/evolution/{contracts,interfaces,promotion,tape_recorder,ledger,evals,__main__}.py` 改造；新增 `IterationLedgerStore`/`PromotionGate`/`BenchmarkRunner` ABC、`StatisticalPromotionGate`（配对 train/keep/heldout 防过拟合门禁）、`VersionAssembly`、`batch_to_benchmark_snapshot`（对接 Stage 0 `EvalTrialRecord`/`BenchmarkSnapshot`/`RunManifest`）、`EvolutionTapeRecorder`、`DiagLogger("eval")` 及独立运行入口 `python -m xana.evolution bench`；锁定 `tests/golden/evolution_contract_v1.json`；全量单测、`merge_gate` 与真实 `xanac --project demo` 端到端验收通过。
 
 ### 迁移收尾（全部阶段完成后）
-**状态**：待启动
+**状态**：已完成
 
 - 对照 Stage 0 功能清单做最终全量回归，覆盖全部渠道（Web/CLI/Feishu/TG）与真实模型端到端验收，确认全链路各迁移模块均被真实调用。
 - 确认 `docs/_wip/` 已清空，无残留的过渡代码和旧文档。
 - 删除 `AGENTS.md` 中"模块化迁移路线图"临时入口。
 - 本路线图归档或删除；仍有效的长期约定（如轨迹格式、契约版本规则）先合入 `doc_ai/` 对应文档（改 `doc_ai` 前确认）。
+- **收尾记录**：Stage 0–7 全部独立包 CLI 压测、黄金契约测试、架构分层检查、1650+ 全量单测、11 项 `merge_gate` 及真实 `xana sync` + `xanac`（Kimi 2.8 + Karpo 4B SAG2）端到端验收全部通过；`docs/_wip/` 已清空；`AGENTS.md` 临时入口已移除；最终标签 `rsi-migration-complete`。
 
 ## 7. 硬性约束
 
