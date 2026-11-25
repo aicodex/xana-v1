@@ -18,6 +18,7 @@ from xana.component.contracts import ComponentSource, ComponentSpec
 from xana.extension_api.capabilities import AgentRunner
 from xana.extension_api.contracts import AgentRunOutcome, SubagentStep
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
+from xana.llm_driver.driver import complete
 from xana.llm_driver.interfaces import ModelRegistry
 from xana.policy.contracts import PermissionResult
 from xana.tools.contracts import ToolActivity, ToolContext, ToolDisplay, ToolInvocation, ToolResult, ToolSpec
@@ -93,18 +94,15 @@ class LeadResearchTool(Tool):
     async def _complete(self, system: str, user: str) -> tuple[str, str]:
         """一次不带工具的模型调用,返回 (回答, 思考)。"""
         client = await self.model_registry.get(self.provider)
+        if client is None:
+            raise RuntimeError(f"model provider {self.provider!r} is not registered")
         request = ModelRequest(provider=self.provider, model=self.model,
                                messages=(ModelMessage(role="system", content=system),
                                          ModelMessage(role="user", content=user)))
-        parts: list[str] = []
-        thinking: list[str] = []
-        async for event in client.stream(request):
-            if event.kind == "text_delta":
-                (thinking if event.payload.get("channel") == "thinking" else parts).append(
-                    event.payload.get("text", ""))
-            elif event.kind == "error" and event.error is not None:
-                raise RuntimeError(event.error.message)
-        return "".join(parts), "".join(thinking)
+        outcome = await complete(client, request)
+        if outcome.status != "done":
+            raise RuntimeError(outcome.error.message if outcome.error is not None else f"model call {outcome.status}")
+        return outcome.text, outcome.thinking
 
     async def execute(self, invocation: ToolInvocation, context: ToolContext) -> ToolResult:
         question = str(invocation.input["question"]).strip()

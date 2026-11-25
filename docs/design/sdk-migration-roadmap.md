@@ -61,7 +61,8 @@ date: 2026-11-23
 **Step 4 验证**（删除旧代码后执行）：
 - 独立运行：不启动完整宿主，通过模块自己的入口跑通功能、故障注入和评测集。
 - 可拼接：同一契约下至少两个实现（如基线与替代/模拟实现）都通过一致性测试；第二宿主能接入；能从轨迹切片离线重放。
-- 回归：全量既有测试与 `-m merge_gate` 通过；涉及真实链路时用 Kimi 2.8 冒烟。
+- 回归：全量既有测试与 `-m merge_gate` 通过。
+- 真实渠道端到端（必选）：在运行中的 `xana serve` 上（如需 `xana sync`/重启，先单独检查所有项目的活动 run 并经用户确认），通过真实渠道（飞书 / Web / `xanac`）使用默认模型 Kimi 2.8 发起至少一次能触发本模块的真实聊天或请求，**观察并确认本模块在真实链路中被实际调用**（以日志、事件、轨迹或产物为证；测试后清理写入 `workspace/memory/` 等处的测试副产物）。若该阶段为尚未接入主循环的纯底座，则至少跑一次真实渠道问候/对话确认现有链路未受损，并明确记录模块真实调用的后续接入阶段。
 
 **Step 5 落地文档**：更新 B 层事实文档；在本文对应阶段填写落地记录（实际入口、宿主需求、真实妥协）。
 
@@ -116,21 +117,25 @@ date: 2026-11-23
   - 轨迹格式：append-only；组装清单（各模块与策略的名称、版本、配置哈希、种子）；`run/turn/span` 因果 ID；大载荷外置引用；评测记录格式（数据集版本、指标、条件）；最小查看/切片工具。
   - `componentization_iteration.md` 中已有的 tape 设想。
   - 清理会带偏后续调研的过时文档（列清单确认）。
-- **准出**：纯数据结构与序列化/查看工具；架构检查生效；功能清单与归属表获确认。
+- **准出**：纯数据结构与序列化/查看工具；架构检查生效；功能清单与归属表获确认；真实渠道端到端：通过飞书/Web/`xanac`（或隔离真实模型冒烟）完成至少一次真实问候/对话确认现有主链路未受损（`xana.protocol` 为纯底座，尚未接入运行态主循环，其真实调用随 Stage 1–7 逐一接入验收）。
 - **落地记录**：
   - **入口与事实文档**：`src/xana/protocol/{versioning,primitives,tape,eval,__main__}.py`（stdlib-only，17 个公开 wire dataclass 受 `tests/golden/protocol_contract_v1.json` 锁定）；事实文档 `doc_ai/protocol.md`、`doc_ai/module_io_map.md`；已删死代码 `src/xana/contracts.py`（封禁于 `RETIRED_MODULES`）与误落 `src/xana/.ruff_cache/`；单循环旧迁移文档归档至 `docs/archive/single-loop-migration/`。
-  - **测试基线**：全量 `uv run pytest -q` 1620 passed, 2 skipped；`-m merge_gate` 11 passed（旧记忆 39+1 为单循环重构前口径，后续以最新实测为准）；Stage 0 专项与门禁 78 passed。
+  - **测试基线**：全量 `uv run pytest -q` 1620 passed, 2 skipped；`-m merge_gate` 11 passed（旧记忆 39+1 为单循环重构前口径，后续以最新实测为准）；Stage 0 专项与门禁 78 passed；真实运行态验收通过（`xana setup --no-wizard` 同步代码并刷新 launcher 至 `.venv`，拉起 `default`/`demo`/`llm-papers` 全部 serve 且飞书 WS 在线，`xanac --project demo/default --random-session "你好"` 经 `kimi-for-coding` 正常回复，无多余记忆写入）。
   - **宿主需求账本**：Stage 0 无宿主要求（纯数据底座）。
   - **真实妥协与后续注意**：① 存量 2 个强连通环（`context <-> memory` 及 13 包巨环）共 124 条跨包边冻结在 `tests/test_arch_layers.py::ALLOWED_LEGACY_EDGES`（只减不增），`xana.protocol` 第一天即 0 违例；② 现有 `RunJsonlWriter` 与 `EvalRunner` 留待 Stage 6/7 原位切入新 Tape/Eval 协议，Stage 0 不搅动主循环；③ 3 条代码审阅 Minor 暂缓（`EMPTY_RUN_SUMMARY` 单例可变 dict 与 `eval.py` null 解析/原子写、`MigrationRegistry` 浅拷贝/重复源校验、少量补充边界单测），可在后续触及对应文件时顺带收口。
 
 ### Stage 1：LLM 驱动
-**状态**：待启动
+**状态**：已完成（2026-11-25）
 
 - **为什么排第一个业务模块**：它只依赖 Stage 0，又是工具摘要、记忆提取与召回、主循环、评测裁判的共同前置。脚本化与回放客户端立住以后，后面所有模块都能做确定性测试。
-- **起点线索**：Kimi OAuth、DeepSeek、OpenAI 兼容、Fake 等 Provider；DefaultHarness 内的流式重试；`runtime/memory_extract.py`、`memory_selector.py`、`memory_judge.py` 的直连模型调用。
+- **起点线索**：Kimi OAuth、DeepSeek、OpenAI 兼容、Fake 等 Provider；DefaultHarness 内的流式重试；`runtime/memory_extract.py`、`memory_judge.py` 的直连模型/评分调用。
 - **调研重点**：协议层（流式组装、tool call 解析、结构化错误）与可进化请求策略（请求改写、超限降级、退避与自修复、路由）的分界；缓存命中、首字延迟、payload 哈希等记录；按请求指纹或顺序回放；常见流式/网络故障注入。
-- **准出**：可脱离宿主单独发请求、压测流式解析、回放历史模型调用；脚本化客户端跑通异常恢复测试。
-- **落地记录**：待填写
+- **准出**：可脱离宿主单独发请求、压测流式解析、回放历史模型调用；脚本化客户端跑通异常恢复测试；真实渠道端到端：通过飞书/Web/`xanac` 发起至少一次真实聊天（Kimi 2.8），观察日志/轨迹确认新 LLM 驱动实际处理了流式请求并记录用量与缓存统计。
+- **落地记录**：
+  - **入口与事实文档**：`src/xana/llm_driver/{contracts,interfaces,errors,accumulator,policies,tape_recorder,profiles,driver,registry,testing,__main__}.py` + `auth/{kimi_oauth,kimi_media,resolvers}.py` + `transports/{openai_chat,anthropic_messages,dsml_recovery,stream_scrubber}.py`（10 个公开 dataclass 受 `tests/golden/llm_driver_contract_v1.json` 锁定）；独立 CLI `python -m xana.llm_driver <bench|replay|smoke>`；事实文档 `doc_ai/llm_provider_contract.md`、`doc_ai/module_io_map.md`；已原位删除 `src/xana/llm_driver/fake_client.py` 与整个 `src/xana/llm_driver/providers/` 目录并封禁于 `tests/test_arch_layers.py::RETIRED_MODULES`；彻底消除 `("llm_driver", "config")` 跨包边（124 → 123）；`DefaultHarness` 移除内联 `_STREAM_RETRIES` 循环，改消费 `ModelEvent(kind="retry")`；`compact.py` 移除字符串匹配，改消费结构化 `error.reason` / `should_compress`；`memory_extract.py`（`priority="background"`）与 `lead_research.py` 改用 `complete()`。
+  - **测试基线**：全量 `uv run pytest -q` **1618 passed, 2 skipped, 0 failed**；`-m merge_gate` **11 passed**；独立 `pro` Code Review（2 Critical + 10 Important 全部经 TDD 修复并补齐 `tests/llm_driver/test_review_regressions.py`）；独立 CLI 验证：`bench` 3/3 pass（`pass_rate=1.0`）、`smoke --model kimi-for-coding --credentials ~/.xana/credentials/kimi.json --tape-dir ...` + 离线 `replay` 闭环通过（`cache_read_tokens=91`, `REPLAY_OK count=1`）；真实渠道端到端验证：`xana sync` 同步后确认 `~/.xana/code/xana/llm_driver/` 无旧路径残留，`default`/`demo`/`llm-papers` 全部重启且飞书 WS 在线，`xanac --project demo` 经 Kimi 2.8 完成思考流 + `Bash` 工具调用往返（`stage1-live-e2e-ok`），零错误日志、零多余记忆写入。
+  - **宿主需求账本**：① `boot.py` 需向 `KimiTokenStore` 显式传入 `xana_home() / "credentials" / "kimi.json"`；② `DefaultHarness` 消费 `ModelEvent(kind="retry")` 时需清空当前尝试缓冲并转发进度事件；③ `runtime/memory_judge.py`（Karpo 4B `/v1/systemone` 非标准聊天协议）保持在 Stage 5（Memory）范围，不强塞进 LLM Driver。
+  - **真实妥协与后续注意**：① 保留 `("llm_driver", "multimodal")` 跨包边用于 `MediaInput` 传递与 `KimiMedia` 上传，待 Stage 3/后续按需收敛；② `LlmTapeRecorder` 已在 `ModelDriver` 内打通 Stage 0 `TapeWriter`，但在主循环中默认以 no-op 运行，待 Stage 6（Harness 内核重构）统一把 run 级 `TapeWriter` 注入 `ModelDriver`；③ `RoutingStrategy` 目前在 `ModelDriver` 内支持同 profile 下的模型回退（跨 provider 路由留待 Stage 6 多客户端组合层接入）。
 
 ### Stage 2：执行环境与权限
 **状态**：待启动
@@ -139,7 +144,7 @@ date: 2026-11-23
 - **范围约束**：只抽象现有能力。openat2、容器、远端执行等新后端属于后续功能步骤。若调研认为本阶段更适合并入 Stage 3，可以合并。
 - **起点线索**：`PermissionService` 三档模式、plan mode、子会话权限上限、审批与审批复核、Bash 进程组清理、memory/agent 文档写门禁、Grep 工作进程资源限制。
 - **调研重点**：执行环境的最小统一抽象（含测试用假环境）；不可妥协的安全边界与可进化的风险分类策略如何分层；锁/租约/目录快照是否放在这一层；权限裁决与资源消耗的轨迹记录。
-- **准出**：可脱离工具和 harness 独立运行安全测试集（放行率、高危拦截、超时与孤儿进程清理、越界防护）。
+- **准出**：可脱离工具和 harness 独立运行安全测试集（放行率、高危拦截、超时与孤儿进程清理、越界防护）；真实渠道端到端：通过飞书/Web/`xanac` 发起至少一次触发权限裁决与执行边界的真实请求（如读文件、执行命令或受保护路径），观察日志/轨迹确认新执行环境与权限模块被实际调用。
 - **落地记录**：待填写
 
 ### Stage 3：工具与观察管理
@@ -148,7 +153,7 @@ date: 2026-11-23
 - **为什么把观察管理放在这里**：工具输出如何过滤、截断、落盘、提取报错并转成模型可读内容，直接影响 token 效率和多步成功率，也是常被迭代的部分；它与工具执行高度内聚。
 - **起点线索**：32+ 内置工具、10 类失败归因、只读即停与写操作宽限、并发批次、延迟披露 `tool_search`、MCP 审核/热加载/generation 状态机、派生工具、显示配置、`ToolEnvironment` 回放与时点截断。
 - **调研重点**：声明式资源访问与并发冲突；模型、UI 进度、程序/评测三种输出分离；可由模型自纠的错误与必须中止的错误；外部数据污染标记；观察策略、工具披露策略、调用前校验等可替换策略；live/record/replay/simulate 环境模式。
-- **准出**：任意工具和整条执行管线可通过独立入口喂入用例或轨迹切片运行和评测，不依赖 harness 或 memory。
+- **准出**：任意工具和整条执行管线可通过独立入口喂入用例或轨迹切片运行和评测，不依赖 harness 或 memory；真实渠道端到端：通过飞书/Web/`xanac` 发起至少一次触发真实工具调用（含大输出裁剪或 `tool_search`/MCP 工具）的请求，观察日志/轨迹确认新工具执行管线与观察管理模块被实际调用。
 - **落地记录**：待填写
 
 ### Stage 4：Skills
@@ -157,7 +162,7 @@ date: 2026-11-23
 - **为什么在 Memory 之前**：Skills 结构轻、状态少，适合先跑通"业务模块只通过标准工具和增量上下文块挂到宿主"的方式；后续 Memory 产出的流程经验需要投递为技能提案，接收端先立住。
 - **起点线索**：两阶段加载、项目级覆盖、热加载、`skill_bindings`、内置技能、安装与启用分离；TodoStore、GoalService 与内核的耦合。
 - **调研重点**：多源发现与信任分级；技能目录摘要的 token 成本与前缀稳定；提案队列（来源、证据、审批、过期）；激活准确率与上下文开销的独立评测；Todo/Goal 是否同样作为扩展从内核剥离。
-- **准出**：skills 不依赖 harness 和 memory；可独立评测匹配召回、注入格式和提案生命周期。
+- **准出**：skills 不依赖 harness 和 memory；可独立评测匹配召回、注入格式和提案生命周期；真实渠道端到端：通过飞书/Web/`xanac` 发起至少一次命中技能目录并触发 `skill_load` 的真实请求，观察日志/轨迹确认新 Skills 模块被实际调用并注入上下文。
 - **落地记录**：待填写
 
 ### Stage 5：长期记忆
@@ -165,10 +170,10 @@ date: 2026-11-23
 
 - **为什么在这里切**：轨迹、LLM、执行环境、工具与污染标记、技能提案接收端都已就绪，Memory 可以作为完整独立的子系统抽出，同时卸掉 DefaultHarness 最重的一块耦合。
 - **第一步**：把 `ActiveContextStore`、`HistoryMirror`、`MemoryReplayer` 等会话上下文移出 memory 包，归入 harness 上下文层（行为不变，Stage 6 再重构）。
-- **起点线索**：`memory/**/*.md` 唯一事实来源、索引与置顶注入、select/lexical/SAG2+JEV 召回、每轮后台提取、`memory_write` 门禁、知识树检索、项目隔离；`default.py` 与 `contracts.py` 中的 memory 相关耦合；`runtime/memory_extract.py` 对具体存储类的依赖。
+- **起点线索**：`memory/**/*.md` 唯一事实来源、索引与置顶注入、**SAG2 + Karpo 4B (`karpo-decision-4B --graphs`)** 作为唯一检索与召回基线（旧知识树/FTS/`select`/`lexical` 已删除）、每轮后台提取、`memory_write` 门禁、项目隔离；`default.py` 与 `contracts.py` 中的 memory 相关耦合；`runtime/memory_extract.py` 对具体存储类的依赖。
 - **调研重点**：支持快照/分叉/回滚的权威存储（评测时可隔离副本）；写入通道与污染回合处理；检索与提示策略的可替换槽位；固定时间点的离线评测集（召回、过时误用、冲突处理、自身成本）。
 - **迁移完成后的功能步骤**：出错反思、Dream 整理（参考现有 `docs/design/memory-dream-design.md`），单独开发与验收。
-- **准出**：memory 可脱离 harness 独立运行写入、提取、检索全链路评测；可替换为空实现或模拟实现而不影响主系统。
+- **准出**：memory 可脱离 harness 独立运行写入、提取、检索全链路评测；可替换为空实现或模拟实现而不影响主系统；真实渠道端到端：通过飞书/Web/`xanac` 发起至少一次触发记忆召回与写入/后台提取的真实对话，观察日志/轨迹确认新长期记忆模块被实际调用（验收后清理测试写入的记忆文件）。
 - **落地记录**：待填写
 
 ### Stage 6：Harness 收口
@@ -181,7 +186,7 @@ date: 2026-11-23
   - 安置 agents/子会话、后台任务、goal/todo（若前面未处理）。
   - 内核与组合根（`boot()`）分离。
 - **必须保留**：单会话单循环（queue/steer/cancel/重启恢复）、提示词前缀逐字节稳定、原子压缩与 TODO 恢复、goal 与 verify 续跑、子 agent 权限上限、后台任务可靠交付。
-- **准出**：内核仅凭脚本化模型和假工具跑完多轮压缩、续跑熔断、隔离、验证测试；增删 Skills 或替换 Memory 无需修改 harness。
+- **准出**：内核仅凭脚本化模型和假工具跑完多轮压缩、续跑熔断、隔离、验证测试；增删 Skills 或替换 Memory 无需修改 harness；真实渠道端到端：通过飞书/Web/`xanac` 完成至少一次真实多轮对话（含工具调用及打断/取消或压缩场景），观察日志/轨迹确认收口后的 Harness 主循环、扩展组装与策略槽被实际调用。
 - **落地记录**：待填写
 
 ### Stage 7：评测与迭代闭环
@@ -189,13 +194,13 @@ date: 2026-11-23
 
 - **起点线索**：EvalSuite（train/heldout/live、指纹复用、确定性 scorer）、EpisodeRunner 状态机与预算收尾、Ledger、Harbor/τ² 适配、ToolEnvironment。
 - **调研重点**：通过组装清单拼装任意模块版本，在固定条件下做配对对照；防过拟合（heldout 门禁、金丝雀、复杂度约束、自动回滚）；用历史轨迹切片低成本预筛候选；迭代账本（目标模块、故障聚类、假设、diff、评测条件、预期与实测、裁决），支持换基座模型时区分模型专属改动与通用改动。
-- **准出**：至少一个单模块迭代闭环和一个多版本拼装回归闭环跑通，产物可追溯、可回滚。
+- **准出**：至少一个单模块迭代闭环和一个多版本拼装回归闭环跑通，产物可追溯、可回滚；真实渠道端到端：通过飞书/Web/`xanac` 或生产同源入口触发至少一次真实任务与评测/迭代记录，观察日志/轨迹确认新评测、打分与账本/回滚链路被实际调用。
 - **落地记录**：待填写
 
 ### 迁移收尾（全部阶段完成后）
 **状态**：待启动
 
-- 对照 Stage 0 功能清单做最终全量回归，覆盖全部渠道（Web/CLI/Feishu/TG）与真实模型冒烟。
+- 对照 Stage 0 功能清单做最终全量回归，覆盖全部渠道（Web/CLI/Feishu/TG）与真实模型端到端验收，确认全链路各迁移模块均被真实调用。
 - 确认 `docs/_wip/` 已清空，无残留的过渡代码和旧文档。
 - 删除 `AGENTS.md` 中"模块化迁移路线图"临时入口。
 - 本路线图归档或删除；仍有效的长期约定（如轨迹格式、契约版本规则）先合入 `doc_ai/` 对应文档（改 `doc_ai` 前确认）。
@@ -208,7 +213,8 @@ date: 2026-11-23
 4. 冻结骨架与可进化策略分开，并带版本。
 5. 如实记录妥协和宿主需求，作为下一阶段调研的事实基础。
 6. 对照 Stage 0 功能清单，现有功能零丢失。
-7. AGENTS.md 的项目规则全程适用（组合根唯一、提示词来源、真实模型默认 Kimi 2.8、改 `doc_ai` 前确认、不经要求不 push）。
+7. 每个阶段必须完成至少一次真实渠道（飞书 / Web / `xanac`）端到端验证，并观察到本迁移模块被实际调用（纯底座未接入主循环的阶段须验证现有主链路未受损并记录接入时机），否则不算阶段准出。
+8. AGENTS.md 的项目规则全程适用（组合根唯一、提示词来源、真实模型默认 Kimi 2.8、改 `doc_ai` 前确认、不经要求不 push）。
 
 ## 8. 参考方向
 

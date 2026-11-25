@@ -4,9 +4,9 @@
   1. POST /api/oauth/device_authorization → 显示 user_code + verification_uri_complete
   2. 轮询 /api/oauth/token 直到用户在网页确认
   3. token 原子写入 ~/.xana/credentials/kimi.json(0600)
-  4. GET /models 拉取服务端模型目录,把 k3 / kimi-for-coding 登记进
+  4. GET /models 拉取服务端模型目录,把 k3.1-pro / kimi-for-coding 登记进
      system.json models[](type="kimi",context_window 保存服务端原始窗口);
-     若 default_model 为空则默认 k3
+     若 default_model 为空则默认 k3.1-pro
 
 token 到期由 KimiTokenStore 自动刷新;refresh 失败会提示重新 `xana login`。
 """
@@ -18,9 +18,10 @@ from typing import Any, TextIO
 
 from xana.cli.commands.setup_wizard import _load_raw, _save_raw
 from xana.config.loader import DEFAULT_CONTEXT_WINDOW
-from xana.llm_driver.providers import kimi_oauth
+from xana.config.paths import xana_home
+from xana.llm_driver.auth import kimi_oauth
 
-_WANTED_MODELS = ("k3", "kimi-for-coding")
+_WANTED_MODELS = ("k3.1-pro", "kimi-for-coding")
 
 
 class LoginFlow:
@@ -51,7 +52,7 @@ def add_logout_arguments(parser: argparse.ArgumentParser) -> None:
 
 def run(args: argparse.Namespace, *, out: TextIO, flow: LoginFlow | None = None) -> int:
     region = kimi_oauth.resolve_region(getattr(args, "region", None))
-    store = kimi_oauth.KimiTokenStore()
+    store = kimi_oauth.KimiTokenStore(kimi_oauth.credentials_path(xana_home()))
     existing = store.load()
     if existing is not None:
         print(f"[xana login] 已登录(region={existing.region})。重新登录请先 `xana logout`。", file=out)
@@ -67,7 +68,7 @@ def run(args: argparse.Namespace, *, out: TextIO, flow: LoginFlow | None = None)
 
 
 def run_logout(args: argparse.Namespace, *, out: TextIO) -> int:  # noqa: ARG001
-    store = kimi_oauth.KimiTokenStore()
+    store = kimi_oauth.KimiTokenStore(kimi_oauth.credentials_path(xana_home()))
     if store.load() is None and not store.path.exists():
         print("[xana logout] 未登录 kimi。", file=out)
         return 0
@@ -101,7 +102,7 @@ async def _login(region: str, store: kimi_oauth.KimiTokenStore,
     if registered:
         print(f"[xana login] v 已登记模型: {', '.join(registered)}(type=kimi, 1M 上下文)", file=out)
     else:
-        print("[xana login] 账号未见 k3 / kimi-for-coding;模型未登记。", file=out)
+        print("[xana login] 账号未见 k3.1-pro / kimi-for-coding;模型未登记。", file=out)
     return 0
 
 
@@ -135,7 +136,7 @@ def _register_models(models: list[dict[str, Any]], out: TextIO) -> list[str]:
     data["models"] = entries
     dm = dict(data.get("default_model") or {})
     if dm.get("chat") is None and registered:
-        dm["chat"] = "k3" if "k3" in registered else registered[0]
+        dm["chat"] = "k3.1-pro" if "k3.1-pro" in registered else registered[0]
         dm["agent"] = dm["agent"] if dm.get("agent") is not None else dm["chat"]
         data["default_model"] = dm
         print(f"[xana login] 默认 chat/agent 模型 → {dm['chat']}(system.json 可改)", file=out)

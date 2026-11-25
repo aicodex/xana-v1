@@ -107,12 +107,9 @@ def _complete_summary(text: str) -> str | None:
 
 
 def _overflow_error(error: ProviderError | None) -> bool:
-    if error is None or error.kind != "bad_request":
+    if error is None:
         return False
-    text = (error.message + " " + json.dumps(error.raw, ensure_ascii=False)).lower()
-    return any(term in text for term in (
-        "context_length", "context window", "context length", "too many tokens", "prompt too long",
-        "maximum context", "token limit", "context overflow"))
+    return error.reason in ("context_overflow", "payload_too_large") or error.should_compress
 
 
 async def generate_summary(

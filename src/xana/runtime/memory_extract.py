@@ -13,6 +13,7 @@ import logging
 import re
 
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
+from xana.llm_driver.driver import complete
 from xana.llm_driver.interfaces import ModelRegistry
 from xana.memory.contracts import MEMORY_TYPES, ExtractionRequest, MemoryMessage
 from xana.memory.store import ProjectMemoryStore
@@ -80,17 +81,17 @@ class ModelMemoryExtractor:
 
     async def _complete(self, system: str, user: str) -> str:
         client = await self._registry.get(self._provider)
+        if client is None:
+            raise RuntimeError(f"model provider {self._provider!r} is not registered")
         request = ModelRequest(provider=self._provider, model=self._model,
                                messages=(ModelMessage(role="system", content=system),
                                          ModelMessage(role="user", content=user)),
-                               metadata={"thinking": "disabled"})
-        parts: list[str] = []
-        async for event in client.stream(request):
-            if event.kind == "text_delta" and event.payload.get("channel") != "thinking":
-                parts.append(event.payload.get("text", ""))
-            elif event.kind == "error" and event.error is not None:
-                raise RuntimeError(event.error.message)
-        return "".join(parts)
+                               metadata={"thinking": "disabled"},
+                               priority="background")
+        outcome = await complete(client, request)
+        if outcome.status != "done":
+            raise RuntimeError(outcome.error.message if outcome.error is not None else f"model call {outcome.status}")
+        return outcome.text
 
     def apply(self, ops: list[dict]) -> list[str]:
         """执行提取结果:create(已存在或与已有记忆相近时改为追加)/ append。返回写入的记忆路径。"""

@@ -18,36 +18,46 @@ status: active
 
 - `ModelClient`（ABC）— `stream` / `cancel` / `capabilities`
 - `ModelRegistry`（ABC）— `register` / `get`
-- `ProviderCapabilities` — provider 能力声明
-
-请求构建 / 响应解析 / 工具 schema 转换 / usage 解析都是各 client 内部私有函数，不设独立 ABC。
+- `WireTransport`（ABC）— `dialect` / `stream_attempt` / `capabilities` / `aclose`（仅承载单次尝试的线协议收发）
+- `CredentialResolver`（ABC）— `can_refresh` / `auth_headers(force_refresh=...)`
+- 4 个可进化策略 ABC（均带 `component_version() -> ComponentVersion`）：`RetryPolicyStrategy` / `StreamRecoveryStrategy` / `RequestRewriteStrategy` / `RoutingStrategy`
+- `ProviderProfile` / `ProviderCapabilities` / `ModelOutcome` / `FailoverReason` — 声明式供应商配置与结构化契约（`tests/golden/llm_driver_contract_v1.json` 锁定）
 
 ## 代码锚点
 
-- [contracts.py](../src/xana/llm_driver/contracts.py) — 数据结构和枚举
-- [interfaces.py](../src/xana/llm_driver/interfaces.py) — 抽象接口
-- [providers/anthropic_deepseek.py](../src/xana/llm_driver/providers/anthropic_deepseek.py) — `AnthropicDeepSeekClient` / `AnthropicDeepSeekConfig`
-- [providers/kimi.py](../src/xana/llm_driver/providers/kimi.py) — `KimiClient` / `KimiConfig`
-- [providers/kimi_oauth.py](../src/xana/llm_driver/providers/kimi_oauth.py) — device flow + `KimiTokenStore`
-- [fake_client.py](../src/xana/llm_driver/fake_client.py) — `FakeModelClient` / `InMemoryModelRegistry` / `ScriptedTurn`
+- [contracts.py](../src/xana/llm_driver/contracts.py) — 冻结数据结构、枚举与 `ProviderProfile`
+- [interfaces.py](../src/xana/llm_driver/interfaces.py) — 抽象接口（8 个 ABC）
+- [driver.py](../src/xana/llm_driver/driver.py) — `ModelDriver` / `build_driver` / `complete`
+- [registry.py](../src/xana/llm_driver/registry.py) — `InMemoryModelRegistry` / `_ConcurrencyGuardedClient`
+- [profiles.py](../src/xana/llm_driver/profiles.py) — `KIMI_PROFILE` / `OPENAI_COMPATIBLE_PROFILE` / `ANTHROPIC_DEEPSEEK_PROFILE` / `make_profile`
+- [policies.py](../src/xana/llm_driver/policies.py) — `DefaultRetryPolicy` / `DefaultStreamRecoveryPolicy` / `DefaultRequestRewritePolicy` / `DirectRoutingPolicy` / `FallbackRoutingPolicy` / `PolicyBundle`
+- [errors.py](../src/xana/llm_driver/errors.py) — 结构化 HTTP/SSE/网络错误分类与 `FailoverReason`
+- [accumulator.py](../src/xana/llm_driver/accumulator.py) — `ToolCallAccumulator` / `AttemptAccumulator` / `sanitize_tool_call_id`
+- [tape_recorder.py](../src/xana/llm_driver/tape_recorder.py) — `LlmTapeRecorder`（直写 Stage 0 `TapeWriter`，零私有日志格式）
+- [transports/openai_chat.py](../src/xana/llm_driver/transports/openai_chat.py) — OpenAI Chat Completions 线协议（服务 Kimi / OpenAI 兼容端点）
+- [transports/anthropic_messages.py](../src/xana/llm_driver/transports/anthropic_messages.py) — Anthropic `/v1/messages` 线协议（含 DSML 刮除与恢复）
+- [auth/kimi_oauth.py](../src/xana/llm_driver/auth/kimi_oauth.py) / [auth/resolvers.py](../src/xana/llm_driver/auth/resolvers.py) — `StaticApiKeyResolver` / `KimiOAuthResolver` / `KimiTokenStore`（零 `xana.config` 依赖）
+- [testing.py](../src/xana/llm_driver/testing.py) — `FakeModelClient` / `ReplayClient` / `FakeLLMServer` / `ScriptedTurn` / `FaultStep`
+- [__main__.py](../src/xana/llm_driver/__main__.py) — 独立 CLI：`python -m xana.llm_driver <bench|replay|smoke>`
 
 ## 接口语义
 
-- `ModelClient.stream(request)` → `AsyncIterator[ModelEvent]`，事件契约见 [llm_streaming](llm_streaming.md)。
-- `ModelClient.cancel(request_id)`：当前所有实现均为 no-op。
-- `ModelClient.capabilities()`：两个真实 client 均声明 streaming/tools=True、cache_control=False、`max_output_tokens = config.max_tokens`。
-- `ModelRegistry.register(provider, client)` / `get(provider)`：内存字典实现为 `InMemoryModelRegistry`；boot 时只注册 `default_model.provider` 一个 client。
-- **per-provider 并发位**：`InMemoryModelRegistry(concurrency_limits={provider: max_concurrent})` 为每个 provider 建 `asyncio.Semaphore`；`get(provider)` 时若该 provider 有正数 limit，懒创建 semaphore 并用 `_ConcurrencyGuardedClient` 包装 client，`stream` 包在 semaphore 内（同 provider 并发超限的请求排队等空闲并发位）。boot 把 `SystemConfig.limit().max_concurrent` 逐项喂进来（boot.py:287-291）；未配置的 provider 直通原始 client（零行为变更）。
+- `ModelClient.stream(request)` → `AsyncIterator[ModelEvent]`，含 `ModelEvent(kind="retry")`（驱动内决定重试时通知调用方丢弃上次部分输出）；事件契约见 [llm_streaming](llm_streaming.md)。
+- `ModelClient.cancel(request_id)`：`ModelDriver` 真实中止进行中的流与退避等待，并向 Tape 补写 `llm.attempt.error` + `llm.response(status="aborted")`。
+- `ModelClient.capabilities(model)`：从 `ProviderProfile` 声明式解析 `max_output_tokens` / `max_context_tokens` / `input_modalities`。
+- `ModelRegistry.register(provider, client)` / `get(provider)`：内存实现为 `registry.InMemoryModelRegistry`；boot 注册所有显式配置的 provider，默认 provider 不变。`DefaultAgentRequestMapper` 根据所选模型的 `ModelConfig.provider` 选择客户端，因此 `/model` 可跨 provider 切换。
+- **per-provider 并发位**：`InMemoryModelRegistry(concurrency_limits={provider: max_concurrent})` 为每个 provider 建 `asyncio.Semaphore` 并用 `_ConcurrencyGuardedClient` 包装 client（同 provider 并发超限的请求排队等空闲并发位）；未配置的 provider 直通原始 client。
 
 ## Provider 装配（boot 唯一组合点）
 
-`runtime/boot.py` 的 `_build_model_client` 按显式选择的 provider 构造 client，配置错误直接阻止启动：
+`runtime/boot.py` 的 `_build_model_client` 按显式选择的 provider 通过 `build_driver(profile, credentials=...)` 装配 `ModelDriver`，配置错误直接阻止启动：
 
-- 名字含 `"deepseek"`（同时命中 "anthropic_deepseek" 和用户手填的 "deepseek-v4-flash"）→ `AnthropicDeepSeekClient`；system.json 中该 model entry 缺失或 api_key 为空（包括纯空白）→ 明确报错。
-- 名字以 `"kimi"` 开头 → `KimiClient` + `KimiTokenStore`；未登录 → 明确报错并指引 `xana login`。base_url 取 system.json entry 的 base_url，缺省用 `api_base(tokens.region)`。
-- provider 恰为 `"fake"` → `FakeModelClient`；其他不支持的 provider → 明确报错。
+- 名字含 `"deepseek"`（如 `"anthropic_deepseek"` / `"deepseek-v4-flash"`）→ `make_profile(ANTHROPIC_DEEPSEEK_PROFILE, ...)` + `StaticApiKeyResolver(entry.api_key)`；缺失 entry 或 api_key 为空 → 明确报错。
+- 名字以 `"kimi"` 开头 → `make_profile(KIMI_PROFILE, ...)` + `KimiOAuthResolver(KimiTokenStore(xana_home() / "credentials" / "kimi.json"))`；未登录 → 明确报错并指引 `xana login`。
+- provider 恰为 `"openai_compatible"` → `make_profile(OPENAI_COMPATIBLE_PROFILE, ...)` + `StaticApiKeyResolver(entry.api_key)`，要求显式 api_key/base_url。
+- provider 恰为 `"fake"` → `FakeModelClient()`；其他不支持的 provider → 明确报错。
 
-## AnthropicDeepSeekClient
+## AnthropicMessagesTransport（ANTHROPIC_DEEPSEEK_PROFILE）
 
 DeepSeek V4 走 Anthropic `/v1/messages` 方言，默认 base `https://api.deepseek.com/anthropic`。
 
@@ -59,18 +69,18 @@ DeepSeek V4 走 Anthropic `/v1/messages` 方言，默认 base `https://api.deeps
 - `request.metadata["thinking"]` ∈ {"disabled", "enabled"} → `body["thinking"] = {"type": ...}`（compact 摘要调用必须 disabled）；缺省不发，保持原行为。
 - DSML 泄漏恢复见 [llm_streaming](llm_streaming.md)。
 
-## KimiClient
+## OpenAIChatTransport（KIMI_PROFILE / OPENAI_COMPATIBLE_PROFILE）
 
-k3 / kimi-for-coding 走 OpenAI chat-completions 方言，默认 base `https://api.kimi.com/coding/v1`；复刻 kimi-code `providers/kimi.ts` 的关键行为：
+k3.1-pro / kimi-for-coding 走 OpenAI chat-completions 方言，默认 base `https://api.kimi.com/coding/v1`；复刻 kimi-code `providers/kimi.ts` 的关键行为：
 
 - 只发 `max_completion_tokens`（默认 16384），不发 `max_tokens`——reasoning 模型上 max_tokens 与 reasoning_content 共享预算，给小了会 200 空 content。
 - 鉴权：`Authorization: Bearer <oauth access_token>`，token 由 `KimiTokenStore.access_token()` 供给（到期自动刷新）。
-- thinking：body 级 `thinking: {"type": "enabled", "effort"?}`；调用方要求 disabled 时省略该字段（k3/kimi-for-coding 是 thinking-only 模型，省略比显式 disabled 稳妥，compact 场景不硬关）。
+- thinking：body 级 `thinking: {"type": "enabled", "effort"?}`；调用方要求 disabled 时省略该字段（k3.1-pro/kimi-for-coding 是 thinking-only 模型，省略比显式 disabled 稳妥，compact 场景不硬关）。
 - effort 映射：low→low、medium→high、high→high、xhigh→max、max→max；映射外的值记 warning 后跳过。
 - 401 → 强制刷新 token 重试一次（kimi-code 同款）；第二个 401 才报 auth 错误，消息引导 `xana login`。
 - assistant 历史回传 `reasoning_content`；tool_calls 渲染为 OpenAI tool_calls（arguments 为 JSON 字符串）；`role="tool"` 一对一映射为 `{role: "tool", tool_call_id, content}`（OpenAI 允许连续 tool 消息，无需像 Anthropic 方言那样合并）。
 
-## KimiTokenStore / OAuth（providers/kimi_oauth.py）
+## KimiTokenStore / OAuth（auth/kimi_oauth.py）
 
 - device flow：全 POST form-urlencoded 到 OAuth host，只传 client_id（无 scope）。`POST /api/oauth/device_authorization` 拿 user_code/device_code/interval → 用户授权后轮询 `POST /api/oauth/token`（grant_type=device_code）：authorization_pending 继续等，slow_down 间隔 +5s，expired_token / access_denied / 超时 → `KimiAuthError`；轮询期间网络抖动不中断登录。
 - token 存 `$XANA_HOME/credentials/kimi.json`（默认 `~/.xana/credentials/kimi.json`），权限 0600，tmp+replace 原子写；损坏 JSON 静默视为未登录。
@@ -120,3 +130,17 @@ k3 / kimi-for-coding 走 OpenAI chat-completions 方言，默认 base `https://a
 `tests/test_kimi_media.py`（配置权威、切模型工具可见性、请求格式、拒绝未开启能力）。
 
 `ModelRequest.max_tokens` 是请求级输出限制；摘要使用配置推导的摘要上限。没有请求级覆盖时，Kimi/DeepSeek 按当前模型配置读取 `max_tokens`，未配置才使用 provider 默认值；同一 provider 的不同模型不共享一个固定输出长度。
+
+## OpenAI 兼容自部署模型
+
+`providers/openai_compatible.py` 支持显式 `type="openai_compatible"` 的模型。`base_url` 填到 API 版本根路径（如 `http://host:port/v1`），客户端追加 `/chat/completions`；`api_key` 作为静态 Bearer 凭据，不使用 Kimi OAuth。
+
+请求使用标准 `max_tokens`，不发送 Kimi 的 thinking 或 prompt_cache_key 参数。复用现有 OpenAI 流式解析、工具调用聚合和 usage 映射；图片使用标准 `image_url` data URL，当前不支持 video。`context_window`、`max_tokens`、`input_modalities` 均来自模型配置，`capabilities()` 据此返回，不猜测模型能力。
+
+```json
+{"name": "self-hosted-model", "type": "openai_compatible", "api_key": "<secret>",
+ "base_url": "http://host:port/v1", "context_window": 1000000,
+ "max_tokens": 128000, "input_modalities": ["image"]}
+```
+
+该 provider 是显式选择项，不改变默认模型。测试：`tests/test_openai_compatible.py` 覆盖请求方言、图片、流式工具调用、usage、认证错误和 boot 接线。真实自部署端点已验证流式文本、图片与工具调用，均返回正常 usage 和 done。

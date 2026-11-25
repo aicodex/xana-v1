@@ -7,7 +7,7 @@
     处理 authorization_pending / slow_down / expired_token / access_denied
   POST /api/oauth/token(grant_type=refresh_token) 刷新
 
-token 存 $XANA_HOME/credentials/kimi.json(默认 ~/.xana/credentials/kimi.json),
+token 路径由调用方显式传入(或经 credentials_path(home) / $XANA_KIMI_CREDENTIALS 解析),
 0600,tmp+replace 原子写;损坏 JSON 静默视为未登录。
 """
 from __future__ import annotations
@@ -24,7 +24,6 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
-from xana.config.paths import xana_home
 
 CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
 
@@ -60,9 +59,13 @@ def api_base(region: str) -> str:
     return os.environ.get("XANA_KIMI_API_BASE") or REGIONS[region][1]
 
 
-def credentials_path() -> Path:
-    root = xana_home()
-    return root / "credentials" / "kimi.json"
+def credentials_path(home: Path | None = None) -> Path:
+    if home is not None:
+        return Path(home).expanduser() / "credentials" / "kimi.json"
+    env_path = os.environ.get("XANA_KIMI_CREDENTIALS")
+    if env_path:
+        return Path(env_path).expanduser()
+    return Path.home() / ".config" / "xana-kimi" / "kimi.json"
 
 
 @dataclass(frozen=True)
@@ -254,12 +257,13 @@ class KimiTokenStore:
             "region": tokens.region,
         }
         tmp = self._path.parent / (self._path.name + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, self._path)
+        content = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            self._path.chmod(0o600)
-        except OSError:
-            pass
+            os.write(fd, content)
+        finally:
+            os.close(fd)
+        os.replace(tmp, self._path)
         self._cached = tokens
 
     def save_payload(self, region: str, payload: dict[str, Any]) -> KimiTokens:

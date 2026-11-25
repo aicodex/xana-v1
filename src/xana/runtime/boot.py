@@ -5,8 +5,8 @@ under it, so the CLI and tests can introspect.
 
 Model selection happens here: the DefaultConfigProvider reads
 ~/.xana/config/system.json (or $XANA_HOME), picks the chat default model,
-and we register the matching client (AnthropicDeepSeekClient for deepseek
-entries; FakeModelClient only when type="fake" is explicitly selected).
+and we register the matching client (`ModelDriver` built from declarative
+`ProviderProfile`s; `FakeModelClient` only when type="fake" is explicitly selected).
 ChatAgent's provider/model are pinned to whatever was actually registered
 so config_snapshot["provider"] resolves cleanly inside the harness.
 """
@@ -44,16 +44,26 @@ from xana.extension_api.capabilities import AgentRunner
 from xana.extension_api.registry import ExtensionRegistry, ExtensionRegistryBuilder
 from xana.harness_sdk.default import DefaultHarness
 from xana.harness_sdk.interfaces import ProgressSink
-from xana.llm_driver.fake_client import FakeModelClient, InMemoryModelRegistry, ScriptedTurn
-from xana.llm_driver.interfaces import ModelClient, ModelRegistry
-from xana.llm_driver.providers.anthropic_deepseek import (
-    SUPPORTED_EFFORTS as DEEPSEEK_EFFORTS,
-    AnthropicDeepSeekClient,
-    AnthropicDeepSeekConfig,
+from xana.llm_driver.auth import (
+    KimiOAuthResolver,
+    KimiTokenStore,
+    StaticApiKeyResolver,
+    api_base as kimi_api_base,
+    fetch_usages,
+    quota_reset_wait,
 )
-from xana.llm_driver.providers.kimi import SUPPORTED_EFFORTS as KIMI_EFFORTS
-from xana.llm_driver.providers.kimi import KimiClient, KimiConfig
-from xana.llm_driver.providers.kimi_oauth import KimiTokenStore, api_base as kimi_api_base
+from xana.llm_driver.contracts import ModelUsage
+from xana.llm_driver.driver import InMemoryModelRegistry, build_driver
+from xana.llm_driver.interfaces import ModelClient, ModelRegistry
+from xana.llm_driver.profiles import (
+    ANTHROPIC_DEEPSEEK_PROFILE,
+    DEEPSEEK_SUPPORTED_EFFORTS as DEEPSEEK_EFFORTS,
+    KIMI_PROFILE,
+    KIMI_SUPPORTED_EFFORTS as KIMI_EFFORTS,
+    OPENAI_COMPATIBLE_PROFILE,
+    make_profile,
+)
+from xana.llm_driver.testing import FakeModelClient, ScriptedTurn
 from xana.memory.active_context import (
     DefaultMemoryInjectorRegistry,
     InMemoryActiveContextStore,
@@ -65,11 +75,6 @@ from xana.memory.interfaces import (
     HistoryMirror,
     MemoryInjectorRegistry,
     MemorySearchEngine,
-    MemoryTree,
-)
-from xana.memory.markdown import (
-    MarkdownMemoryTree,
-    SQLiteMemorySearchEngine,
 )
 from xana.skills.bundled.coding import CodingSkill
 from xana.skills.bundled.loop import LoopSkill
@@ -96,10 +101,11 @@ from xana.state.todos import TodoStore
 from xana.state.contracts import TodoItem
 from xana.memory.recall import ProjectMemoryInjector
 from xana.memory.store import ProjectMemoryStore
+from xana.memory.project_search import ProjectMemorySearch
 from xana.mcp.config import McpConfigStore
 from xana.mcp.manager import McpManager
 from xana.runtime.memory_extract import ModelMemoryExtractor
-from xana.runtime.memory_selector import ModelMemorySelector
+from xana.runtime.memory_judge import build_evidence_judge
 from xana.runtime.scheduler import FileSchedulerService, ScheduledTaskDispatcher
 from xana.runtime.session_resolver import SessionResolver
 from xana.agent_adapter.agent_runner import GatewayAgentRunner
@@ -163,7 +169,6 @@ _logger = logging.getLogger(__name__)
 class BootResult:
     gateway: DefaultAgentGateway
     agents: dict[str, Agent]
-    memory_tree: MemoryTree
     search_engine: MemorySearchEngine
     active_context_store: ActiveContextStore
     history_mirror: HistoryMirror
@@ -193,6 +198,7 @@ class BootResult:
     process_logs: ProcessLogs | None = None
     media_uploads: MediaUploads | None = None
     mcp: McpManager | None = None    # serve 拥有 start()/close();boot 只构造,不连接
+    memory_judge_client: Any = None  # SAG2 评分 HTTP 客户端，由 serve 在退出时关闭
 
 
 class _CompositeStateRepository(StateRepository):
@@ -206,8 +212,7 @@ class _CompositeStateRepository(StateRepository):
 def _kimi_quota_wait(threshold: float):
     """Kimi 订阅额度用到阈值时返回 (原因, 距重置秒数)(iteration-agent-design §12):评测在 90% 时暂停开新样本;
     模型调用被限流且额度确已用完(≥ 99%)时,非聊天 run 冻结到重置,聊天报错让用户自己继续。"""
-    from xana.llm_driver.providers.kimi_oauth import fetch_usages, quota_reset_wait
-    store = KimiTokenStore()
+    store = KimiTokenStore(xana_home() / "credentials" / "kimi.json")
 
     async def wait() -> tuple[str, float] | None:
         return quota_reset_wait(await fetch_usages(store), threshold=threshold)
@@ -243,11 +248,7 @@ async def boot(
     model = runtime_config.default_model.model
     client = _build_model_client(provider, model, cp)
 
-    engine = SQLiteMemorySearchEngine(_search_db_path(project_root))
-    tree = MarkdownMemoryTree(root=project_root, entrypoint="README_ai.md", search_engine=engine)
-    await tree.load()
-    await engine.rebuild_from_tree(tree)
-    # 项目记忆(docs/design/memory-recall-design.md):memory/ 目录;注入器在模型注册后接入(召回要调模型挑选)
+    # 项目记忆(memory/ 目录):权威存储与 SAG2 检索基线
     memory_store = ProjectMemoryStore(project_root)
     injector_registry = DefaultMemoryInjectorRegistry()
 
@@ -311,15 +312,31 @@ async def boot(
         name: limit.max_concurrent for name, limit in system_cfg.limits.items()
     })
     await model_registry.register(provider, client)
+    # 所有显式配置的 provider 都可由会话 /model 选择；默认 provider 保持不变。
+    for other_provider in dict.fromkeys(e.type for e in system_cfg.models if e.type != provider):
+        entry = next(e for e in system_cfg.models if e.type == other_provider)
+        await model_registry.register(
+            other_provider, _build_model_client(other_provider, entry.name, cp),
+        )
 
-    # 记忆召回:快速模型(model_tiers.fast 且属于当前 provider)挑选,否则用当前模型;超时退回字面检索
+    # 记忆召回与检索统一走 SAG2(Karpo/JEV 证据评分);memory_search 工具与每轮注入共享同一实例。
+    import httpx
+    _judge_host = (httpx.URL(system_cfg.memory.judge.endpoint).host or "").lower()
+    memory_judge_client = httpx.AsyncClient(
+        trust_env=_judge_host not in {"127.0.0.1", "localhost", "::1"},
+    )
+    judge = build_evidence_judge(system_cfg.memory.judge, memory_judge_client)
+    recall_timeout_s = system_cfg.memory.judge.timeout_s
+    search_path = _search_db_path(project_root).with_name("sag2-" + _search_db_path(project_root).name)
+    memory_search = ProjectMemorySearch(
+        project_root=project_root, db_path=search_path,
+        judge=judge, timeout_s=recall_timeout_s)
+    await injector_registry.register(ProjectMemoryInjector(
+        memory_store, mode=system_cfg.memory.recall,
+        timeout_s=recall_timeout_s, search_engine=memory_search), priority=100)
+    # 记忆的后台提取(docs/design/memory-dream-design.md §3.1):每轮结束后把漏记的写进记忆;0 = 关闭
     _fast = system_cfg.model(system_cfg.model_tiers.fast) if system_cfg.model_tiers.fast else None
     _memory_model = _fast.name if _fast is not None and _fast.type == provider else model
-    memory_selector = ModelMemorySelector(model_registry=model_registry, provider=provider, model=_memory_model)
-    await injector_registry.register(ProjectMemoryInjector(
-        memory_store, selector=memory_selector, mode=system_cfg.memory.recall,
-        timeout_s=system_cfg.memory.select_timeout_s), priority=100)
-    # 记忆的后台提取(docs/design/memory-dream-design.md §3.1):每轮结束后把漏记的写进记忆;0 = 关闭
     memory_extractor = (ModelMemoryExtractor(
         model_registry=model_registry, provider=provider, model=_memory_model,
         store=memory_store, every=system_cfg.memory.extract_every) if system_cfg.memory.extract_every > 0 else None)
@@ -398,8 +415,8 @@ async def boot(
         if sp.component.name in _disabled_tools or (sp.toolset and sp.toolset in _disabled_tools):
             return
         await tools.register(tool)
-    await _register(MemorySearchTool(engine))
-    await _register(MemoryWriteTool(store=memory_store, tree=tree))
+    await _register(MemorySearchTool(memory_search))
+    await _register(MemoryWriteTool(store=memory_store))
     await _register(ReadTool())
     media_store = FileMediaStore((Path(history_root) if history_root else project_home() / "sessions") / "media")
     # MCP(docs/superpowers/specs/2026-11-13-mcp-design.md §6):boot 只构造 manager 并挂进
@@ -414,11 +431,10 @@ async def boot(
     )
     await _register(ReadMediaTool(media_store, "image"))
     await _register(ReadMediaTool(media_store, "video"))
-    # 写保护:记忆目录 memory/ 只能经 memory_write 写,两级 agent 文档目录只能经 agent_define 写;
-    # root 内 .md 写后增量 reindex(memory_tree)。
+    # 写保护:记忆目录 memory/ 只能经 memory_write 写,两级 agent 文档目录只能经 agent_define 写。
     agent_dirs = (xana_home() / "agents", project_root / ".xana" / "agents")
-    await _register(EditTool(memory_tree=tree, protected_dir=(memory_store.dir, *agent_dirs, *tool_dirs, evals_dir)))
-    await _register(WriteTool(memory_tree=tree, protected_dir=(memory_store.dir, *agent_dirs, *tool_dirs, evals_dir)))
+    await _register(EditTool(protected_dir=(memory_store.dir, *agent_dirs, *tool_dirs, evals_dir)))
+    await _register(WriteTool(protected_dir=(memory_store.dir, *agent_dirs, *tool_dirs, evals_dir)))
     await _register(GlobTool())
     await _register(GrepTool())
     process_logs = ProcessLogs(Path(history_root) / "process_logs") if history_root is not None else None
@@ -452,7 +468,7 @@ async def boot(
     if project_id() == DEFAULT_PROJECT:
         await _register(ProjectManageTool(tool_registry=tools, skills=bundled_skills))
 
-    model_configs = {e.name: resolve_model_config(e) for e in system_cfg.models if e.type == provider}
+    model_configs = {e.name: resolve_model_config(e) for e in system_cfg.models}
     # 联网:配置了 xana-search 服务时用 web_search(只返回搜索摘要)/ web_open_url(读全文 + 按目标提炼)
     # / background_research(服务端后台研究,本地模型);deep_research(主模型 + 子研究员)在 agent 注册后接入。
     # 未配置时沿用旧的 web_search / web_fetch(brave key 走
@@ -653,15 +669,15 @@ async def boot(
                       *await agent_registry.list_specs()]
     if system_cfg.web_search.xana_search_url:
         _checked_specs.append(build_researcher_agent_spec())
-    _models = {e.name for e in system_cfg.models if e.type == provider} | {model}
+    _models = {e.name for e in system_cfg.models} | {model}
     for _spec in _checked_specs:
         _unknown = unknown_names((*_spec.tools, *_spec.disallowed_tools), _all_specs, _all_toolsets)
         if _unknown:
             _logger.warning("agent %s 的 tools / disallowed_tools 含未知的组或工具 %s",
                             _spec.component.name, _unknown)
         if _spec.model and _spec.model not in _models:
-            _logger.warning("agent %s 指定的模型 %s 不在当前 provider(%s)已配置的模型里,调用会失败",
-                            _spec.component.name, _spec.model, provider)
+            _logger.warning("agent %s 指定的模型 %s 不在已配置模型里,调用会失败",
+                            _spec.component.name, _spec.model)
 
     # 定时任务到点执行(docs/design/scheduled-task-design.md):无人值守的独立子会话,按通知方式插回当前会话;
     # notify_user 经它送达通知、登记待决策的问题。serve 只负责启动 SchedulerRunner。
@@ -681,9 +697,8 @@ async def boot(
         active_context_store=active_ctx,
         history_mirror=mirror,
         gateway=gateway,
-        # 只列同 provider 的模型:进程内只注册了当前 provider 的 client,
-        # 跨 provider 的模型名发给它会出错。
-        available_models=tuple(e.name for e in system_cfg.models if e.type == provider) or (model,),
+        # 所有显式配置的模型都已注册对应 provider，可由会话 /model 切换。
+        available_models=tuple(e.name for e in system_cfg.models) or (model,),
         # 接了 xana-search 时搜索由它负责,没有可切换的引擎;否则第一个是缺省(只有 deepseek 系有模型内置搜索)
         available_search_providers=(() if system_cfg.web_search.xana_search_url else
                                     ("native", "brave", "duckduckgo") if provider.startswith("deepseek")
@@ -700,8 +715,7 @@ async def boot(
     return BootResult(
         gateway=gateway,
         agents=dict(gateway.agents),
-        memory_tree=tree,
-        search_engine=engine,
+        search_engine=memory_search,
         active_context_store=active_ctx,
         history_mirror=mirror,
         memory_injector_registry=injector_registry,
@@ -737,13 +751,14 @@ async def boot(
         media_uploads=MediaUploads(store=media_store, configs=session_config_store, models=model_registry,
             provider=provider, default_model=agents[default_agent].spec().model or model),
         mcp=mcp,
+        memory_judge_client=memory_judge_client,
     )
 
 
 def _build_model_client(provider: str, model: str, cp: DefaultConfigProvider) -> ModelClient:
     """Build the explicitly selected provider; never substitute a fake client."""
     if provider == _FAKE_PROVIDER:
-        return FakeModelClient(ScriptedTurn(usage_input_tokens=4, usage_output_tokens=8))
+        return FakeModelClient()
     entry = cp.load_system_config().model(model)
     if entry is None:
         raise ValueError(f"模型 {model!r} 不在 system.json models[] 中")
@@ -752,19 +767,38 @@ def _build_model_client(provider: str, model: str, cp: DefaultConfigProvider) ->
     if "deepseek" in provider:
         if not entry.api_key.strip():
             raise ValueError(f"DeepSeek 模型 {model!r} 未配置 api_key；请检查 system.json")
-        config = (
-            AnthropicDeepSeekConfig(api_key=entry.api_key, base_url=entry.base_url, model_max_tokens=output_limits)
-            if entry.base_url
-            else AnthropicDeepSeekConfig(api_key=entry.api_key, model_max_tokens=output_limits)
+        overrides: dict[str, object] = {"model_max_tokens": output_limits}
+        if entry.base_url:
+            overrides["base_url"] = entry.base_url
+        profile = make_profile(ANTHROPIC_DEEPSEEK_PROFILE, **overrides)
+        return build_driver(profile, credentials=StaticApiKeyResolver(entry.api_key))
+    if provider == "openai_compatible":
+        if not entry.api_key.strip() or not entry.base_url:
+            raise ValueError(f"OpenAI 兼容模型 {model!r} 需要 api_key 和 base_url")
+        modalities = {e.name: tuple(e.input_modalities) for e in cp.load_system_config().models
+                      if e.type == provider}
+        profile = make_profile(
+            OPENAI_COMPATIBLE_PROFILE,
+            base_url=entry.base_url,
+            default_max_tokens=entry.max_tokens or 32768,
+            default_context_window=entry.context_window or 1_000_000,
+            model_input_modalities=modalities,
+            model_max_tokens=output_limits,
         )
-        return AnthropicDeepSeekClient(config)
+        return build_driver(profile, credentials=StaticApiKeyResolver(entry.api_key))
     if provider.startswith("kimi"):
-        store = KimiTokenStore()
+        store = KimiTokenStore(xana_home() / "credentials" / "kimi.json")
         tokens = store.load()
         if tokens is None:
             raise ValueError(f"Kimi 模型 {model!r} 未登录；请先运行 xana login")
         base_url = entry.base_url or kimi_api_base(tokens.region)
         modalities = {e.name: tuple(e.input_modalities) for e in cp.load_system_config().models
                       if e.type == provider}
-        return KimiClient(KimiConfig(base_url=base_url, model_input_modalities=modalities, model_max_tokens=output_limits), token_store=store)
+        profile = make_profile(
+            KIMI_PROFILE,
+            base_url=base_url,
+            model_input_modalities=modalities,
+            model_max_tokens=output_limits,
+        )
+        return build_driver(profile, credentials=KimiOAuthResolver(store))
     raise ValueError(f"不支持的模型 provider {provider!r}；请检查 system.json models[].type")

@@ -112,8 +112,6 @@ _MAX_TRUNCATION_CONTINUES = 3
 _MAX_STOP_HOOK_BLOCKS = 8
 _SILENT_CALLS_BEFORE_REMINDER = 5
 _MAX_SILENT_REMINDERS = 3
-_STREAM_RETRIES = 3          # 模型流中途可重试的错误(超时 / 5xx / 网络)最多重发几次
-_STREAM_RETRY_BASE_S = 2.0   # 重发前等待:2、4、8 秒
 
 
 @dataclass
@@ -1327,10 +1325,8 @@ class DefaultHarness(Harness):
             model_request = replace(model_request, messages=assembled)
 
             interactive = profile.mode == "interactive" and not request.metadata.get("parent_run_id")
-            stream_retries = 0
             while True:
                 quota_wait: tuple[str, float] | None = None
-                stream_retry: str | None = None   # 流中途可重试的错误(超时 / 5xx / 网络):丢弃本次部分输出,重发同一请求
                 iter_text: list[str] = []
                 iter_thinking: list[str] = []
                 iter_tool_calls: list[dict[str, Any]] = []
@@ -1442,11 +1438,26 @@ class DefaultHarness(Harness):
                                             "context_budget": context.config_snapshot.get("force_compact"),
                                         },
                                     ))
+                            elif event.kind == "retry":
+                                # ModelDriver 已决定重试本次调用:丢弃上次尝试的部分输出,向用户回报进度。
+                                iter_text.clear()
+                                iter_thinking.clear()
+                                iter_tool_calls.clear()
+                                first_token_ms = None
+                                call_usage.clear()
+                                _retry_reason = str(event.payload.get("reason") or (
+                                    event.error.message if event.error is not None else "transient error"))
+                                _retry_attempt = int(event.payload.get("attempt") or 1)
+                                _logger.warning("run %s:模型流重试(%s),第 %d 次", run_id, _retry_reason[:120], _retry_attempt)
+                                yield HarnessEvent(kind="progress_update", session_id=session_id, run_id=run_id, payload={
+                                    "text": f"模型连接中断({_retry_reason[:60]}),重新请求 第 {_retry_attempt} 次"})
                             elif event.kind == "done":
                                 stop_reason = str(event.payload.get("stop_reason") or "")
                                 break
                             elif (event.kind == "rate_limited" or (
-                                    event.kind == "error" and event.error is not None and event.error.kind == "rate_limit")) \
+                                    event.kind == "error" and event.error is not None
+                                    and (event.error.kind == "rate_limit"
+                                         or event.error.reason in ("rate_limit", "quota_exhausted")))) \
                                     and not iter_text and not iter_tool_calls \
                                     and (quota_wait := await self._quota_wait_for()) is not None:
                                 break                      # 额度用完:原地等待重置后重发同一请求(循环末尾)
@@ -1462,12 +1473,6 @@ class DefaultHarness(Harness):
                                 yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
                                                    payload={"error": _rl_msg})
                                 stream_error_yielded = True
-                                break
-                            elif event.kind == "error" and event.error is not None and event.error.retryable \
-                                    and event.error.kind != "rate_limit" and stream_retries < _STREAM_RETRIES:
-                                # provider 只在还没输出时重试;流开始后中断(如 2026-10-28 网络抖动时的 ReadTimeout)
-                                # 在这里重发。工具调用要等流结束才执行,本次的部分输出都还没落库,丢弃即可
-                                stream_retry = event.error.message
                                 break
                             elif event.kind == "error" and event.error is not None:
                                 # Fire turn-end BEFORE yielding so extensions see the
@@ -1488,14 +1493,6 @@ class DefaultHarness(Harness):
                     yield HarnessEvent(kind="error", session_id=session_id, run_id=run_id,
                                        payload={"error": str(exc)})
                     stream_error_yielded = True
-                if stream_retry is not None and not context.abort.aborted:
-                    stream_retries += 1
-                    _logger.warning("run %s:模型流中断(%s),重发 %d/%d", run_id, stream_retry[:120],
-                                    stream_retries, _STREAM_RETRIES)
-                    yield HarnessEvent(kind="progress_update", session_id=session_id, run_id=run_id, payload={
-                        "text": f"模型连接中断({stream_retry[:60]}),重新请求 {stream_retries}/{_STREAM_RETRIES}"})
-                    await _cancel_wait(context.abort, _STREAM_RETRY_BASE_S * 2 ** (stream_retries - 1))
-                    continue
                 if quota_wait is None or context.abort.aborted:
                     break
                 reason, wait_s = quota_wait
