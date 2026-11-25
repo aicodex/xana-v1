@@ -1,40 +1,26 @@
 """Memory contracts.
 
-Three sub-systems live here, sharing a tree-of-nodes substrate:
+Two sub-systems live here:
 
 1. **ActiveContext / HistoryMirror** — runtime conversation context + durable mirror.
-2. **TreeMem** — design-time knowledge tree (nodes, atomic ops, lint).
-   yuxu treemem and CC's CLAUDE.md/skills/rules all land here.
-3. **Search + Injection** — shared search backend (keyword + embedding, no LLM),
-   consumed by two layers:
-     - L1 Injector: pushed into prompt by PromptAssembler (HarnessSDK side).
-     - L2 Query Tool: pulled by the model via a registered Tool (Tool side).
-   Both call the same MemorySearchEngine; they package results differently.
+2. **Project Memory + SAG2 Retrieval/Injection** — authoritative `memory/**/*.md`
+   files with a shared `MemorySearchEngine` (SAG2) consumed by both:
+     - L1 Injector (`ProjectMemoryInjector`): pushed into prompt at turn start.
+     - L2 Query Tool (`memory_search`): pulled by the model on demand.
 """
 from __future__ import annotations
 
 from xana.multimodal.contracts import MediaInput
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 HistoryKind = Literal["user", "assistant", "tool", "system", "compact"]
 MemoryNodeKind = Literal["dir", "doc", "leaf"]
-LintViolationKind = Literal[
-    "size_exceeded",
-    "type_mismatch",
-    "anchor_invalid",
-    "sibling_similar",
-    "parent_child_count",
-    "description_missing",
-    "frontmatter_invalid",
-]
-LintSeverity = Literal["error", "warn", "info"]
 # 注入块的去向(harness 按它分成不同的 ContextNote):index = 记忆索引,pinned = 置顶记忆全文,
-# recall = 本条消息召回的记忆全文(docs/design/memory-recall-design.md §3.2–3.3)
+# recall = 本条消息经 SAG2 召回的记忆全文
 InjectionPlacement = Literal["index", "pinned", "recall"]
-SearchBackendKind = Literal["keyword", "embedding", "hybrid", "external"]
+MEMORY_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -84,18 +70,13 @@ class ReplayResult:
 
 
 # ---------------------------------------------------------------------------
-# TreeMem: persistent knowledge-tree nodes + lint findings.
+# Search document view attached to SearchHit.
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class MemoryNode:
-    """One node in the knowledge tree.
-
-    `path` is the canonical address ("L2/feature/foo"). `parent_path` is the
-    enclosing dir-node; root nodes have `parent_path == ""`. `body` is the
-    rendered text used both for prompt injection and search indexing.
-    """
+    """One memory document view attached to search hits."""
 
     path: str
     kind: MemoryNodeKind
@@ -107,22 +88,6 @@ class MemoryNode:
     frontmatter: dict[str, Any] = field(default_factory=dict)
     version: int = 1
     updated_ts: float = 0.0
-
-
-@dataclass(frozen=True)
-class MemoryLintViolation:
-    node_path: str
-    kind: LintViolationKind
-    severity: LintSeverity
-    message: str
-    current_value: Any = None
-    limit_value: Any = None
-
-
-@dataclass(frozen=True)
-class MemoryLintResult:
-    clean: bool
-    violations: tuple[MemoryLintViolation, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -282,5 +247,79 @@ class ExtractionRequest:
 MemoryExtractor = Callable[[ExtractionRequest], Awaitable[None]]
 
 
-# 召回选择:输入(用户这句话, 候选记忆),返回选中的 slug(按相关度)。实现可调用模型(由 runtime 注入)。
-MemorySelector = Callable[[str, "tuple[MemoryRecord, ...]"], Awaitable["tuple[str, ...]"]]
+# ---------------------------------------------------------------------------
+# Stage 5 RSI & standalone contracts (JSON-serializable, frozen).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MemorySnapshotEntry:
+    """Single memory file captured inside a MemorySnapshot."""
+
+    slug: str
+    sha256: str
+    raw_text: str
+
+
+@dataclass(frozen=True)
+class MemorySnapshot:
+    """Point-in-time snapshot of a MemoryStore for deterministic rollback & fork."""
+
+    snapshot_id: str
+    created_ts: float
+    entries: tuple[MemorySnapshotEntry, ...] = ()
+    schema_version: int = MEMORY_SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class RetrievalContext:
+    """Input to a swappable MemoryRetrievalPolicy."""
+
+    session_id: str
+    agent_name: str
+    user_input: str
+    cwd: str
+    records: tuple[MemoryRecord, ...] = ()
+    mode: str = "sag2"
+    max_recall: int = 5
+    body_char_limit: int = 2000
+    total_char_limit: int = 6000
+    min_terms: int = 2
+    run_id: str = ""
+    schema_version: int = MEMORY_SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class RetrievalPlan:
+    """Output of a MemoryRetrievalPolicy: budgeted blocks + diagnostics."""
+
+    blocks: tuple[InjectedBlock, ...] = ()
+    recalled_paths: tuple[str, ...] = ()
+    skipped_reason: str = ""
+    latency_ms: float = 0.0
+    judge_models: tuple[str, ...] = ()
+    schema_version: int = MEMORY_SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class MemoryWriteOutcome:
+    """Structured result of a memory write/append/delete operation."""
+
+    action: Literal["create", "update", "append", "delete", "skip"]
+    path: str
+    ok: bool
+    reason: str = ""
+    schema_version: int = MEMORY_SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class ExtractionOutcome:
+    """Structured result of background memory extraction."""
+
+    session_id: str
+    run_id: str
+    written_paths: tuple[str, ...] = ()
+    skipped_reason: str = ""
+    latency_ms: float = 0.0
+    error: str = ""
+    schema_version: int = MEMORY_SCHEMA_VERSION

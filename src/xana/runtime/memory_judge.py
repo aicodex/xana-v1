@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import time
 
 import httpx
 import tiktoken
@@ -20,6 +21,10 @@ from xana.memory.contracts import (
     EvidenceJudgment,
     EvidenceScore,
 )
+from xana.protocol.diag import DiagLogger
+from xana.protocol.primitives import ComponentVersion
+
+_diag = DiagLogger("memory")
 
 
 class JevEvidenceJudge:
@@ -62,6 +67,14 @@ class JevEvidenceJudge:
         self._context_tokens, self._batch_tokens = context_tokens, batch_tokens
         self._semaphore = asyncio.Semaphore(concurrency)
         self._encoding = tiktoken.get_encoding("o200k_base")
+
+    def component_version(self) -> ComponentVersion:
+        return ComponentVersion(
+            name=f"memory.judge.{self._model}",
+            kind="evidence_judge",
+            version="1.0.0",
+            policy_version="noul-v1",
+        )
 
     async def __call__(
         self,
@@ -119,14 +132,25 @@ class JevEvidenceJudge:
             size += count
         if questions:
             batches.append(questions)
+        t0 = time.monotonic()
         tasks = [asyncio.create_task(self._batch(state, batch)) for batch in batches]
         try:
             results = await asyncio.wait_for(asyncio.gather(*tasks), self._timeout)
-        except BaseException:
+        except BaseException as exc:
+            _diag.anomaly("jev.call_failed", model=self._model, error=type(exc).__name__)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        _diag.perf(
+            "jev.score",
+            latency_ms=latency_ms,
+            slow_ms=1500.0,
+            model=self._model,
+            candidates=len(candidates),
+            batches=len(batches),
+        )
         return EvidenceJudgment(
             tuple(score for scores, _, _, _ in results for score in scores),
             self._model,
@@ -211,3 +235,30 @@ class JevEvidenceJudge:
 
 def _json(value: dict) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def build_evidence_judge(config, client: httpx.AsyncClient) -> JevEvidenceJudge:
+    """Build the configured local Karpo or remote JEV judge over the same Noul protocol."""
+    from xana.config.system_model import MemoryJudgeConfig
+
+    if not isinstance(config, MemoryJudgeConfig):
+        raise TypeError("MemoryJudgeConfig required")
+    criterion = EvidenceCriterion(
+        question=config.question,
+        when_true=config.when_true,
+        when_false=config.when_false,
+        source=config.criterion_source,
+        score_note=config.score_note,
+    )
+    return JevEvidenceJudge(
+        client=client,
+        endpoint=config.endpoint,
+        model=config.model,
+        api_key=config.api_key,
+        criterion=criterion,
+        timeout_s=config.timeout_s,
+        concurrency=config.concurrency,
+        max_attempts=config.max_attempts,
+        context_tokens=config.context_tokens,
+        batch_tokens=config.batch_tokens,
+    )

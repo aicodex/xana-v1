@@ -1,29 +1,34 @@
 """Memory abstract interfaces.
 
-Three substrates, in order of distance from the conversation:
+Two substrates, in order of distance from the conversation:
 - ActiveContextStore + HistoryMirror: runtime conversation memory.
-- MemoryTree: persistent knowledge tree (treemem). Atomic ops M1.4 live here.
 - MemorySearchEngine + MemoryInjector(+Registry): search-once / consume-twice.
   L1 (Injector) is invoked by PromptAssembler at turn start.
-  L2 standard tools (memory_search / memory_get) are plain Tools that call
-  MemorySearchEngine + MemoryTree.
+  L2 standard tool (memory_search) is a plain Tool calling the same MemorySearchEngine.
 """
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from xana.memory.contracts import (
     ActiveContext,
+    ExtractionOutcome,
+    ExtractionRequest,
     HistoryRow,
     InjectedBlock,
-    MemoryLintResult,
     MemoryMessage,
     MemoryNode,
+    MemoryRecord,
+    MemorySnapshot,
     ReplayResult,
+    RetrievalContext,
+    RetrievalPlan,
     SearchHit,
     SearchQuery,
 )
+from xana.protocol.primitives import ComponentVersion
 
 if TYPE_CHECKING:
     from xana.context.sdk import ContextSDK
@@ -80,54 +85,6 @@ class HistoryMirror(ABC):
 class MemoryReplayer(ABC):
     @abstractmethod
     async def rebuild_active_context(self, mirror: HistoryMirror, store: ActiveContextStore) -> ReplayResult: ...
-
-
-class MemoryTree(ABC):
-    """Storage + atomic operations for the knowledge tree (yuxu treemem).
-
-    Read methods are cheap. Mutation methods are atomic and must succeed
-    fully or leave the tree unchanged. Lint is read-only and may be called
-    independently or during write paths.
-    """
-
-    @abstractmethod
-    async def get_node(self, path: str) -> MemoryNode | None: ...
-
-    @abstractmethod
-    async def list_children(self, parent_path: str) -> tuple[MemoryNode, ...]: ...
-
-    @abstractmethod
-    async def lint(self, root_path: str = "") -> MemoryLintResult: ...
-
-    # ---- M1.4 atomic ops ---------------------------------------------------
-
-    @abstractmethod
-    async def split_node(
-        self,
-        path: str,
-        children: tuple[MemoryNode, ...],
-        index_body: str,
-    ) -> MemoryNode: ...
-
-    @abstractmethod
-    async def merge_nodes(
-        self,
-        survivor_path: str,
-        absorbed_path: str,
-        merged_body: str,
-    ) -> MemoryNode: ...
-
-    @abstractmethod
-    async def move_node(self, path: str, new_parent_path: str) -> MemoryNode: ...
-
-    @abstractmethod
-    async def redefine_parent(self, parent_path: str, new_index_body: str) -> MemoryNode: ...
-
-    @abstractmethod
-    async def delete_node(self, path: str, reason: str) -> None: ...
-
-    @abstractmethod
-    async def rename_node(self, path: str, new_name: str) -> MemoryNode: ...
 
 
 class MemorySearchEngine(ABC):
@@ -193,3 +150,72 @@ class MemoryInjectorRegistry(ABC):
         user_input: str,
         cwd: str,
     ) -> tuple[InjectedBlock, ...]: ...
+
+
+class MemoryStore(ABC):
+    """Authoritative project memory store contract with RSI snapshot/fork/rollback."""
+
+    @abstractmethod
+    def list(self) -> tuple[MemoryRecord, ...]: ...
+
+    @abstractmethod
+    def get(self, slug: str) -> MemoryRecord | None: ...
+
+    @abstractmethod
+    def index_text(self, records: tuple[MemoryRecord, ...] | None = None) -> str: ...
+
+    @abstractmethod
+    def pinned_text(self, records: tuple[MemoryRecord, ...] | None = None) -> str: ...
+
+    @abstractmethod
+    def similar(
+        self, name: str, description: str, *, exclude: str = ""
+    ) -> tuple[MemoryRecord, float] | None: ...
+
+    @abstractmethod
+    def write(
+        self,
+        slug: str,
+        *,
+        name: str,
+        description: str,
+        mtype: str,
+        body: str,
+        pinned: bool = False,
+        topic: str = "",
+    ) -> MemoryRecord: ...
+
+    @abstractmethod
+    def append(self, slug: str, text: str) -> MemoryRecord: ...
+
+    @abstractmethod
+    def delete(self, slug: str) -> bool: ...
+
+    @abstractmethod
+    def snapshot(self) -> MemorySnapshot: ...
+
+    @abstractmethod
+    def fork(self, target_root: Path) -> "MemoryStore": ...
+
+    @abstractmethod
+    def rollback(self, snapshot: MemorySnapshot) -> None: ...
+
+
+class MemoryRetrievalPolicy(ABC):
+    """Evolvable retrieval & injection policy (SAG2 baseline; swappable for RSI)."""
+
+    @abstractmethod
+    def component_version(self) -> ComponentVersion: ...
+
+    @abstractmethod
+    async def plan(self, ctx: RetrievalContext) -> RetrievalPlan: ...
+
+
+class MemoryExtractionPolicy(ABC):
+    """Evolvable post-turn background memory extraction policy."""
+
+    @abstractmethod
+    def component_version(self) -> ComponentVersion: ...
+
+    @abstractmethod
+    async def extract(self, request: ExtractionRequest) -> ExtractionOutcome: ...

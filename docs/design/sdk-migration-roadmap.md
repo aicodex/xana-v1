@@ -178,7 +178,7 @@ date: 2026-11-23
   - **真实妥协与后续注意**：`TodoStore` / `GoalService` 的内核剥离归入 Stage 6（Harness 收口）统一处理，不打断 Stage 4 叶子边界。
 
 ### Stage 5：长期记忆
-**状态**：待启动
+**状态**：已完成
 
 - **为什么在这里切**：轨迹、LLM、执行环境、工具与污染标记、技能提案接收端都已就绪，Memory 可以作为完整独立的子系统抽出，同时卸掉 DefaultHarness 最重的一块耦合。
 - **第一步**：把 `ActiveContextStore`、`HistoryMirror`、`MemoryReplayer` 等会话上下文移出 memory 包，归入 harness 上下文层（行为不变，Stage 6 再重构）。
@@ -186,7 +186,7 @@ date: 2026-11-23
 - **调研重点**：支持快照/分叉/回滚的权威存储（评测时可隔离副本）；写入通道与污染回合处理；检索与提示策略的可替换槽位；固定时间点的离线评测集（召回、过时误用、冲突处理、自身成本）。
 - **迁移完成后的功能步骤**：出错反思、Dream 整理（参考现有 `docs/design/memory-dream-design.md`），单独开发与验收。
 - **准出**：memory 可脱离 harness 独立运行写入、提取、检索全链路评测；可替换为空实现或模拟实现而不影响主系统；真实渠道端到端：通过飞书/Web/`xanac` 发起至少一次触发记忆召回与写入/后台提取的真实对话，观察日志/轨迹确认新长期记忆模块被实际调用（验收后清理测试写入的记忆文件）。
-- **落地记录**：待填写
+- **落地记录**：完成 `src/xana/memory/{contracts,interfaces,store,recall,project_search,tape_recorder,testing,__main__}.py` 与 `runtime/{memory_judge,memory_extract}.py`、`tools/builtin/memory_write.py` 改造；新增 `MemoryStore`/`MemoryRetrievalPolicy`/`MemoryExtractionPolicy` ABC、`ProjectMemoryStore` 快照/分叉/回滚、`DefaultMemoryRetrievalPolicy`、`MemoryTapeRecorder`、`FakeEvidenceJudge`、`DiagLogger("memory")` 与 `python -m xana.memory bench`；锁定 `tests/golden/memory_contract_v1.json`；全量单测、`merge_gate` 与真实 `xanac --project demo`（SAG2 + Karpo 4B）端到端验收通过。会话上下文（`ActiveContextStore`/`HistoryMirror`）保留在 `memory` 至 Stage 6 收口时统一迁移，避免新增遗留边。
 
 ### Stage 6：Harness 收口
 **状态**：待启动

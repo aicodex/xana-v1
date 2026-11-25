@@ -14,6 +14,7 @@ import hashlib
 import json
 import math
 import sqlite3
+import time
 from pathlib import Path
 from collections.abc import Callable
 
@@ -26,10 +27,13 @@ from xana.memory.contracts import (
     SearchQuery,
 )
 from xana.memory.interfaces import MemorySearchEngine
-from xana.memory.markdown import _split_frontmatter
 from xana.memory.sag2.index import CorpusIndex
 from xana.memory.sag2.retrieval import search_sag2
-from xana.memory.store import MEMORY_DIR
+from xana.memory.store import MEMORY_DIR, _split_frontmatter
+from xana.memory.tape_recorder import MemoryTapeRecorder
+from xana.protocol.diag import DiagLogger
+
+_diag = DiagLogger("memory")
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,7 @@ class ProjectMemorySearch(MemorySearchEngine):
         timeout_s: float,
         options: SAG2Options = SAG2Options(),
         on_query: Callable[[dict], None] | None = None,
+        tape_recorder: MemoryTapeRecorder | None = None,
     ) -> None:
         if not math.isfinite(timeout_s) or timeout_s <= 0:
             raise ValueError("memory query timeout must be positive")
@@ -63,6 +68,7 @@ class ProjectMemorySearch(MemorySearchEngine):
         self.db_path = db_path.resolve()
         self._judge, self._timeout, self._options = judge, timeout_s, options
         self._on_query = on_query
+        self._tape = tape_recorder or MemoryTapeRecorder()
         self._lock = asyncio.Lock()
 
     def _sources(self, scopes: tuple[str, ...] = ()) -> tuple[_Source, ...]:
@@ -164,6 +170,7 @@ class ProjectMemorySearch(MemorySearchEngine):
         return await asyncio.wait_for(retrieve(), self._timeout)
 
     async def _search(self, query: SearchQuery) -> tuple[SearchHit, ...]:
+        t0 = time.monotonic()
         sources = self._sources(query.scope_paths)
         if not sources:
             return ()
@@ -242,6 +249,7 @@ class ProjectMemorySearch(MemorySearchEngine):
         finally:
             index.close()
         if self._sources(query.scope_paths) != sources:
+            _diag.anomaly("search.sources_changed", query_chars=len(query.text))
             raise ValueError(
                 "memory sources changed during retrieval; repeat the query"
             )
@@ -273,6 +281,22 @@ class ProjectMemorySearch(MemorySearchEngine):
             )
             if len(hits) >= query.top_k:
                 break
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        _diag.perf(
+            "sag2.search",
+            latency_ms=latency_ms,
+            slow_ms=2000.0,
+            sources=len(sources),
+            hits=len(hits),
+            requests=usage["requests"],
+        )
+        self._tape.record_search(
+            query=query.text,
+            hit_count=len(hits),
+            latency_ms=latency_ms,
+            judge_models=tuple(sorted(models)),
+            usage=usage,
+        )
         if self._on_query is not None:
             self._on_query(
                 {

@@ -1,4 +1,4 @@
-"""项目记忆:项目根目录下的 memory/,一条记忆一个文件(docs/design/memory-recall-design.md §3.1)。
+"""项目记忆:项目根目录下的 memory/,一条记忆一个文件。
 
 记忆文件是唯一权威;索引、置顶内容都由文件的 frontmatter 实时生成(可重建的视图,不落盘)。
 frontmatter:name / description / type(user | feedback | project | reference)/ topic / pinned / updated。
@@ -6,28 +6,72 @@ frontmatter:name / description / type(user | feedback | project | reference)/ to
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import time
+import uuid
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from xana.memory.contracts import MEMORY_TYPES, MemoryRecord
-from xana.memory.markdown import _split_frontmatter, search_terms
+from xana.memory.contracts import (
+    MEMORY_TYPES,
+    MemoryRecord,
+    MemorySnapshot,
+    MemorySnapshotEntry,
+)
+from xana.memory.interfaces import MemoryStore
+from xana.protocol.diag import DiagLogger
+
+_diag = DiagLogger("memory")
 
 MEMORY_DIR = "memory"
 INDEX_MAX_LINES = 200
 INDEX_MAX_CHARS = 8000
 PINNED_MAX_CHARS = 2000
 DESC_MAX_CHARS = 150
+FRONTMATTER_MAX_LINES = 30
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,63}$")
+_ASCII_TERM_RE = re.compile(r"[A-Za-z0-9_]+")
+_CJK_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]+")
 _TYPE_TITLES = {"user": "用户", "feedback": "做法反馈", "project": "项目", "reference": "参考资源"}
 
 
-class ProjectMemoryStore:
+def search_terms(text: str) -> list[str]:
+    """轻量词项切分:ASCII 按词(小写),CJK 连续段按相邻二字(单字段保留单字)。
+    用于 memory_write 查重与召回最短词数门槛判断。
+    """
+    terms = [t.lower() for t in _ASCII_TERM_RE.findall(text)]
+    for run in _CJK_RUN_RE.findall(text):
+        if len(run) == 1:
+            terms.append(run)
+        else:
+            terms.extend(run[i:i + 2] for i in range(len(run) - 1))
+    return terms
+
+
+def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, text
+    end = None
+    for idx, line in enumerate(lines[1:FRONTMATTER_MAX_LINES], start=1):
+        if line.strip() == "---":
+            end = idx
+            break
+    if end is None:
+        return {}, text
+    try:
+        parsed = yaml.safe_load("\n".join(lines[1:end]))
+    except yaml.YAMLError:
+        parsed = {}
+    return (parsed if isinstance(parsed, dict) else {}), "\n".join(lines[end + 1:])
+
+
+class ProjectMemoryStore(MemoryStore):
     def __init__(self, root: Path) -> None:
         """root = 项目根目录;记忆放在 root/memory/。"""
         self._root = Path(root)
@@ -83,21 +127,6 @@ class ProjectMemoryStore:
             text = text[:PINNED_MAX_CHARS] + "\n…(置顶记忆过长已截断,需要时用 Read 查看全文)"
         return text
 
-    def lexical_rank(self, query: str, records: tuple[MemoryRecord, ...], limit: int) -> tuple[MemoryRecord, ...]:
-        """字面检索兜底:查询词与 名称 / 描述 / 正文 的两字片段重叠率,名称与描述加权。"""
-        terms = set(search_terms(query))
-        if not terms:
-            return ()
-        scored = []
-        for r in records:
-            head = set(search_terms(f"{r.name} {r.description}"))
-            body = set(search_terms(r.body))
-            score = (2 * len(terms & head) + len(terms & body)) / len(terms)
-            if score > 0:
-                scored.append((score, r))
-        scored.sort(key=lambda x: -x[0])
-        return tuple(r for _, r in scored[:limit])
-
     def similar(self, name: str, description: str, *, exclude: str = "") -> tuple[MemoryRecord, float] | None:
         """与已有记忆的 名称 + 描述 最相近的一条及相似度(查重用)。"""
         terms = set(search_terms(f"{name} {description}"))
@@ -130,7 +159,9 @@ class ProjectMemoryStore:
         path = self.dir / f"{slug}.md"
         path.write_text("---\n" + yaml.safe_dump(front, allow_unicode=True, sort_keys=False)
                         + "---\n\n" + body.strip() + "\n", encoding="utf-8")
-        return _parse(path, self._root)
+        record = _parse(path, self._root)
+        _diag.op("store.write", slug=slug, mtype=mtype, pinned=pinned, chars=len(body))
+        return record
 
     def append(self, slug: str, text: str) -> MemoryRecord:
         """在已有记忆正文后追加一段(不改原有内容与 frontmatter,只更新 updated)。"""
@@ -145,7 +176,47 @@ class ProjectMemoryStore:
         if not path.exists():
             return False
         path.unlink()
+        _diag.op("store.delete", slug=slug)
         return True
+
+    # ---------- RSI 快照 / 分叉 / 回滚 ----------
+
+    def snapshot(self) -> MemorySnapshot:
+        """Capture a point-in-time snapshot of all memory/*.md files."""
+        entries: list[MemorySnapshotEntry] = []
+        if self.dir.is_dir():
+            for path in sorted(self.dir.glob("*.md")):
+                try:
+                    raw = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+                entries.append(MemorySnapshotEntry(slug=path.stem, sha256=digest, raw_text=raw))
+        snap = MemorySnapshot(
+            snapshot_id=f"memsnap-{uuid.uuid4().hex[:12]}",
+            created_ts=time.time(),
+            entries=tuple(entries),
+        )
+        _diag.op("store.snapshot", snapshot_id=snap.snapshot_id, entries=len(entries))
+        return snap
+
+    def fork(self, target_root: Path) -> "ProjectMemoryStore":
+        """Create an isolated copy of this store rooted at `target_root`."""
+        forked = ProjectMemoryStore(Path(target_root))
+        forked.rollback(self.snapshot())
+        _diag.op("store.fork", target_root=str(target_root))
+        return forked
+
+    def rollback(self, snapshot: MemorySnapshot) -> None:
+        """Restore `memory/*.md` to the exact state captured in `snapshot`."""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        desired = {entry.slug: entry for entry in snapshot.entries}
+        for existing in sorted(self.dir.glob("*.md")):
+            if existing.stem not in desired:
+                existing.unlink()
+        for slug, entry in desired.items():
+            (self.dir / f"{slug}.md").write_text(entry.raw_text, encoding="utf-8")
+        _diag.op("store.rollback", snapshot_id=snapshot.snapshot_id, entries=len(desired))
 
 
 def _slug(slug: str) -> str:

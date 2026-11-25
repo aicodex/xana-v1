@@ -11,14 +11,24 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 
 from xana.llm_driver.contracts import ModelMessage, ModelRequest
 from xana.llm_driver.driver import complete
 from xana.llm_driver.interfaces import ModelRegistry
-from xana.memory.contracts import MEMORY_TYPES, ExtractionRequest, MemoryMessage
-from xana.memory.store import ProjectMemoryStore
+from xana.memory.contracts import (
+    MEMORY_TYPES,
+    ExtractionOutcome,
+    ExtractionRequest,
+    MemoryMessage,
+)
+from xana.memory.interfaces import MemoryExtractionPolicy, MemoryStore
+from xana.memory.tape_recorder import MemoryTapeRecorder
+from xana.protocol.diag import DiagLogger
+from xana.protocol.primitives import ComponentVersion
 
 _logger = logging.getLogger(__name__)
+_diag = DiagLogger("memory")
 
 MAX_TRANSCRIPT_CHARS = 12000
 TOOL_RESULT_CHARS = 300
@@ -50,24 +60,59 @@ _UNATTENDED_HINT = ("这是无人值守的运行(定时任务或长期运行的 
                     "踩过什么坑以及怎么避开、环境与数据源的事实。\n")
 
 
-class ModelMemoryExtractor:
-    def __init__(self, *, model_registry: ModelRegistry, provider: str, model: str,
-                 store: ProjectMemoryStore, every: int = 1) -> None:
+class ModelMemoryExtractor(MemoryExtractionPolicy):
+    def __init__(
+        self,
+        *,
+        model_registry: ModelRegistry,
+        provider: str,
+        model: str,
+        store: MemoryStore,
+        every: int = 1,
+        tape_recorder: MemoryTapeRecorder | None = None,
+    ) -> None:
         self._registry = model_registry
         self._provider = provider
         self._model = model
         self._store = store
         self._every = max(1, every)
         self._counts: dict[str, int] = {}
+        self._tape = tape_recorder or MemoryTapeRecorder()
+
+    def component_version(self) -> ComponentVersion:
+        return ComponentVersion(
+            name="memory.extractor.model",
+            kind="memory_extraction_policy",
+            version="1.0.0",
+            policy_version="extract-v1",
+        )
 
     async def __call__(self, request: ExtractionRequest) -> None:
+        await self.extract(request)
+
+    async def extract(self, request: ExtractionRequest) -> ExtractionOutcome:
+        t0 = time.monotonic()
         count = self._counts.get(request.session_id, 0) + 1
         self._counts[request.session_id] = count
         if count % self._every:
-            return
+            outcome = ExtractionOutcome(
+                session_id=request.session_id,
+                run_id=request.run_id,
+                skipped_reason="cadence",
+                latency_ms=(time.monotonic() - t0) * 1000.0,
+            )
+            self._tape.record_extract(outcome, policy=self.component_version())
+            return outcome
         transcript = render_transcript(request.messages)
         if not transcript.strip():
-            return
+            outcome = ExtractionOutcome(
+                session_id=request.session_id,
+                run_id=request.run_id,
+                skipped_reason="empty_transcript",
+                latency_ms=(time.monotonic() - t0) * 1000.0,
+            )
+            self._tape.record_extract(outcome, policy=self.component_version())
+            return outcome
         index = self._store.index_text() or "(还没有记忆)"
         system = EXTRACT_PROMPT.format(mode_hint=_INTERACTIVE_HINT if request.interactive else _UNATTENDED_HINT)
         user = f"已有记忆的索引:\n{index}\n\n本轮记录:\n{transcript}"
@@ -75,9 +120,34 @@ class ModelMemoryExtractor:
             ops = parse_extraction(await self._complete(system, user))
         except Exception as exc:
             _logger.warning("记忆提取失败(会话 %s):%r", request.session_id, exc)
-            return
-        for path in self.apply(ops):
+            _diag.anomaly("extract.failed", session_id=request.session_id, error=type(exc).__name__)
+            outcome = ExtractionOutcome(
+                session_id=request.session_id,
+                run_id=request.run_id,
+                latency_ms=(time.monotonic() - t0) * 1000.0,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            self._tape.record_extract(outcome, policy=self.component_version())
+            return outcome
+        written = tuple(self.apply(ops))
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        for path in written:
             _logger.info("记忆提取:会话 %s 写入 %s", request.session_id, path)
+        _diag.perf(
+            "extract.run",
+            latency_ms=latency_ms,
+            slow_ms=5000.0,
+            session_id=request.session_id,
+            written=len(written),
+        )
+        outcome = ExtractionOutcome(
+            session_id=request.session_id,
+            run_id=request.run_id,
+            written_paths=written,
+            latency_ms=latency_ms,
+        )
+        self._tape.record_extract(outcome, policy=self.component_version())
+        return outcome
 
     async def _complete(self, system: str, user: str) -> str:
         client = await self._registry.get(self._provider)
